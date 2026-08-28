@@ -1,0 +1,47 @@
+{
+  // NORG Edge Router — Deploy-to-Cloudflare button configuration.
+  //
+  // Deployed into the CUSTOMER's Cloudflare account. Read README.md in this
+  // directory first. This template is published live at
+  // https://github.com/norgai/norg-edge-mirror-cloudflare-deploy via
+  // `node infrastructure/cloudflare/deploy-template/extract.mjs <dir>` — do
+  // not hand-edit the copy in that repo, regenerate and push instead.
+  "$schema": "node_modules/wrangler/config-schema.json",
+
+  "name": "norg-edge-router",
+
+  // Copied verbatim from the BUILT bundle infrastructure/cloudflare/dist/
+  // edge-router-worker.js by extract.mjs (single file, no imports — produced
+  // by `node infrastructure/cloudflare/build.mjs`). Keep in sync — see
+  // README "Keeping this repo in sync with NORG's worker source";
+  // apps/api/tests/test_edge_worker_asset.py guards the vendored copy.
+  "main": "src/edge-router-worker.js",
+
+  "compatibility_date": "2026-08-01",
+
+  // Placeholder. Cloudflare prompts for this during the button flow; it is
+  // editable afterwards under Settings -> Variables. NORG_SITE_KEY is NOT here:
+  // it is a secret (wrangler secret put NORG_SITE_KEY).
+  //
+  // Only SITE_ID varies per install (EDGEPAR 04): NORG_API_URL,
+  // NORG_CONTENT_BASE, STRIP_FALLBACK_ENABLED and EDGE_DISABLED are baked into
+  // the worker as defaults. Add any of them here only to OVERRIDE a default.
+  "vars": {
+    // edge_sites.id, issued by NORG when the site is registered.
+    "SITE_ID": "REPLACE_WITH_SITE_ID"
+  },
+
+  // Liveness beat, so a zero-traffic install still reports in. Traffic-driven
+  // beats are additionally rate-limited inside the worker.
+  "triggers": {
+    "crons": ["*/30 * * * *"]
+  }
+
+  // The route is a MANUAL step after deployment — the button does not attach
+  // the script to any traffic. Add {domain}/* under
+  // Settings -> Domains & Routes, or uncomment and set both fields here:
+  //
+  // "routes": [
+  //   { "pattern": "example.com/*", "zone_name": "example.com" }
+  // ]
+}

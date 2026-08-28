@@ -1,0 +1,4 @@
+# Copy to .dev.vars for local `wrangler dev` testing only.
+# .dev.vars is gitignored — never commit real values.
+SITE_ID=REPLACE_WITH_SITE_ID
+NORG_SITE_KEY=REPLACE_WITH_SITE_KEY
