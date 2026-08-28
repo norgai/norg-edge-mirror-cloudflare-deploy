@@ -178,6 +178,20 @@ this can never shadow a real page on your site.
 
 ---
 
+## If this route doesn't work out
+
+If the button flow fails, your Cloudflare/GitHub setup can't support it, or
+you get stuck on any step above, you don't need to debug it alone — fall back
+to the **API-token install** instead. You give NORG a scoped Cloudflare API
+token (Workers Scripts: Edit, Workers Routes: Edit, Zone WAF: Edit, Zone/DNS:
+Read) and NORG deploys the worker, creates the route, and verifies the install
+for you end to end — no manual route-attachment step, and you keep getting
+worker updates automatically going forward. Full walkthrough, including how
+to create the scoped token:
+[app.norg.ai/help/cloudflare-worker](https://app.norg.ai/help/cloudflare-worker) —
+see also [Trade-offs vs. the API-token install](#trade-offs-vs-the-api-token-install)
+below, or ask your NORG contact to switch you to that route.
+
 ## Troubleshooting
 
 **No `X-Norg-Edge` header for any user-agent, and the health probe returns
