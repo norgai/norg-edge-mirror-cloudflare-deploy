@@ -114,7 +114,7 @@ function withAlternateFormatHeaders(response, url, path) {
 }
 
 // infrastructure/cloudflare/workers/edge-router-worker.js
-var EDGE_SCRIPT_VERSION = "0.11.1";
+var EDGE_SCRIPT_VERSION = "0.11.2";
 var BINDING_DEFAULTS = {
   NORG_API_URL: "https://content-craft-api.norg.ai",
   NORG_CONTENT_BASE: "https://edge-content.norg.ai",
@@ -157,7 +157,8 @@ var UNENTITLED = Object.freeze({
   entitled: false,
   patterns: [],
   cidrRanges: {},
-  agenticPathPrefix: ""
+  agenticPathPrefix: "",
+  skipPaths: []
 });
 var DEFAULT_AGENTIC_PATH_PREFIX = "/ai";
 var REFUSAL_STATUSES = /* @__PURE__ */ new Set([401, 403]);
@@ -199,6 +200,7 @@ var feedCache = {
   entitled: false,
   patterns: [],
   cidrRanges: {},
+  skipPaths: [],
   fetchedAt: 0,
   ttl: PATTERN_DEFAULT_TTL_MS
 };
@@ -257,6 +259,9 @@ async function readFeedBody(response) {
       patterns: data.patterns || [],
       cidrRanges: data.cidr_ranges || {},
       agenticPathPrefix: data.agentic_path_prefix || DEFAULT_AGENTIC_PATH_PREFIX,
+      // Per-route mirror skip (NOR-2849172819): paths an operator marked to
+      // pass through to origin. An array of normalised EdgeRoute paths.
+      skipPaths: Array.isArray(data.skip_paths) ? data.skip_paths : [],
       // Per-site content version (a publish bumps it) and the disabled-by-default
       // response-cache config both ride this feed — no extra round trip.
       contentVersion: data.content_version || "",
@@ -590,6 +595,11 @@ function isStaticAssetPath(pathname) {
   if (dot <= 0 || dot === segment.length - 1) return false;
   return STATIC_ASSET_SUFFIXES.has(segment.slice(dot).toLowerCase());
 }
+function normaliseSkipPath(pathname) {
+  if (pathname.length <= 1) return pathname;
+  const collapsed = pathname.replace(/\/{2,}/g, "/");
+  return collapsed.replace(/\/+$/, "") || "/";
+}
 async function serveOpenAiFeed(request, env, url) {
   const { response } = await fetchFromNorg(env, pathToKeySuffix(url.pathname));
   if (!response) return fetch(request);
@@ -894,6 +904,9 @@ async function handleRequest(request, env, ctx) {
     return serveAgenticPath(request, env, ctx, url, feed.agenticPathPrefix);
   }
   if (isStaticAssetPath(url.pathname)) return fetch(request);
+  if (feed.skipPaths && feed.skipPaths.includes(normaliseSkipPath(url.pathname))) {
+    return fetch(request);
+  }
   if (isTraditionalSearchBot(userAgent)) return fetch(request);
   if (hasAgentOverride(url)) {
     ctx.waitUntil(maybeHeartbeat(env, "traffic"));
