@@ -132,34 +132,17 @@ the plain, un-mirrored origin.
 Run these against a real page on your site (include the trailing slash if
 your URLs use one).
 
-> **You cannot test the agent path with a spoofed User-Agent.** The worker
-> serves NORG renders only to requests that *provably* come from an AI
-> operator: the source IP must sit inside that operator's published IP
-> ranges, or Cloudflare must mark the request a verified bot. A
-> `curl -H "User-Agent: GPTBot"` from your own machine is deliberately
-> passed straight through to your origin with **no** `X-Norg-Edge` header
-> (anti-spoofing — otherwise anyone could pull agent-only content). A
-> missing header on such a probe says nothing about the install.
-
-### 1. The worker is live on the route
-
-Any path answers a health probe when you send your Site Key:
+### 1. An AI agent gets the NORG treatment
 
 ```bash
-curl -s -H "x-norg-edge-check: <your-site-key>" https://your-domain.com/ | head -c 200
-# {"site_id":"…","version":"0.10.0","disabled":false,"ts":…}
+curl -sI -H "User-Agent: GPTBot" https://your-domain.com/some-page/ | grep -i x-norg-edge
 ```
 
-A JSON response confirms the script is deployed, routed, and holding the
-correct key. Omit the header and the same path behaves completely normally —
-this can never shadow a real page on your site. Your own page instead of
-JSON? Jump to [Troubleshooting](#troubleshooting).
-
-Once the probe answers, genuine agents are served automatically: they see
-`X-Norg-Edge: mirror` (a NORG render was served) or `X-Norg-Edge: stripped`
-(no render yet — one was requested in the background). The worker also
-reports a heartbeat to NORG each time it serves an agent, so your NORG
-contact can confirm real agent traffic end to end.
+| Result | Meaning |
+|---|---|
+| `X-Norg-Edge: mirror` | A NORG render exists and was served. Fully working. |
+| `X-Norg-Edge: stripped` | Nothing rendered yet — your page was served stripped, and a render was requested. Re-check in a few minutes. |
+| *(no header at all)* | The worker never saw the request — jump to [Troubleshooting](#troubleshooting). |
 
 ### 2. A normal visitor is untouched
 
@@ -182,6 +165,17 @@ curl -sI -H "User-Agent: Googlebot/2.1 (+http://www.google.com/bot.html)" \
 Expect **no output**, same as a browser. Googlebot, Bingbot, Applebot,
 DuckDuckBot, Baiduspider, and YandexBot are always passed straight through.
 
+### Optional: is the worker alive at all?
+
+```bash
+curl -s -H "x-norg-edge-check: <your-site-key>" https://your-domain.com/ | head -c 200
+# {"site_id":"…","version":"0.10.0","disabled":false,"ts":…}
+```
+
+A JSON response confirms the script is deployed, routed, and holding the
+correct key. Omit the header and the same path behaves completely normally —
+this can never shadow a real page on your site.
+
 ---
 
 ## If this route doesn't work out
@@ -200,7 +194,8 @@ below, or ask your NORG contact to switch you to that route.
 
 ## Troubleshooting
 
-**The health probe returns your own page instead of JSON**
+**No `X-Norg-Edge` header for any user-agent, and the health probe returns
+your own page instead of JSON**
 The worker isn't running on that request. Check, in order of likelihood: the
 DNS record is grey-clouded (must be proxied); the route was never added, or
 was added narrower than `{your-domain}/*`; another Worker already owns

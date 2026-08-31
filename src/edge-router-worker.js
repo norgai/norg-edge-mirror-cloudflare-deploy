@@ -114,7 +114,7 @@ function withAlternateFormatHeaders(response, url, path) {
 }
 
 // infrastructure/cloudflare/workers/edge-router-worker.js
-var EDGE_SCRIPT_VERSION = "0.10.0";
+var EDGE_SCRIPT_VERSION = "0.11.1";
 var BINDING_DEFAULTS = {
   NORG_API_URL: "https://content-craft-api.norg.ai",
   NORG_CONTENT_BASE: "https://edge-content.norg.ai",
@@ -134,6 +134,8 @@ var MIRROR_FETCH_TIMEOUT_MS = 4e3;
 var PATTERN_FETCH_TIMEOUT_MS = 5e3;
 var CONTROL_CALL_TIMEOUT_MS = 3e3;
 var MCP_FORWARD_TIMEOUT_MS = 3e3;
+var RESPONSE_CACHE_KEY_PREFIX = "https://norg-edge.internal/rc/";
+var RESPONSE_CACHE_DEFAULT_TTL_SECONDS = 300;
 var PATTERN_CACHE_KEY = "https://norg-edge.internal/bot-patterns";
 var PATTERN_DEFAULT_TTL_MS = 3600 * 1e3;
 var PATTERN_CACHE_RETENTION_SECONDS = 86400;
@@ -249,11 +251,22 @@ async function readCachedFeed(cache) {
 async function readFeedBody(response) {
   try {
     const data = await response.json();
+    const rc = data.response_cache || {};
     return {
       entitled: true,
       patterns: data.patterns || [],
       cidrRanges: data.cidr_ranges || {},
       agenticPathPrefix: data.agentic_path_prefix || DEFAULT_AGENTIC_PATH_PREFIX,
+      // Per-site content version (a publish bumps it) and the disabled-by-default
+      // response-cache config both ride this feed — no extra round trip.
+      contentVersion: data.content_version || "",
+      responseCache: {
+        enabled: rc.enabled === true,
+        // Nullish (not falsy) fallback: an operator-set ttl of 0 is a valid
+        // "immediate expiry / no retention" request and must reach s-maxage=0
+        // unchanged; only a missing/null ttl falls back to the default.
+        ttl: rc.ttl ?? RESPONSE_CACHE_DEFAULT_TTL_SECONDS
+      },
       fetchedAt: Date.now(),
       ttl: (data.cache_ttl ? data.cache_ttl : 3600) * 1e3
     };
@@ -747,10 +760,63 @@ async function serveStrippedOrigin(request, env, ctx, classification) {
     headers: strippedResponse.headers
   });
 }
-async function serveAgent(request, env, ctx, url, classification) {
-  const { response, missing } = await fetchFromNorg(env, pathToKeySuffix(url.pathname));
+function responseCacheContext(env, feed, keySuffix) {
+  const rc = feed && feed.responseCache;
+  if (!rc || !rc.enabled) return null;
+  const version = feed.contentVersion;
+  if (!version || !env.SITE_ID) return null;
+  return {
+    cache: caches.default,
+    key: `${RESPONSE_CACHE_KEY_PREFIX}${env.SITE_ID}/${version}${keySuffix}`,
+    ttl: rc.ttl
+  };
+}
+async function readResponseCache(cache, key) {
+  try {
+    return await cache.match(new Request(key)) || null;
+  } catch (e) {
+    console.error("norg edge response cache read failed", e);
+    return null;
+  }
+}
+async function cacheResponseQuietly(cache, key, response) {
+  try {
+    await cache.put(new Request(key), response);
+  } catch (e) {
+    console.error("norg edge response cache write failed", e);
+  }
+}
+function cacheableMirror(norgResponse, ttlSeconds) {
+  const headers = new Headers();
+  headers.set(
+    "Content-Type",
+    norgResponse.headers.get("content-type") || "text/html; charset=utf-8"
+  );
+  headers.set("Cache-Control", `s-maxage=${ttlSeconds}`);
+  return new Response(norgResponse.body, { status: 200, headers });
+}
+async function serveAgent(request, env, ctx, url, classification, feed) {
+  const keySuffix = pathToKeySuffix(url.pathname);
+  const rc = responseCacheContext(env, feed, keySuffix);
+  if (rc) {
+    const hit = await readResponseCache(rc.cache, rc.key);
+    if (hit) {
+      ctx.waitUntil(logEdgeEvent(env, request, classification, "mirror"));
+      return withAlternateFormatHeaders(
+        mirrorResponse(hit, env),
+        url,
+        url.pathname
+      );
+    }
+  }
+  const { response, missing } = await fetchFromNorg(env, keySuffix);
   if (response) {
     ctx.waitUntil(logEdgeEvent(env, request, classification, "mirror"));
+    if (rc) {
+      ctx.waitUntil(
+        cacheResponseQuietly(rc.cache, rc.key, cacheableMirror(response.clone(), rc.ttl))
+      );
+    }
     return withAlternateFormatHeaders(
       mirrorResponse(response, env),
       url,
@@ -838,7 +904,7 @@ async function handleRequest(request, env, ctx) {
   if (!mayDivert(classification)) return fetch(request);
   if (!verifiedSource(request, feed.cidrRanges, classification)) return fetch(request);
   ctx.waitUntil(maybeHeartbeat(env, "traffic"));
-  return serveAgent(request, env, ctx, url, classification);
+  return serveAgent(request, env, ctx, url, classification, feed);
 }
 var edge_router_worker_default = {
   /**
@@ -864,6 +930,7 @@ export {
   STRIP_REMOVE_SELECTORS as __test_STRIP_REMOVE_SELECTORS,
   STRIP_UNWRAP_SELECTORS as __test_STRIP_UNWRAP_SELECTORS,
   UNENTITLED as __test_UNENTITLED,
+  cacheableMirror as __test_cacheableMirror,
   cidrVerdict as __test_cidrVerdict,
   classifyRequest as __test_classifyRequest,
   classifyScriptAutomation as __test_classifyScriptAutomation,
@@ -883,6 +950,9 @@ export {
   logEdgeEvent as __test_logEdgeEvent,
   mayDivert as __test_mayDivert,
   pathToKeySuffix as __test_pathToKeySuffix,
+  readFeedBody as __test_readFeedBody,
+  responseCacheContext as __test_responseCacheContext,
+  serveAgent as __test_serveAgent,
   serveOpenAiFeed as __test_serveOpenAiFeed,
   serveReservedNorgAsset as __test_serveReservedNorgAsset,
   shouldKeepAttribute as __test_shouldKeepAttribute,
