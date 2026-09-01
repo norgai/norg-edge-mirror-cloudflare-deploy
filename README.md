@@ -7,6 +7,11 @@ own Cloudflare zone. Click the button, answer two prompts, and the worker
 deploys straight into **your own** Cloudflare account — NORG never receives
 an API token, and never gets deploy access to anything in your account.
 
+> **Installing in front of a Shopify storefront?** Follow
+> [README.shopify.md](README.shopify.md) instead — same worker, same button,
+> but the Shopify (Cloudflare O2O) setup has extra steps and two rules you
+> must not break.
+
 If you'd rather NORG handle the deploy and keep it automatically up to date,
 ask your NORG contact about the **API-token install** instead — see
 [Trade-offs vs. the API-token install](#trade-offs-vs-the-api-token-install)

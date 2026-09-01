@@ -114,7 +114,7 @@ function withAlternateFormatHeaders(response, url, path) {
 }
 
 // infrastructure/cloudflare/workers/edge-router-worker.js
-var EDGE_SCRIPT_VERSION = "0.11.2";
+var EDGE_SCRIPT_VERSION = "0.11.3";
 var BINDING_DEFAULTS = {
   NORG_API_URL: "https://content-craft-api.norg.ai",
   NORG_CONTENT_BASE: "https://edge-content.norg.ai",
@@ -495,21 +495,37 @@ function stripHtml(response, env) {
 function isDiscoveryPath(pathname) {
   return pathname === "/llms.txt" || pathname === "/llms-full.txt" || pathname === "/tree.json" || pathname === "/graph.jsonld";
 }
-async function handleDiscoveryPath(request, env, url) {
+var SIBLING_ARTIFACT_FILENAMES = /* @__PURE__ */ new Set([
+  "index.md",
+  "index.json",
+  "index.jsonld",
+  "index.pdf",
+  "index.openai.json",
+  "webmcp.js"
+]);
+function isSiblingArtifactPath(pathname) {
+  return SIBLING_ARTIFACT_FILENAMES.has(
+    pathname.slice(pathname.lastIndexOf("/") + 1)
+  );
+}
+async function serveOriginFirstArtifact(request, env, url, { alternateFormatHeaders = false } = {}) {
   const probeHeaders = new Headers(request.headers);
   probeHeaders.set(LOOP_GUARD_HEADER, "1");
   let origin = null;
   try {
     origin = await fetch(new Request(request, { headers: probeHeaders }));
   } catch (e) {
-    console.error("norg edge discovery origin probe failed", e);
+    console.error("norg edge artifact origin probe failed", e);
   }
   if (origin && origin.status === 200) {
     const contentType = origin.headers.get("content-type") || "";
     if (!/text\/html/i.test(contentType)) return origin;
   }
   const { response } = await fetchFromNorg(env, pathToKeySuffix(url.pathname));
-  if (response) return mirrorResponse(response, env);
+  if (response) {
+    const served = mirrorResponse(response, env);
+    return alternateFormatHeaders ? withAlternateFormatHeaders(served, url, url.pathname) : served;
+  }
   return origin || fetch(request);
 }
 function isReservedNorgPath(pathname) {
@@ -600,6 +616,14 @@ function normaliseSkipPath(pathname) {
   const collapsed = pathname.replace(/\/{2,}/g, "/");
   return collapsed.replace(/\/+$/, "") || "/";
 }
+function isSkippedPath(feed, pathname) {
+  return Boolean(
+    feed.skipPaths && feed.skipPaths.includes(normaliseSkipPath(pathname))
+  );
+}
+function siblingPageOf(pathname) {
+  return pathname.slice(0, pathname.lastIndexOf("/")) || "/";
+}
 async function serveOpenAiFeed(request, env, url) {
   const { response } = await fetchFromNorg(env, pathToKeySuffix(url.pathname));
   if (!response) return fetch(request);
@@ -636,7 +660,7 @@ async function forwardMcpToNorg(request, env, url) {
     headers.set("X-Norg-Site-Id", env.SITE_ID || "");
     headers.set("X-Norg-Site-Key", env.NORG_SITE_KEY || "");
     headers.set("X-Norg-Edge-Page", url.pathname);
-    const response = await fetch(`${binding(env, "NORG_API_URL")}/public-mcp`, {
+    const response = await fetch(`${binding(env, "NORG_API_URL")}/public-mcp/`, {
       method: "POST",
       headers,
       body: request.body,
@@ -891,7 +915,7 @@ async function handleRequest(request, env, ctx) {
     return mcp || fetch(request);
   }
   if (isDiscoveryPath(url.pathname)) {
-    return handleDiscoveryPath(request, env, url);
+    return serveOriginFirstArtifact(request, env, url);
   }
   if (isReservedNorgPath(url.pathname)) {
     return serveReservedNorgAsset(request, env, url);
@@ -903,8 +927,14 @@ async function handleRequest(request, env, ctx) {
     ctx.waitUntil(maybeHeartbeat(env, "traffic"));
     return serveAgenticPath(request, env, ctx, url, feed.agenticPathPrefix);
   }
+  if (isSiblingArtifactPath(url.pathname)) {
+    if (isSkippedPath(feed, siblingPageOf(url.pathname))) return fetch(request);
+    return serveOriginFirstArtifact(request, env, url, {
+      alternateFormatHeaders: true
+    });
+  }
   if (isStaticAssetPath(url.pathname)) return fetch(request);
-  if (feed.skipPaths && feed.skipPaths.includes(normaliseSkipPath(url.pathname))) {
+  if (isSkippedPath(feed, url.pathname)) {
     return fetch(request);
   }
   if (isTraditionalSearchBot(userAgent)) return fetch(request);
@@ -950,7 +980,6 @@ export {
   contentStem as __test_contentStem,
   countVisibleWords as __test_countVisibleWords,
   getBotFeed as __test_getBotFeed,
-  handleDiscoveryPath as __test_handleDiscoveryPath,
   handleRequest as __test_handleRequest,
   hasAgentOverride as __test_hasAgentOverride,
   ipv4InCidr as __test_ipv4InCidr,
@@ -960,6 +989,7 @@ export {
   isOpenAiFeedPath as __test_isOpenAiFeedPath,
   isPassthrough as __test_isPassthrough,
   isReservedNorgPath as __test_isReservedNorgPath,
+  isSiblingArtifactPath as __test_isSiblingArtifactPath,
   logEdgeEvent as __test_logEdgeEvent,
   mayDivert as __test_mayDivert,
   pathToKeySuffix as __test_pathToKeySuffix,
@@ -967,6 +997,7 @@ export {
   responseCacheContext as __test_responseCacheContext,
   serveAgent as __test_serveAgent,
   serveOpenAiFeed as __test_serveOpenAiFeed,
+  serveOriginFirstArtifact as __test_serveOriginFirstArtifact,
   serveReservedNorgAsset as __test_serveReservedNorgAsset,
   shouldKeepAttribute as __test_shouldKeepAttribute,
   verifiedSource as __test_verifiedSource,
