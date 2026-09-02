@@ -2,6 +2,7 @@
   "name": "norg-edge-router",
   "private": true,
   "version": "1.0.0",
+  "type": "module",
   "description": "NORG edge-router Cloudflare Worker — source of truth and Deploy to Cloudflare template. Installs on your own zone to mirror NORG-rendered pages to AI agents while every other visitor gets your site unchanged.",
   "scripts": {
     "test": "node --test workers/*.test.mjs",
