@@ -2,8 +2,11 @@
   "name": "norg-edge-router",
   "private": true,
   "version": "1.0.0",
-  "description": "NORG edge-router Cloudflare Worker — Deploy to Cloudflare template. Installs on your own zone to mirror NORG-rendered pages to AI agents while every other visitor gets your site unchanged.",
+  "description": "NORG edge-router Cloudflare Worker — source of truth and Deploy to Cloudflare template. Installs on your own zone to mirror NORG-rendered pages to AI agents while every other visitor gets your site unchanged.",
   "scripts": {
+    "test": "node --test workers/*.test.mjs",
+    "build": "node build.mjs",
+    "check": "node build.mjs && git diff --exit-code -- src/",
     "deploy": "wrangler deploy",
     "dev": "wrangler dev"
   },

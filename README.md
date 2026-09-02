@@ -359,17 +359,30 @@ or any committed file — it belongs in `.dev.vars` locally, and as an
 
 ---
 
-## Keeping this repo in sync with NORG's worker source
+## Keeping this repo in sync with NORG's backend
 
-This repo is generated, not hand-authored. If you're a NORG engineer updating
-the worker: edit `infrastructure/cloudflare/workers/edge-router-worker.js` (+
-`workers/lib/`) in the `content-craft` repo, run
-`node infrastructure/cloudflare/build.mjs`, then
-`node infrastructure/cloudflare/deploy-template/extract.mjs <dir>` to produce
-a fresh checkout of this repo's contents, and push it here. Bump
-`EDGE_SCRIPT_VERSION` (in the worker source) and `EDGE_WORKER_VERSION` (NORG's
-backend setting) together first, or every already-installed site is told
-forever that an update is available.
+**This repo is the source of truth for the worker.** `workers/edge-router-worker.js`
+(+ `workers/lib/`) is the editable source; `src/edge-router-worker.js` is the
+committed single-file build that the button deploys and that NORG's backend
+pins and materialises for API-token installs.
+
+If you're a NORG engineer changing the worker:
+
+1. Edit `workers/edge-router-worker.js` (or `workers/lib/`) and bump
+   `EDGE_SCRIPT_VERSION`.
+2. `npm test` (node:test, nothing to install), then `npm run build` to
+   regenerate `src/edge-router-worker.js` — commit it; CI fails on a stale
+   bundle.
+3. In `content-craft`: bump `EDGE_WORKER_VERSION` (backend setting) and the pin
+   in `apps/api/app/services/edge_routing/edge_worker_pin.py` (this repo's
+   commit SHA, the version, and the SHA-256 of `src/edge-router-worker.js`),
+   then run `node infrastructure/cloudflare/sync-edge-router.mjs` to
+   materialise the pinned bundle into `apps/api/app/assets/`.
+
+Bump both version numbers together, or every already-installed site is told
+forever that an update is available. `workers/lib/` is a copy of the shared
+classification / R2-key modules NORG's own zone workers also use; a parity
+test in `content-craft` pins the two copies against each other.
 
 Customers on this install route do **not** receive worker updates
 automatically — see [Limitations](#limitations) above.
