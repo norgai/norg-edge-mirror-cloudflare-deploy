@@ -1,0 +1,43 @@
+# Worker tests + bundle freshness for the customer-zone edge-router worker.
+#
+# src/edge-router-worker.js is a committed build artifact: the Deploy button
+# deploys it and NORG's backend pins it by SHA-256. A source edit without a
+# rebuild would ship stale code while the repo looked correct, so this rebuilds
+# and fails on any diff. The suites import the worker source directly and use
+# only node:test / node:assert — nothing to install; esbuild is pinned via npx.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test-and-build:
+    name: Worker tests + bundle freshness
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run worker tests
+        run: node --test workers/*.test.mjs
+
+      - name: Rebuild the bundle
+        run: node build.mjs
+
+      - name: Assert src/edge-router-worker.js is up to date
+        run: |
+          # --porcelain, not `git diff --exit-code`: diff ignores UNTRACKED
+          # files, so a never-committed bundle would still pass.
+          STALE=$(git status --porcelain -- src/)
+          if [ -n "$STALE" ]; then
+            echo "Built bundle differs from the committed one:"
+            git diff -- src/
+            echo "Run: npm run build && git add src/"
+            exit 1
+          fi
