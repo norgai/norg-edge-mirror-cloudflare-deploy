@@ -103,6 +103,27 @@ is already on Cloudflare with a proxied CNAME to Shopify, skip to
    as a zone in your Cloudflare account and switch the domain's nameservers
    to the ones Cloudflare assigns. DNS records are usually imported
    automatically; verify them before switching.
+
+   The imported records commonly look like this — Shopify's own documented
+   setup for a domain connected via third-party DNS is an apex A record to
+   its shared edge IP plus a `www` CNAME to `shops.myshopify.com` (see
+   [Shopify's manual-connect guide](https://help.shopify.com/en/manual/domains/add-a-domain/connecting-domains/connect-domain-manual)),
+   DNS-only (not proxied through any zone yet):
+
+   ```
+   Type    Name   Content                Proxy status
+   A       @      23.227.38.65           DNS only
+   CNAME   www    shops.myshopify.com    DNS only
+   ```
+
+   (Some older or manually-edited zones carry `www` as a second A record to
+   the same IP instead of that CNAME — same fix below, just applied to
+   whichever record is actually there.)
+
+   Before continuing, check which host your storefront actually loads at:
+   many stores redirect the bare domain (`@`) to `www`, in which case `www`
+   is the real host and both the CNAME below and the route attach step need
+   to target it — not the apex.
 2. **Create the Shopify CNAME, proxied:**
 
    ```
@@ -376,6 +397,41 @@ outage risk, so treat the free plan as evaluation-only:
   route; it removes the cliff entirely.
 - The limit is your whole Cloudflare **account's** total Worker requests, so
   other Workers you run count against it too.
+
+Two Cloudflare route settings shrink that risk a great deal — and on a Shopify
+store the first one matters enormously, because ~93% of a storefront's
+requests are theme assets and beacons the mirror never uses. Neither changes
+the Worker; both are made in the dashboard next to the route you attached.
+
+- **Exclusion routes — keep asset traffic off the Worker.** A route can exist
+  with **no** Worker attached, and a more specific route always beats a
+  wildcard. Add one route per prefix below with the Worker set to **None**
+  (Workers Routes → Add route): the Worker is never invoked for those
+  requests, so they never count against the 100,000. Measured on a live
+  store, these ten cover ~97–98% of all requests:
+
+  ```
+  {your-shop-domain}/cdn/*                  {your-shop-domain}/web-pixels*
+  {your-shop-domain}/.well-known/shopify/*  {your-shop-domain}/api/*
+  {your-shop-domain}/recommendations/*      {your-shop-domain}/cdn-cgi/*
+  {your-shop-domain}/checkouts/*            {your-shop-domain}/cart.js
+  {your-shop-domain}/services/*             {your-shop-domain}/shopify_pay/*
+  ```
+
+  Prefixes only — Cloudflare rejects `*.js`-style patterns, which is why the
+  list is by *where* Shopify serves assets, not *what* they're called. Never
+  exclude a path NORG itself serves (`/.well-known/mcp.json`, `/llms.txt`,
+  `/mcp`, `/sse`, `/.norg/*`, your agentic prefix `/ai/*`): a no-worker route
+  there silently switches that surface off — `/.well-known/shopify/*` is
+  fine, `/.well-known/*` is not. (`/checkout` needs no route: Cloudflare
+  already disables Workers there under O2O.) NORG's API-token install creates
+  all ten for you; the button route can't, hence this manual step.
+- **Fail open — make a cap breach harmless.** Each route has a *request
+  limit* mode, defaulting to *fail closed* (the error page above). Set your
+  `{your-shop-domain}/*` route to **fail open** (Workers & Pages → the Worker
+  → Settings → Domains & Routes → the route) and exceeding the cap simply
+  bypasses the Worker for the rest of the day — agents get your plain
+  storefront, shoppers notice nothing. Do it before adding the route.
 
 If you ever need to stop the Worker in a hurry without touching the route,
 set `EDGE_DISABLED` to `true` in its variables.

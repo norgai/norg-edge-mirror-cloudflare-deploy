@@ -262,6 +262,28 @@ gets the chance to run.
 - The limit is your whole Cloudflare **account's** total Worker requests, so
   other Workers you run count against it too.
 
+Two Cloudflare route settings shrink that risk a great deal. Neither changes
+the Worker; both are made in the dashboard next to the route you attached.
+
+- **Exclusion routes — keep asset traffic off the Worker.** A route can exist
+  with **no** Worker attached, and a more specific route always beats a
+  wildcard. Add one route per asset prefix with the Worker set to **None**
+  (Workers Routes → Add route), e.g. `{your-domain}/static/*`,
+  `{your-domain}/assets/*`, `{your-domain}/wp-content/*`: the Worker is never
+  invoked for those requests, so they never count against the 100,000. On a
+  typical site that is ~90% of all requests. Prefixes only — Cloudflare
+  rejects `*.js`-style patterns — and never a path NORG itself serves
+  (`/.well-known/mcp.json`, `/llms.txt`, `/llms-full.txt`, `/tree.json`,
+  `/graph.jsonld`, `/openapi.json`, `/mcp`, `/sse`, `/.norg/*`, your agentic
+  prefix `/ai/*`): a no-worker route there silently switches that surface
+  off. The API-token install creates these for you; the button route can't.
+- **Fail open — make a cap breach harmless.** Each route has a *request
+  limit* mode, defaulting to *fail closed* (the error page above). Set your
+  `{your-domain}/*` route to **fail open** (Workers & Pages → the Worker →
+  Settings → Domains & Routes → the route) and exceeding the cap simply
+  bypasses the Worker for the rest of the day — agents get your plain origin,
+  humans notice nothing. Do it before adding the route.
+
 If you ever need to stop the Worker in a hurry without touching the route,
 set `EDGE_DISABLED` to `true` in its variables.
 
