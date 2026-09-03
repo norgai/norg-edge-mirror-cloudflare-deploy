@@ -114,7 +114,7 @@ function withAlternateFormatHeaders(response, url, path) {
 }
 
 // workers/edge-router-worker.js
-var EDGE_SCRIPT_VERSION = "0.11.5";
+var EDGE_SCRIPT_VERSION = "0.11.6";
 var BINDING_DEFAULTS = {
   NORG_API_URL: "https://content-craft-api.norg.ai",
   NORG_CONTENT_BASE: "https://edge-content.norg.ai",
@@ -644,7 +644,7 @@ function isMcpPath(pathname) {
 }
 async function handleMcp(request, env, url) {
   if (request.method === "POST") return forwardMcpToNorg(request.clone(), env, url);
-  if (request.method !== "GET") return null;
+  if (request.method !== "GET" && request.method !== "HEAD") return null;
   const suffix = url.pathname === "/.well-known/mcp.json" ? "/.well-known/mcp.json" : `${url.pathname.replace(/\/(mcp|sse)$/, "")}/mcp.json`;
   const { response } = await fetchFromNorg(env, suffix);
   if (!response) return null;
@@ -695,12 +695,17 @@ function healthResponse(env) {
     { status: 200, headers: { "Content-Type": "application/json" } }
   );
 }
+function isNorgOwnedArtifactPath(pathname) {
+  return isMcpPath(pathname) || isDiscoveryPath(pathname) || isReservedNorgPath(pathname) || isOpenAiFeedPath(pathname);
+}
 function isPassthrough(request, env) {
   if (binding(env, "EDGE_DISABLED") === "true") return true;
   if (request.headers.get(LOOP_GUARD_HEADER)) return true;
   if (request.headers.get("upgrade")) return true;
   const method = request.method;
   if (method === "GET") return false;
+  if (method === "HEAD" && isNorgOwnedArtifactPath(new URL(request.url).pathname))
+    return false;
   if (method === "POST" && isMcpPath(new URL(request.url).pathname)) return false;
   return true;
 }
@@ -953,6 +958,14 @@ async function handleRequest(request, env, ctx) {
   ctx.waitUntil(maybeHeartbeat(env, "traffic"));
   return serveAgent(request, env, ctx, url, classification, feed);
 }
+function stripBodyForHead(request, response) {
+  if (request.method !== "HEAD" || !response) return response;
+  return new Response(null, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers
+  });
+}
 var edge_router_worker_default = {
   /**
    * Entry point. The catch is the whole safety story: any bug in this worker
@@ -961,10 +974,11 @@ var edge_router_worker_default = {
    */
   async fetch(request, env, ctx) {
     try {
-      return await handleRequest(request, env, ctx);
+      const response = await handleRequest(request, env, ctx);
+      return stripBodyForHead(request, response);
     } catch (e) {
       console.error("norg edge worker error", e);
-      return fetch(request);
+      return stripBodyForHead(request, await fetch(request));
     }
   },
   /** Scheduled heartbeat, so a zero-traffic install still reports liveness. */
