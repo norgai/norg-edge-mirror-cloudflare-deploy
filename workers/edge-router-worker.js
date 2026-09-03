@@ -68,7 +68,7 @@ import {
 import { pathToKeySuffix } from "./lib/r2-content.mjs";
 import { withAlternateFormatHeaders } from "./lib/alternate-format.mjs";
 
-export const EDGE_SCRIPT_VERSION = "0.11.5";
+export const EDGE_SCRIPT_VERSION = "0.11.6";
 
 // Baked binding defaults (EDGEPAR 04). Five bindings never vary across manual
 // and deploy-button installs, so they default here and a hand install only
@@ -1154,7 +1154,9 @@ function isMcpPath(pathname) {
  */
 async function handleMcp(request, env, url) {
   if (request.method === "POST") return forwardMcpToNorg(request.clone(), env, url);
-  if (request.method !== "GET") return null;
+  // GET and HEAD share the descriptor lookup; the entry point drops the body
+  // for HEAD, so both report the same status and headers.
+  if (request.method !== "GET" && request.method !== "HEAD") return null;
 
   // "/products/x/mcp" -> "/products/x/mcp.json"; "/mcp" -> "/mcp.json".
   const suffix =
@@ -1264,6 +1266,28 @@ function healthResponse(env) {
  * @param {Object} env Worker bindings.
  * @returns {boolean} True to pass straight to origin.
  */
+/**
+ * Is this a path NORG owns and serves itself, before any classification?
+ *
+ * The four pure read-and-serve surfaces: MCP descriptors, the discovery
+ * artifacts, the reserved /.norg/ assets and the site-level OpenAI feed. Each
+ * is served to EVERY caller from identical bytes, emits no crawler-visit event
+ * and triggers no render — which is exactly why a HEAD may be answered from
+ * them (see isPassthrough). The agentic subtree is deliberately NOT here: it
+ * heartbeats and can drive a render, so it keeps GET-only semantics.
+ *
+ * @param {string} pathname Request pathname.
+ * @returns {boolean} True when this worker, not the origin, owns the path.
+ */
+function isNorgOwnedArtifactPath(pathname) {
+  return (
+    isMcpPath(pathname) ||
+    isDiscoveryPath(pathname) ||
+    isReservedNorgPath(pathname) ||
+    isOpenAiFeedPath(pathname)
+  );
+}
+
 function isPassthrough(request, env) {
   if (binding(env, "EDGE_DISABLED") === "true") return true;
   if (request.headers.get(LOOP_GUARD_HEADER)) return true;
@@ -1272,6 +1296,13 @@ function isPassthrough(request, env) {
   // other non-GET method belongs to the customer's application.
   const method = request.method;
   if (method === "GET") return false;
+  // HEAD must answer with the SAME status and headers as GET (RFC 9110), and
+  // these paths exist only in NORG's R2 — passing HEAD to the origin made every
+  // one of them 404 while GET returned 200, so any client that probes with HEAD
+  // concluded the artifacts were missing. Scoped to the paths this worker owns:
+  // a HEAD to a customer page still belongs to their application.
+  if (method === "HEAD" && isNorgOwnedArtifactPath(new URL(request.url).pathname))
+    return false;
   if (method === "POST" && isMcpPath(new URL(request.url).pathname)) return false;
   return true;
 }
@@ -1896,6 +1927,27 @@ async function handleRequest(request, env, ctx) {
   return serveAgent(request, env, ctx, url, classification, feed);
 }
 
+/**
+ * Drop the body from a HEAD response, keeping status and headers.
+ *
+ * RFC 9110: HEAD is GET without the body, and the headers must match what GET
+ * would send. Applied at the single entry point so every branch — the artifact
+ * servers this worker answers and the origin passthrough alike — is covered by
+ * one rule rather than each remembering.
+ *
+ * @param {Request} request Incoming request.
+ * @param {Response} response Response the pipeline produced.
+ * @returns {Response} Bodyless response for HEAD; the original otherwise.
+ */
+function stripBodyForHead(request, response) {
+  if (request.method !== "HEAD" || !response) return response;
+  return new Response(null, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
+
 export default {
   /**
    * Entry point. The catch is the whole safety story: any bug in this worker
@@ -1904,10 +1956,11 @@ export default {
    */
   async fetch(request, env, ctx) {
     try {
-      return await handleRequest(request, env, ctx);
+      const response = await handleRequest(request, env, ctx);
+      return stripBodyForHead(request, response);
     } catch (e) {
       console.error("norg edge worker error", e);
-      return fetch(request);
+      return stripBodyForHead(request, await fetch(request));
     }
   },
 
