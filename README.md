@@ -274,6 +274,7 @@ the Worker; both are made in the dashboard next to the route you attached.
   typical site that is ~90% of all requests. Prefixes only — Cloudflare
   rejects `*.js`-style patterns — and never a path NORG itself serves
   (`/.well-known/mcp.json`, `/llms.txt`, `/llms-full.txt`, `/tree.json`,
+  `/agents.md`,
   `/graph.jsonld`, `/openapi.json`, `/mcp`, `/sse`, `/.norg/*`, your agentic
   prefix `/ai/*`): a no-worker route there silently switches that surface
   off. The API-token install creates these for you; the button route can't.

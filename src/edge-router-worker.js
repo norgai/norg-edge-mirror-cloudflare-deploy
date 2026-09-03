@@ -114,7 +114,7 @@ function withAlternateFormatHeaders(response, url, path) {
 }
 
 // workers/edge-router-worker.js
-var EDGE_SCRIPT_VERSION = "0.11.4";
+var EDGE_SCRIPT_VERSION = "0.11.5";
 var BINDING_DEFAULTS = {
   NORG_API_URL: "https://content-craft-api.norg.ai",
   NORG_CONTENT_BASE: "https://edge-content.norg.ai",
@@ -494,7 +494,7 @@ function stripHtml(response, env) {
   return new Response(stripped.body, { status: response.status, headers });
 }
 function isDiscoveryPath(pathname) {
-  return pathname === "/llms.txt" || pathname === "/llms-full.txt" || pathname === "/tree.json" || pathname === "/graph.jsonld";
+  return pathname === "/llms.txt" || pathname === "/llms-full.txt" || pathname === "/tree.json" || pathname === "/graph.jsonld" || pathname === "/agents.md";
 }
 var SIBLING_ARTIFACT_FILENAMES = /* @__PURE__ */ new Set([
   "index.md",
