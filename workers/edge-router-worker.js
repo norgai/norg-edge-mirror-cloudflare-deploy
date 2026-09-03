@@ -68,7 +68,7 @@ import {
 import { pathToKeySuffix } from "./lib/r2-content.mjs";
 import { withAlternateFormatHeaders } from "./lib/alternate-format.mjs";
 
-export const EDGE_SCRIPT_VERSION = "0.11.3";
+export const EDGE_SCRIPT_VERSION = "0.11.4";
 
 // Baked binding defaults (EDGEPAR 04). Five bindings never vary across manual
 // and deploy-button installs, so they default here and a hand install only
@@ -576,9 +576,13 @@ async function getBotFeed(env, ctx) {
  * @param {string} served How the request was answered.
  * @param {number|null} rawWordCount Visible words in the raw (non-JS) origin,
  *   reused from the strip-floor check; null when no count was computed.
+ * @param {number|null} responseStatus HTTP status of the response actually
+ *   returned to the agent, so analytics can tell a served page from a 404 or
+ *   error by status rather than by path (NOR-2849342414). null only where no
+ *   response was resolved before logging.
  * @returns {Promise<void>}
  */
-async function logEdgeEvent(env, request, classification, served, rawWordCount = null) {
+async function logEdgeEvent(env, request, classification, served, rawWordCount = null, responseStatus = null) {
   const url = new URL(request.url);
   const cf = request.cf || {};
   await postControl(env, "/api/v1/edge/events", {
@@ -591,6 +595,7 @@ async function logEdgeEvent(env, request, classification, served, rawWordCount =
     purpose: classification.purpose,
     served,
     raw_word_count: rawWordCount,
+    response_status: responseStatus,
     ip_country: cf.country || null,
     ip_city: cf.city || null,
     asn: cf.asn || null,
@@ -1462,7 +1467,7 @@ function countVisibleWords(html) {
 async function serveStrippedOrigin(request, env, ctx, classification) {
   const originResponse = await fetch(request);
   if (!canStrip(env, originResponse)) {
-    ctx.waitUntil(logEdgeEvent(env, request, classification, "origin"));
+    ctx.waitUntil(logEdgeEvent(env, request, classification, "origin", null, originResponse.status));
     return originResponse;
   }
   const originClone = originResponse.clone();
@@ -1473,12 +1478,12 @@ async function serveStrippedOrigin(request, env, ctx, classification) {
   const rawWordCount = countVisibleWords(strippedHtml);
   if (rawWordCount < STRIP_WORD_FLOOR) {
     ctx.waitUntil(
-      logEdgeEvent(env, request, classification, "origin_thin", rawWordCount),
+      logEdgeEvent(env, request, classification, "origin_thin", rawWordCount, originClone.status),
     );
     return originClone;
   }
   ctx.waitUntil(
-    logEdgeEvent(env, request, classification, "stripped", rawWordCount),
+    logEdgeEvent(env, request, classification, "stripped", rawWordCount, strippedResponse.status),
   );
   return new Response(strippedHtml, {
     status: strippedResponse.status,
@@ -1591,18 +1596,19 @@ async function serveAgent(request, env, ctx, url, classification, feed) {
   if (rc) {
     const hit = await readResponseCache(rc.cache, rc.key);
     if (hit) {
-      ctx.waitUntil(logEdgeEvent(env, request, classification, "mirror"));
-      return withAlternateFormatHeaders(
+      const cached = withAlternateFormatHeaders(
         mirrorResponse(hit, env),
         url,
         url.pathname,
       );
+      ctx.waitUntil(logEdgeEvent(env, request, classification, "mirror", null, cached.status));
+      return cached;
     }
   }
 
   const { response, missing } = await fetchFromNorg(env, keySuffix);
   if (response) {
-    ctx.waitUntil(logEdgeEvent(env, request, classification, "mirror"));
+    ctx.waitUntil(logEdgeEvent(env, request, classification, "mirror", null, response.status));
     // A cache miss stores a separate cacheable copy (clone first — the visitor
     // copy consumes the body). Sibling formats (.md/.json/.jsonld/.pdf) carry a
     // canonical Link + noindex (MIRROR 03 AC3); HTML and the exempt mcp surfaces
@@ -1675,10 +1681,11 @@ async function serveAgenticPath(request, env, ctx, url, prefix) {
   };
 
   if (!response) {
-    ctx.waitUntil(logEdgeEvent(env, request, classification, "agentic_path_miss"));
-    return fetch(request);
+    const passthrough = await fetch(request);
+    ctx.waitUntil(logEdgeEvent(env, request, classification, "agentic_path_miss", null, passthrough.status));
+    return passthrough;
   }
-  ctx.waitUntil(logEdgeEvent(env, request, classification, "agentic_path"));
+  ctx.waitUntil(logEdgeEvent(env, request, classification, "agentic_path", null, response.status));
   return withAlternateFormatHeaders(mirrorResponse(response, env), url, url.pathname);
 }
 
@@ -1744,11 +1751,12 @@ async function serveAgentOverride(request, env, ctx, url) {
   const classification = agentOverrideClassification();
   const { response } = await fetchFromNorg(env, pathToKeySuffix(url.pathname));
   if (response) {
-    ctx.waitUntil(logEdgeEvent(env, request, classification, "agent_param_override"));
+    ctx.waitUntil(logEdgeEvent(env, request, classification, "agent_param_override", null, response.status));
     return withAlternateFormatHeaders(mirrorResponse(response, env), url, url.pathname);
   }
-  ctx.waitUntil(logEdgeEvent(env, request, classification, "agent_param_override_miss"));
-  return fetch(request);
+  const passthrough = await fetch(request);
+  ctx.waitUntil(logEdgeEvent(env, request, classification, "agent_param_override_miss", null, passthrough.status));
+  return passthrough;
 }
 
 /**
