@@ -154,10 +154,16 @@ beforeEach(async () => {
   handleRequest = await loadColdIsolate();
 });
 
-test("isDiscoveryPath matches only the three exact artifact paths", () => {
+test("isDiscoveryPath matches only the exact artifact paths", () => {
   assert.equal(isDiscoveryPath("/llms.txt"), true);
   assert.equal(isDiscoveryPath("/llms-full.txt"), true);
   assert.equal(isDiscoveryPath("/tree.json"), true);
+  // agents.md is the capability contract NORG publishes beside the others;
+  // before 0.11.5 it fell through to the origin and 404'd on most sites.
+  assert.equal(isDiscoveryPath("/agents.md"), true);
+  // Exact-match only: a customer page merely ending in the name is NOT ours.
+  assert.equal(isDiscoveryPath("/blog/agents.md"), false);
+  assert.equal(isDiscoveryPath("/agents.md/"), false);
   assert.equal(isDiscoveryPath("/llms.txt/"), false);
   assert.equal(isDiscoveryPath("/products/llms.txt"), false);
   assert.equal(isDiscoveryPath("/about/"), false);

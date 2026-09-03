@@ -68,7 +68,7 @@ import {
 import { pathToKeySuffix } from "./lib/r2-content.mjs";
 import { withAlternateFormatHeaders } from "./lib/alternate-format.mjs";
 
-export const EDGE_SCRIPT_VERSION = "0.11.4";
+export const EDGE_SCRIPT_VERSION = "0.11.5";
 
 // Baked binding defaults (EDGEPAR 04). Five bindings never vary across manual
 // and deploy-button installs, so they default here and a hand install only
@@ -820,19 +820,26 @@ function stripHtml(response, env) {
 /**
  * Is this an exact discovery-artifact path?
  *
- * llms.txt / llms-full.txt / tree.json / graph.jsonld are discovery
+ * llms.txt / llms-full.txt / tree.json / graph.jsonld / agents.md are discovery
  * infrastructure, served to EVERY caller at a fixed URL — so only these exact
  * paths match, never a customer page that merely ends in the same name.
  *
+ * agents.md is the capability contract (what this site is, which protocols it
+ * speaks, which endpoints an agent may call). NORG publishes it beside the
+ * other five artifacts under edge/{workspace}/, but until 0.11.5 this worker
+ * did not route it, so a customer-zone mirror answered /agents.md from the
+ * origin — a 404 on every site that does not author one itself.
+ *
  * @param {string} pathname Request pathname.
- * @returns {boolean} True for /llms.txt, /llms-full.txt, /tree.json, /graph.jsonld.
+ * @returns {boolean} True for the five exact discovery-artifact paths.
  */
 function isDiscoveryPath(pathname) {
   return (
     pathname === "/llms.txt" ||
     pathname === "/llms-full.txt" ||
     pathname === "/tree.json" ||
-    pathname === "/graph.jsonld"
+    pathname === "/graph.jsonld" ||
+    pathname === "/agents.md"
   );
 }
 
@@ -1789,9 +1796,10 @@ async function handleRequest(request, env, ctx) {
     return mcp || fetch(request);
   }
 
-  // Discovery artifacts (llms.txt, llms-full.txt, tree.json) are served to
-  // every caller before classification and the search-bot floor — identical
-  // bytes for all, origin-first so the customer's own file always wins.
+  // Discovery artifacts (llms.txt, llms-full.txt, tree.json, graph.jsonld,
+  // agents.md) are served to every caller before classification and the
+  // search-bot floor — identical bytes for all, origin-first so the customer's
+  // own file always wins.
   if (isDiscoveryPath(url.pathname)) {
     return serveOriginFirstArtifact(request, env, url);
   }
