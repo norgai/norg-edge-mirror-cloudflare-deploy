@@ -114,7 +114,7 @@ function withAlternateFormatHeaders(response, url, path) {
 }
 
 // workers/edge-router-worker.js
-var EDGE_SCRIPT_VERSION = "0.11.3";
+var EDGE_SCRIPT_VERSION = "0.11.4";
 var BINDING_DEFAULTS = {
   NORG_API_URL: "https://content-craft-api.norg.ai",
   NORG_CONTENT_BASE: "https://edge-content.norg.ai",
@@ -369,7 +369,7 @@ async function getBotFeed(env, ctx) {
   if (outcome === "unreachable") await stampNegativeFeed(cache);
   return feedCache;
 }
-async function logEdgeEvent(env, request, classification, served, rawWordCount = null) {
+async function logEdgeEvent(env, request, classification, served, rawWordCount = null, responseStatus = null) {
   const url = new URL(request.url);
   const cf = request.cf || {};
   await postControl(env, "/api/v1/edge/events", {
@@ -382,6 +382,7 @@ async function logEdgeEvent(env, request, classification, served, rawWordCount =
     purpose: classification.purpose,
     served,
     raw_word_count: rawWordCount,
+    response_status: responseStatus,
     ip_country: cf.country || null,
     ip_city: cf.city || null,
     asn: cf.asn || null,
@@ -773,7 +774,7 @@ function countVisibleWords(html) {
 async function serveStrippedOrigin(request, env, ctx, classification) {
   const originResponse = await fetch(request);
   if (!canStrip(env, originResponse)) {
-    ctx.waitUntil(logEdgeEvent(env, request, classification, "origin"));
+    ctx.waitUntil(logEdgeEvent(env, request, classification, "origin", null, originResponse.status));
     return originResponse;
   }
   const originClone = originResponse.clone();
@@ -782,12 +783,12 @@ async function serveStrippedOrigin(request, env, ctx, classification) {
   const rawWordCount = countVisibleWords(strippedHtml);
   if (rawWordCount < STRIP_WORD_FLOOR) {
     ctx.waitUntil(
-      logEdgeEvent(env, request, classification, "origin_thin", rawWordCount)
+      logEdgeEvent(env, request, classification, "origin_thin", rawWordCount, originClone.status)
     );
     return originClone;
   }
   ctx.waitUntil(
-    logEdgeEvent(env, request, classification, "stripped", rawWordCount)
+    logEdgeEvent(env, request, classification, "stripped", rawWordCount, strippedResponse.status)
   );
   return new Response(strippedHtml, {
     status: strippedResponse.status,
@@ -835,17 +836,18 @@ async function serveAgent(request, env, ctx, url, classification, feed) {
   if (rc) {
     const hit = await readResponseCache(rc.cache, rc.key);
     if (hit) {
-      ctx.waitUntil(logEdgeEvent(env, request, classification, "mirror"));
-      return withAlternateFormatHeaders(
+      const cached = withAlternateFormatHeaders(
         mirrorResponse(hit, env),
         url,
         url.pathname
       );
+      ctx.waitUntil(logEdgeEvent(env, request, classification, "mirror", null, cached.status));
+      return cached;
     }
   }
   const { response, missing } = await fetchFromNorg(env, keySuffix);
   if (response) {
-    ctx.waitUntil(logEdgeEvent(env, request, classification, "mirror"));
+    ctx.waitUntil(logEdgeEvent(env, request, classification, "mirror", null, response.status));
     if (rc) {
       ctx.waitUntil(
         cacheResponseQuietly(rc.cache, rc.key, cacheableMirror(response.clone(), rc.ttl))
@@ -876,10 +878,11 @@ async function serveAgenticPath(request, env, ctx, url, prefix) {
     purpose: null
   };
   if (!response) {
-    ctx.waitUntil(logEdgeEvent(env, request, classification, "agentic_path_miss"));
-    return fetch(request);
+    const passthrough = await fetch(request);
+    ctx.waitUntil(logEdgeEvent(env, request, classification, "agentic_path_miss", null, passthrough.status));
+    return passthrough;
   }
-  ctx.waitUntil(logEdgeEvent(env, request, classification, "agentic_path"));
+  ctx.waitUntil(logEdgeEvent(env, request, classification, "agentic_path", null, response.status));
   return withAlternateFormatHeaders(mirrorResponse(response, env), url, url.pathname);
 }
 function hasAgentOverride(url) {
@@ -897,11 +900,12 @@ async function serveAgentOverride(request, env, ctx, url) {
   const classification = agentOverrideClassification();
   const { response } = await fetchFromNorg(env, pathToKeySuffix(url.pathname));
   if (response) {
-    ctx.waitUntil(logEdgeEvent(env, request, classification, "agent_param_override"));
+    ctx.waitUntil(logEdgeEvent(env, request, classification, "agent_param_override", null, response.status));
     return withAlternateFormatHeaders(mirrorResponse(response, env), url, url.pathname);
   }
-  ctx.waitUntil(logEdgeEvent(env, request, classification, "agent_param_override_miss"));
-  return fetch(request);
+  const passthrough = await fetch(request);
+  ctx.waitUntil(logEdgeEvent(env, request, classification, "agent_param_override_miss", null, passthrough.status));
+  return passthrough;
 }
 async function handleRequest(request, env, ctx) {
   if (isHealthProbe(request, env)) return healthResponse(env);

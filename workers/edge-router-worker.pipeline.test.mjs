@@ -1051,6 +1051,8 @@ test("a strip below the word floor serves the untouched origin as origin_thin", 
   assert.notEqual(response.headers.get("X-Norg-Edge"), "stripped");
   const event = calls.find((c) => c.url.includes("/edge/events"));
   assert.equal(JSON.parse(event.init.body).served, "origin_thin");
+  // NOR-2849342414: the real origin status travels with the event.
+  assert.equal(JSON.parse(event.init.body).response_status, response.status);
 });
 
 test("a strip above the word floor is still served as stripped", async () => {
@@ -1070,6 +1072,7 @@ test("a strip above the word floor is still served as stripped", async () => {
   assert.equal(response.headers.get("X-Norg-Edge"), "stripped");
   const event = calls.find((c) => c.url.includes("/edge/events"));
   assert.equal(JSON.parse(event.init.body).served, "stripped");
+  assert.equal(JSON.parse(event.init.body).response_status, response.status);
 });
 
 // AC4 boundary: spec threshold is 120 words; the guard is strictly `< 120`, so
@@ -1230,6 +1233,25 @@ test("AC8: the R2 key is derived from the path only — the query string is igno
   assert.equal(mirror.url, "https://r2.norg.test/site-123/products/widget/index.html");
 });
 
+test("NOR-2849342414: a pass-through miss records the origin's REAL status (404), not a path-derived guess", async () => {
+  // Before this, the edge worker never sent response_status, so analytics could
+  // not tell a served page from a 404 except by looking at the path.
+  installFetch([
+    patternsRoute(),
+    ["r2.norg.test", async () => new Response("nope", { status: 404 })],
+    ["customer.com", async () => new Response("missing", { status: 404 })],
+  ]);
+
+  const response = await handleRequest(req("/does-not-exist/?agent=true", BROWSER, { cf: {} }), env, ctx);
+  await drain();
+
+  assert.equal(response.status, 404);
+  const event = calls.find((c) => c.url.includes("/edge/events"));
+  const body = JSON.parse(event.init.body);
+  assert.equal(body.served, "agent_param_override_miss");
+  assert.equal(body.response_status, 404);
+});
+
 test("a ?agent=true miss serves the untouched origin, tags it, and enqueues NO render", async () => {
   // No R2 render exists: there is nothing Agentic to show, so the origin is
   // served (tagged distinctly), and param-driven traffic must not trigger a render.
@@ -1245,6 +1267,7 @@ test("a ?agent=true miss serves the untouched origin, tags it, and enqueues NO r
   assert.equal(response.headers.get("X-Norg-Edge"), null);
   const event = calls.find((c) => c.url.includes("/edge/events"));
   assert.equal(JSON.parse(event.init.body).served, "agent_param_override_miss");
+  assert.equal(typeof JSON.parse(event.init.body).response_status, "number"); // NOR-2849342414
   assert.equal(
     calls.filter((c) => c.url.includes("/edge/render-requests")).length,
     0,
@@ -1289,6 +1312,7 @@ test("AC7: a ?agent=true R2 error (503) fails open to the untouched origin", asy
   assert.equal(response.headers.get("X-Norg-Edge"), null);
   const event = calls.find((c) => c.url.includes("/edge/events"));
   assert.equal(JSON.parse(event.init.body).served, "agent_param_override_miss");
+  assert.equal(typeof JSON.parse(event.init.body).response_status, "number"); // NOR-2849342414
   // An R2 outage under the override must NOT enqueue a render (same rule as the
   // 404 miss: param-driven traffic never triggers renders).
   assert.equal(
@@ -1908,6 +1932,7 @@ test("agentic hits are tagged distinctly from user-agent diverts", async () => {
   const event = calls.find((c) => c.url.includes("/edge/events"));
   const body = JSON.parse(event.init.body);
   assert.equal(body.served, "agentic_path");
+  assert.equal(body.response_status, 200); // NOR-2849342414
   assert.equal(body.is_ai_bot, false, "a URL hit is not evidence of a bot");
 });
 
