@@ -32,7 +32,14 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -134,6 +141,45 @@ if (functionBytes > CLOUDFRONT_FUNCTION_MAX_BYTES) {
     `refusing to publish: viewer-classifier.js is ${functionBytes} bytes, ` +
       `over CloudFront's ${CLOUDFRONT_FUNCTION_MAX_BYTES}-byte function limit`,
   );
+}
+
+/**
+ * Re-embed the CloudFront Function source into a CloudFormation template.
+ *
+ * The function is small enough to inline in a template (unlike the router,
+ * which exceeds CloudFormation's 4 KB code limit and has to come from S3), and
+ * inlining is what makes the stack self-contained. But an embedded copy drifts,
+ * so it is GENERATED here rather than hand-maintained: CI rebuilds and fails on
+ * any diff, exactly as it does for the bundles.
+ *
+ * @param {string} templatePath Absolute path to the template.
+ * @param {string} functionCode CloudFront Function source.
+ * @returns {void}
+ */
+function embedViewerClassifier(templatePath, functionCode) {
+  const template = readFileSync(templatePath, "utf8");
+  const indented = functionCode
+    .split("\n")
+    .map((line) => (line ? `        ${line}` : ""))
+    .join("\n")
+    .replace(/\s+$/, "");
+
+  // Replace everything indented under `FunctionCode: |` up to the next key.
+  const updated = template.replace(
+    /( {6}FunctionCode: \|\n)(?: {8}.*\n| *\n)*/,
+    `$1${indented}\n`,
+  );
+  if (updated === template && !template.includes(indented)) {
+    throw new Error(`failed to embed viewer-classifier into ${templatePath}`);
+  }
+  writeFileSync(templatePath, updated);
+}
+
+for (const template of ["new-distribution.yaml", "attach-existing.yaml"]) {
+  const templatePath = join(here, "cloudformation", template);
+  if (existsSync(templatePath)) {
+    embedViewerClassifier(templatePath, readFileSync(functionOut, "utf8"));
+  }
 }
 
 const version = /EDGE_SCRIPT_VERSION\s*=\s*"([^"]+)"/.exec(router)?.[1];

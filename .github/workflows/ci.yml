@@ -39,10 +39,10 @@ jobs:
         run: |
           # --porcelain, not `git diff --exit-code`: diff ignores UNTRACKED
           # files, so a never-committed bundle would still pass.
-          STALE=$(git status --porcelain -- src/ aws/src/)
+          STALE=$(git status --porcelain -- src/ aws/src/ aws/cloudformation/)
           if [ -n "$STALE" ]; then
             echo "Built bundles differ from the committed ones:"
-            git diff -- src/ aws/src/
-            echo "Run: npm run build && git add src/ aws/src/"
+            git diff -- src/ aws/src/ aws/cloudformation/
+            echo "Run: npm run build && git add src/ aws/src/ aws/cloudformation/"
             exit 1
           fi

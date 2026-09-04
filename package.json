@@ -11,7 +11,7 @@
     "build": "node build.mjs && node aws/build.mjs",
     "build:cloudflare": "node build.mjs",
     "build:aws": "node aws/build.mjs",
-    "check": "npm run build && git diff --exit-code -- src/ aws/src/",
+    "check": "npm run build && git diff --exit-code -- src/ aws/src/ aws/cloudformation/",
     "deploy": "wrangler deploy",
     "dev": "wrangler dev"
   },
