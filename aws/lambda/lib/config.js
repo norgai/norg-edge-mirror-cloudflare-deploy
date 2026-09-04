@@ -45,6 +45,10 @@ const CONFIG_HEADERS = {
   "x-norg-disabled": "EDGE_DISABLED",
   "x-norg-lazy-render": "LAZY_RENDER_ENABLED",
   "x-norg-env": "EDGE_ENV",
+  // CloudFront-only. Origin-request fires on a cache miss, so the passthrough
+  // event stream is incomplete here and rides the customer's human traffic;
+  // it is off unless an install explicitly asks for it. See telemetry.js.
+  "x-norg-events-verbose": "EDGE_EVENTS_VERBOSE",
 };
 
 /**

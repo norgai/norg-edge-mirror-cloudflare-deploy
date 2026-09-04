@@ -40,6 +40,7 @@ test("reads every binding from custom origin headers", () => {
     "x-norg-disabled": "true",
     "x-norg-lazy-render": "false",
     "x-norg-env": "test",
+    "x-norg-events-verbose": "true",
   });
 
   assert.deepEqual(readConfig(request), {
@@ -51,6 +52,7 @@ test("reads every binding from custom origin headers", () => {
     EDGE_DISABLED: "true",
     LAZY_RENDER_ENABLED: "false",
     EDGE_ENV: "test",
+    EDGE_EVENTS_VERBOSE: "true",
   });
 });
 
