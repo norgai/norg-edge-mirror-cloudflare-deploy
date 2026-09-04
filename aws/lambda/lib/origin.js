@@ -93,22 +93,48 @@ export async function fetchOrigin(cfRequest, request, timeoutMs) {
 }
 
 /**
- * Point the Host header at whatever origin this request is now bound for.
+ * Decide what Host the origin should be asked for.
  *
- * CloudFront sends the origin's own domain name as Host UNLESS the origin
- * request policy forwards the viewer's Host header — and the policy this
- * install uses does forward it, because that is the only header behaviour that
- * also adds the CloudFront-Viewer-* geo headers the visit events report.
+ * CloudFront sends the origin's own domain name as Host unless the origin
+ * request policy forwards the viewer's — and this install's policy does forward
+ * it, because that is the only header behaviour that also supplies the
+ * CloudFront-Viewer-* geo headers the visit events report.
  *
- * Left alone, the customer's origin would therefore be asked for
- * `cloudfront.example.com` rather than the hostname it actually serves, and
- * every passthrough — which is to say every human visitor — would fail. That is
- * a far worse outcome than losing geo fields, so the Host is corrected here
- * instead of dropping the policy.
+ * PRESERVING the viewer's Host is the default because it is what a real install
+ * needs. The distribution fronts the customer's own domain, so the viewer's
+ * Host IS the hostname their origin serves, and rewriting it actively breaks
+ * any host-aware origin: absolute URLs, canonical tags, cookie domains and
+ * auth middleware all key off it. Observed for real — an auth layer on the
+ * origin read the rewritten Host and 307'd every visitor to the origin's own
+ * hostname, so the CloudFront domain could never hold a session.
  *
- * Reading the domain from `origin.custom` rather than from config is what makes
- * this correct after an origin switch too: switchOriginToNorg has already
- * repointed that field at the receptionist by the time this runs.
+ * ALIGNING is the opt-in (`x-norg-align-host: true`), for the case where the
+ * origin does not recognise the CloudFront-facing hostname at all: testing on
+ * the *.cloudfront.net name before a DNS cutover, or an origin whose virtual
+ * host list cannot be changed. Without it such an origin answers 404 for every
+ * request, so the escape hatch has to exist — it just must not be the default.
+ *
+ * Either way the value is read from origin.custom.domainName, which keeps it
+ * correct after an origin switch: switchOriginToNorg has already repointed that
+ * field at the receptionist by the time this runs, and the receptionist must
+ * always be addressed by its own name.
+ *
+ * @param {Object} cfRequest CloudFront request object, mutated in place.
+ * @param {Object} env Install config.
+ * @returns {Object} The same request object.
+ */
+export function resolveOriginHost(cfRequest, env) {
+  // No marker is needed for the origin-switch case: switchOriginToNorg has
+  // already set the Host to the receptionist, and preserving means leaving the
+  // header alone — so the switched request keeps the right value either way.
+  // Adding a field to the request object to track it would risk CloudFront
+  // rejecting the whole response as a malformed request.
+  if (env.EDGE_ALIGN_HOST !== "true") return cfRequest;
+  return alignHostToOrigin(cfRequest);
+}
+
+/**
+ * Force the Host header to the origin's own domain name.
  *
  * @param {Object} cfRequest CloudFront request object, mutated in place.
  * @returns {Object} The same request object.
