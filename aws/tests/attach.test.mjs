@@ -70,6 +70,16 @@ test("attaching associates both functions and the origin request policy", () => 
   assert.equal(behaviour.OriginRequestPolicyId, OUTPUTS.OriginRequestPolicyId);
 });
 
+test("the origin-request association includes the body, or MCP POST is dead", () => {
+  // The MCP JSON-RPC transport is a POST whose body the router forwards to
+  // NORG. Without IncludeBody, CloudFront hands the function an empty body and
+  // every MCP client silently falls through to the customer's own 404.
+  const config = distributionConfig();
+  attach(config, OUTPUTS, OPTIONS);
+
+  assert.equal(config.DefaultCacheBehavior.LambdaFunctionAssociations.Items[0].IncludeBody, true);
+});
+
 test("attaching REFUSES a distribution that already has an origin-request function", () => {
   const config = distributionConfig({
     LambdaFunctionAssociations: {

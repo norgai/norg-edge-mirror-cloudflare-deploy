@@ -95,3 +95,33 @@ test("the bundle reports the same version as the source", async () => {
     "a stale bundle would report the wrong version on every heartbeat",
   );
 });
+
+test("the built router forwards an MCP POST body to NORG", async () => {
+  // Guards the other half of the IncludeBody contract: given a body, the router
+  // must actually send it on. An empty forward looks like a NORG outage and
+  // falls through to the customer's own 404.
+  const { handler } = require(routerPath);
+  const forwarded = [];
+  globalThis.fetch = async (url, init = {}) => {
+    if (String(url).includes("bot-patterns")) {
+      return new Response(JSON.stringify({ patterns: [], cidr_ranges: {}, cache_ttl: 3600 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (String(url).includes("/public-mcp/")) {
+      forwarded.push(Buffer.from(await new Response(init.body).arrayBuffer()).toString("utf8"));
+      return new Response('{"jsonrpc":"2.0","result":{}}', { status: 200 });
+    }
+    return new Response("{}", { status: 200 });
+  };
+
+  const rpc = '{"jsonrpc":"2.0","method":"tools/list","id":1}';
+  const event = cloudFrontEvent({ uri: "/mcp", method: "POST" });
+  event.Records[0].cf.request.body = { encoding: "text", data: rpc, inputTruncated: false };
+
+  const result = await handler(event);
+
+  assert.equal(result.status, "200");
+  assert.deepEqual(forwarded, [rpc], "the JSON-RPC body must reach NORG intact");
+});

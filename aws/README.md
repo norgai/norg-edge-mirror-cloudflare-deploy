@@ -251,6 +251,12 @@ behind its auth check, so what is lost is a hop, not correctness.
 - **Cost.** Every cache miss invokes Lambda@Edge. There is no free-tier cliff to
   fall off, but there is a per-request bill — model it against your miss rate
   before pointing it at high-traffic pages.
+- **`IncludeBody` is on** for the origin-request association, because the MCP
+  JSON-RPC transport is a POST whose body the router forwards to NORG. Access is
+  read-only, so your origin still receives the full original body; the cost is
+  that POST bodies on cache-miss requests are base64-encoded into the function
+  event (truncated at 1 MB). If you do not use the MCP surface and your site is
+  POST-heavy, turning it off is a reasonable trade.
 - **The fastest off switch** is setting the `x-norg-disabled` origin header to
   `true`: the router passes everything through on its very first check, before
   it fetches anything. It still takes a distribution deploy to propagate. The

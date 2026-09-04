@@ -187,9 +187,19 @@ function attach(config, outputs, options) {
   assertNoConflict(behaviour, outputs);
 
   const changes = [];
+  // IncludeBody is required, not optional: the MCP JSON-RPC transport is a POST
+  // whose body the router forwards to NORG, and without this CloudFront hands
+  // the function an empty body. Read-only access, so CloudFront still sends the
+  // full original body to your origin.
   behaviour.LambdaFunctionAssociations = {
     Quantity: 1,
-    Items: [{ EventType: "origin-request", LambdaFunctionARN: outputs.EdgeRouterVersionArn, IncludeBody: false }],
+    Items: [
+      {
+        EventType: "origin-request",
+        LambdaFunctionARN: outputs.EdgeRouterVersionArn,
+        IncludeBody: true,
+      },
+    ],
   };
   changes.push(`origin-request  -> ${outputs.EdgeRouterVersionArn}`);
 

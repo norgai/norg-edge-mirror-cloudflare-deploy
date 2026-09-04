@@ -375,6 +375,11 @@ Resources:
           LambdaFunctionAssociations:
             - EventType: origin-request
               LambdaFunctionARN: !Ref EdgeRouterVersion
+              # Required, not optional: the MCP JSON-RPC transport is a POST
+              # whose body the router forwards to NORG, and without this
+              # CloudFront hands the function an empty body. Access is
+              # read-only, so your origin still receives the full original body.
+              IncludeBody: true
 
   # Replaces the Cloudflare cron trigger, which Lambda@Edge has no equivalent
   # of. Not an edge function, so it MAY use environment variables.
