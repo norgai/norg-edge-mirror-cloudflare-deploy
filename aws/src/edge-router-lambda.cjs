@@ -625,6 +625,11 @@ async function fetchOrigin(cfRequest, request, timeoutMs) {
     return null;
   }
 }
+function alignHostToOrigin(cfRequest) {
+  const domainName = cfRequest.origin?.custom?.domainName;
+  if (domainName) cfRequest.headers.host = [{ key: "Host", value: domainName }];
+  return cfRequest;
+}
 function switchOriginToNorg(cfRequest, contentStemUrl, keySuffix, authHeaders) {
   const stem = new URL(contentStemUrl);
   const customHeaders = {};
@@ -1239,12 +1244,16 @@ async function handler(event) {
     ]).finally(() => clearTimeout(watchdog));
     await flushed;
     await flushDeferred();
-    if (result === PASSTHROUGH) return passthrough(cfRequest);
+    if (result === PASSTHROUGH) return passthrough(alignHostToOrigin(cfRequest));
     const response = await toCloudFrontResponse(result);
-    return response || passthrough(pristine);
+    return response || passthrough(alignHostToOrigin(pristine));
   } catch (e) {
     console.error("norg edge router error", e);
-    return pristine;
+    try {
+      return alignHostToOrigin(pristine);
+    } catch {
+      return pristine;
+    }
   }
 }
 var edge_router_lambda_default = handler;

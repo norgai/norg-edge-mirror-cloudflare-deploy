@@ -88,6 +88,7 @@ import { getBotFeed, isEntitled } from "./lib/feed.js";
 import { clientIp, passthrough as toPassthrough, toCloudFrontResponse, toRequest } from "./lib/event.js";
 import {
   PASSTHROUGH,
+  alignHostToOrigin,
   fetchOrigin,
   switchOriginToNorg,
 } from "./lib/origin.js";
@@ -600,16 +601,22 @@ export async function handler(event) {
     // tasks) is what lets them begin before the container freezes.
     await flushDeferred();
 
-    if (result === PASSTHROUGH) return toPassthrough(cfRequest);
+    if (result === PASSTHROUGH) return toPassthrough(alignHostToOrigin(cfRequest));
 
     const response = await toCloudFrontResponse(result);
     // Null means the body will not fit CloudFront's generated-response cap.
     // Degrading to the origin is the correct answer: the visitor gets the
     // customer's real page instead of a 502.
-    return response || toPassthrough(pristine);
+    return response || toPassthrough(alignHostToOrigin(pristine));
   } catch (e) {
     console.error("norg edge router error", e);
-    return pristine;
+    // Still align the Host: a passthrough to the wrong virtual host is a broken
+    // page, which is exactly what this catch exists to avoid.
+    try {
+      return alignHostToOrigin(pristine);
+    } catch {
+      return pristine;
+    }
   }
 }
 

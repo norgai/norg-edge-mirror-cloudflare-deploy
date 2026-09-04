@@ -93,6 +93,33 @@ export async function fetchOrigin(cfRequest, request, timeoutMs) {
 }
 
 /**
+ * Point the Host header at whatever origin this request is now bound for.
+ *
+ * CloudFront sends the origin's own domain name as Host UNLESS the origin
+ * request policy forwards the viewer's Host header — and the policy this
+ * install uses does forward it, because that is the only header behaviour that
+ * also adds the CloudFront-Viewer-* geo headers the visit events report.
+ *
+ * Left alone, the customer's origin would therefore be asked for
+ * `cloudfront.example.com` rather than the hostname it actually serves, and
+ * every passthrough — which is to say every human visitor — would fail. That is
+ * a far worse outcome than losing geo fields, so the Host is corrected here
+ * instead of dropping the policy.
+ *
+ * Reading the domain from `origin.custom` rather than from config is what makes
+ * this correct after an origin switch too: switchOriginToNorg has already
+ * repointed that field at the receptionist by the time this runs.
+ *
+ * @param {Object} cfRequest CloudFront request object, mutated in place.
+ * @returns {Object} The same request object.
+ */
+export function alignHostToOrigin(cfRequest) {
+  const domainName = cfRequest.origin?.custom?.domainName;
+  if (domainName) cfRequest.headers.host = [{ key: "Host", value: domainName }];
+  return cfRequest;
+}
+
+/**
  * Repoint this request at NORG's edge-content receptionist.
  *
  * Used for a mirror too large to return as a generated response. CloudFront
