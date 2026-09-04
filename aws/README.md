@@ -59,6 +59,14 @@ distribution itself is global either way.
       or requests loop.
 - [ ] **Permission to create IAM roles, Lambda functions, CloudFront functions
       and policies** in us-east-1.
+- [ ] **The artifact location NORG gives you** — S3 bucket, object keys, and
+      (recommended) object versions. These parameters have **no defaults on
+      purpose**: S3 bucket names are globally unique across all AWS accounts and
+      this repository is public, so a default naming a bucket could be claimed
+      by someone else and would install their code into your account. Verify the
+      bucket NORG names is one they own, or mirror the objects into your own
+      bucket and point the parameters at that — which is fully supported and the
+      right call if your policy forbids deploying third-party code.
 - [ ] For the attach path: **no other origin-request Lambda@Edge function or
       viewer-request CloudFront Function on the behaviour you're attaching to.**
       The installer refuses rather than replacing someone else's routing.

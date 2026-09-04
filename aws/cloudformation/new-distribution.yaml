@@ -29,8 +29,9 @@ Metadata:
         Parameters: [SiteId, SiteKey, NorgEnvironment]
       - Label: { default: Advanced }
         Parameters:
-          [ArtifactBucket, ArtifactKey, HeartbeatArtifactKey, NorgApiUrl, NorgContentBase,
-           StripFallbackEnabled, LazyRenderEnabled]
+          [ArtifactBucket, ArtifactKey, HeartbeatArtifactKey, ArtifactObjectVersion,
+           HeartbeatObjectVersion, NorgApiUrl, NorgContentBase, StripFallbackEnabled,
+           LazyRenderEnabled]
 
 Parameters:
   OriginDomainName:
@@ -95,22 +96,45 @@ Parameters:
     AllowedValues: ["true", "false"]
     Description: Ask NORG to render a page the first time an agent asks for it.
 
+  # DELIBERATELY NO DEFAULT. S3 bucket names are globally unique across all AWS
+  # accounts, and this repository is public — so a default naming a bucket that
+  # NORG had not yet created could be claimed by anyone, and every stack
+  # launched from this template would then install THEIR code as a Lambda@Edge
+  # function, with an IAM role, in front of the whole site. Requiring the value
+  # means a deploy cannot silently resolve to an unowned name.
+  #
+  # Ask NORG for the current bucket, key and object version. Mirroring the
+  # objects into your own bucket and pointing these at it is fully supported and
+  # is the right choice if your policy forbids deploying third-party code.
   ArtifactBucket:
     Type: String
-    Default: norg-edge-artifacts
+    MinLength: 3
     Description: >-
-      S3 bucket (us-east-1) holding the published router zip. Lambda code cannot
-      be inlined in a template above 4 KB, so it is fetched from here. Mirror
-      the object into your own bucket and change this if your policy forbids
-      deploying code from a third-party bucket.
+      S3 bucket (us-east-1) holding the published router zip, as given to you by
+      NORG. Lambda code cannot be inlined above 4 KB, so it is fetched from here.
   ArtifactKey:
     Type: String
-    Default: edge-router-lambda/0.1.0.zip
+    MinLength: 1
+    Description: S3 key of the edge-router zip, e.g. edge-router-lambda/0.1.0.zip
   HeartbeatArtifactKey:
     Type: String
-    Default: heartbeat-lambda/0.1.0.zip
+    MinLength: 1
+    Description: S3 key of the heartbeat zip, e.g. heartbeat-lambda/0.1.0.zip
+  ArtifactObjectVersion:
+    Type: String
+    Default: ""
+    Description: >-
+      Optional but recommended. S3 object version of the edge-router zip. Pinning
+      it means the code deployed into your account cannot change even if the
+      object behind the key is later replaced.
+  HeartbeatObjectVersion:
+    Type: String
+    Default: ""
+    Description: Optional. S3 object version of the heartbeat zip.
 
 Conditions:
+  HasArtifactObjectVersion: !Not [!Equals [!Ref ArtifactObjectVersion, ""]]
+  HasHeartbeatObjectVersion: !Not [!Equals [!Ref HeartbeatObjectVersion, ""]]
   HasAlternateDomainNames: !Not [!Equals [!Join ["", !Ref AlternateDomainNames], ""]]
 
 Resources:
@@ -142,6 +166,7 @@ Resources:
       Code:
         S3Bucket: !Ref ArtifactBucket
         S3Key: !Ref ArtifactKey
+        S3ObjectVersion: !If [HasArtifactObjectVersion, !Ref ArtifactObjectVersion, !Ref "AWS::NoValue"]
 
   # Lambda@Edge cannot reference $LATEST or an alias — only a numbered version.
   EdgeRouterVersion:
@@ -412,6 +437,7 @@ Resources:
       Code:
         S3Bucket: !Ref ArtifactBucket
         S3Key: !Ref HeartbeatArtifactKey
+        S3ObjectVersion: !If [HasHeartbeatObjectVersion, !Ref HeartbeatObjectVersion, !Ref "AWS::NoValue"]
 
   HeartbeatSchedule:
     Type: AWS::Events::Rule
