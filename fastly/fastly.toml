@@ -1,0 +1,49 @@
+# Fastly Compute service manifest for the NORG edge router.
+#
+# The two stores and the backends below are the whole install surface. Create
+# them with `fastly compute publish`, or declaratively with the fastly/fastly
+# Terraform provider (fastly_service_compute + fastly_configstore +
+# fastly_secretstore).
+#
+# DYNAMIC BACKENDS: not used. Every host this router talks to is known at
+# install time — the customer's origin, NORG's API, and NORG's edge-content
+# service — so they are declared as static backends here. That avoids the
+# service-level dynamic-backends toggle (which needs a Fastly support ticket on
+# some accounts) and keeps the set of reachable hosts auditable by the customer.
+authors = ["NORG.ai"]
+description = "Serves NORG-optimised content to AI agents at your own URLs; every other visitor gets your site unchanged."
+language = "javascript"
+manifest_version = 3
+name = "norg-edge-router"
+service_id = ""
+
+[scripts]
+  build = "npm run build"
+
+[local_server]
+
+  [local_server.backends]
+
+    [local_server.backends.customer_origin]
+      url = "https://example.com"
+
+    [local_server.backends.norg_api]
+      url = "https://content-craft-api.norg.ai"
+
+    [local_server.backends.norg_content]
+      url = "https://edge-content.norg.ai"
+
+  [local_server.config_stores]
+
+    [local_server.config_stores.norg_edge_config]
+      format = "inline-toml"
+
+      [local_server.config_stores.norg_edge_config.contents]
+        site_id = "REPLACE_WITH_SITE_ID"
+        edge_env = "test"
+
+  [local_server.secret_stores]
+
+    [[local_server.secret_stores.norg_edge_secrets]]
+      key = "norg_site_key"
+      data = "REPLACE_WITH_SITE_KEY"

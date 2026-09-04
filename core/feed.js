@@ -35,6 +35,7 @@ import {
   UNENTITLED_TTL_MS,
 } from "./constants.mjs";
 import { binding, controlHeaders } from "./config.js";
+import { edgeFetch } from "./http.js";
 import { defer } from "./deferred.js";
 
 // The authenticated feed for this container. Starts unentitled: nothing is
@@ -119,7 +120,7 @@ export async function refreshFeed(env) {
     // entry we no longer hold would leave us with nothing to serve.
     if (previous.entitled && previous.etag) headers["If-None-Match"] = previous.etag;
 
-    response = await fetch(`${binding(env, "NORG_API_URL")}/api/v1/edge/bot-patterns`, {
+    response = await edgeFetch(env, `${binding(env, "NORG_API_URL")}/api/v1/edge/bot-patterns`, {
       method: "GET",
       headers,
       signal: AbortSignal.timeout(PATTERN_FETCH_TIMEOUT_MS),
