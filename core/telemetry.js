@@ -25,6 +25,7 @@ import {
   RENDER_DEDUP_TTL_MS,
 } from "./constants.mjs";
 import { binding, controlHeaders, edgeEnv } from "./config.js";
+import { edgeFetch } from "./http.js";
 import { defer } from "./deferred.js";
 
 // Served values that describe an untouched origin response. Reported only when
@@ -44,7 +45,7 @@ const renderDedup = new Map();
  */
 async function postControl(env, path, body) {
   try {
-    return await fetch(`${binding(env, "NORG_API_URL")}${path}`, {
+    return await edgeFetch(env, `${binding(env, "NORG_API_URL")}${path}`, {
       method: "POST",
       headers: controlHeaders(env),
       body: JSON.stringify(body),

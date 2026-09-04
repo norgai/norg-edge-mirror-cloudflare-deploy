@@ -28,6 +28,7 @@ import {
   RESERVED_ASSET_CACHE_CONTROL,
 } from "./constants.mjs";
 import { binding, contentStem, controlHeaders, edgeEnv } from "./config.js";
+import { edgeFetch } from "./http.js";
 
 /**
  * Fetch a NORG-rendered object for this path from the edge-content
@@ -47,7 +48,7 @@ import { binding, contentStem, controlHeaders, edgeEnv } from "./config.js";
 export async function fetchFromNorg(env, keySuffix) {
   const target = `${contentStem(env)}${keySuffix}`;
   try {
-    const response = await fetch(target, {
+    const response = await edgeFetch(env, target, {
       headers: { ...controlHeaders(env), [LOOP_GUARD_HEADER]: "1" },
       signal: AbortSignal.timeout(MIRROR_FETCH_TIMEOUT_MS),
     });
