@@ -82,6 +82,23 @@ for (const file of TEMPLATES) {
     assert.equal(/AKIA[0-9A-Z]{16}/.test(template), false);
   });
 
+  test(`${file}: cache-key properties use CloudFormation's list shape`, () => {
+    // CloudFront's *API* takes {Quantity, Items: [...]} here; CloudFormation's
+    // resource schema takes a plain list and rejects the API shape with
+    // "expected type: JSONArray, found: JSONObject". The two shapes are easy to
+    // confuse, `validate-template` does not catch it (it checks syntax, not
+    // resource schemas), and the failure only appears at deploy time — which is
+    // exactly how it reached a real stack once.
+    for (const property of ["Headers", "QueryStrings"]) {
+      const withItems = new RegExp(`${property}:\\s*\\n\\s+Items:`);
+      assert.equal(
+        withItems.test(template),
+        false,
+        `${property} uses the API's {Items: [...]} shape; CloudFormation wants a plain list`,
+      );
+    }
+  });
+
   test(`${file}: the embedded CloudFront Function matches its source`, () => {
     // build.mjs regenerates this; a hand-edit here would silently ship a
     // different cache-key stamp than the one the tests cover.

@@ -310,12 +310,10 @@ Resources:
           EnableAcceptEncodingBrotli: true
           HeadersConfig:
             HeaderBehavior: whitelist
-            Headers:
-              Items: [x-norg-agent]
+            Headers: [x-norg-agent]
           QueryStringsConfig:
             QueryStringBehavior: whitelist
-            QueryStrings:
-              Items: [agent]
+            QueryStrings: [agent]
           CookiesConfig:
             CookieBehavior: none
 
@@ -331,12 +329,11 @@ Resources:
         HeadersConfig:
           HeaderBehavior: allViewerAndWhitelistCloudFront
           Headers:
-            Items:
-              - CloudFront-Viewer-Country
-              - CloudFront-Viewer-City
-              - CloudFront-Viewer-ASN
-              - CloudFront-Viewer-HTTP-Version
-              - CloudFront-Viewer-TLS
+            - CloudFront-Viewer-Country
+            - CloudFront-Viewer-City
+            - CloudFront-Viewer-ASN
+            - CloudFront-Viewer-HTTP-Version
+            - CloudFront-Viewer-TLS
         QueryStringsConfig:
           QueryStringBehavior: all
         CookiesConfig:
