@@ -54,6 +54,19 @@ for (const file of TEMPLATES) {
     assert.match(template, /S3ObjectVersion: !If \[HasHeartbeatObjectVersion/);
   });
 
+  test(`${file}: a new artifact forces a new published Lambda version`, () => {
+    // AWS::Lambda::Version publishes only when its own properties change, and
+    // FunctionName does not change when the code does. Without something
+    // artifact-derived here, a router update lands on $LATEST while the
+    // distribution stays pinned to the first version it ever published — the
+    // deploy reports success and the edge keeps running the old code.
+    assert.match(
+      template,
+      /EdgeRouterVersion:[\s\S]{0,400}?Description: !Sub "\$\{ArtifactKey\}@\$\{ArtifactObjectVersion\}"/,
+      "EdgeRouterVersion needs an artifact-derived Description to force republication",
+    );
+  });
+
   test(`${file}: the Lambda@Edge role trusts both required principals`, () => {
     // edgelambda.amazonaws.com is what replicates the function to the edge;
     // without it the association fails at deploy with an opaque error.

@@ -169,10 +169,19 @@ Resources:
         S3ObjectVersion: !If [HasArtifactObjectVersion, !Ref ArtifactObjectVersion, !Ref "AWS::NoValue"]
 
   # Lambda@Edge cannot reference $LATEST or an alias — only a numbered version.
+  #
+  # The Description is load-bearing, not documentation. AWS::Lambda::Version
+  # publishes a new version only when ITS OWN properties change, and
+  # FunctionName does not change when the function's code does — so updating the
+  # artifact would update $LATEST while the distribution stayed pinned to the
+  # version it first published. The router would appear to deploy and the edge
+  # would keep running the old code, silently, forever. Naming the artifact here
+  # is what forces a new version whenever the code changes.
   EdgeRouterVersion:
     Type: AWS::Lambda::Version
     Properties:
       FunctionName: !Ref EdgeRouterFunction
+      Description: !Sub "${ArtifactKey}@${ArtifactObjectVersion}"
 
   # The cache-key stamp. Small enough to inline, unlike the router.
   ViewerClassifier:
