@@ -36,6 +36,10 @@ const awsSource = readFileSync(
 // equivalent — the AWS router caches in module globals instead.
 const SHARED_CONSTANTS = [
   "BINDING_DEFAULTS",
+  "RESERVED_NORG_PREFIX",
+  "RESERVED_ASSET_CACHE_CONTROL",
+  "LOOP_GUARD_HEADER",
+  "HEALTH_CHECK_HEADER",
   "MIRROR_FETCH_TIMEOUT_MS",
   "PATTERN_FETCH_TIMEOUT_MS",
   "CONTROL_CALL_TIMEOUT_MS",
@@ -54,6 +58,9 @@ const SHARED_CONSTANTS = [
   "STRIP_REMOVE_SELECTORS",
   "STRIP_UNWRAP_SELECTORS",
   "STRIP_KEEP_ATTRIBUTES",
+  "SIBLING_ARTIFACT_FILENAMES",
+  "OPENAI_FEED_PATHS",
+  "STATIC_ASSET_SUFFIXES",
 ];
 
 /**
@@ -68,7 +75,9 @@ const SHARED_CONSTANTS = [
  * @returns {string} The initialiser text, with runs of whitespace collapsed.
  */
 function declarationOf(source, name) {
-  const match = new RegExp(`^(?:export )?const ${name} = `, "m").exec(source);
+  // `\\s*` after the `=`: a long value may wrap onto the next line, and the
+  // collapse below makes the leading whitespace irrelevant either way.
+  const match = new RegExp(`^(?:export )?const ${name} =\\s*`, "m").exec(source);
   assert.ok(match, `constant ${name} not found`);
 
   let index = match.index + match[0].length;

@@ -30,6 +30,25 @@ export const BINDING_DEFAULTS = {
   LAZY_RENDER_ENABLED: "true",
 };
 
+// Reserved NORG asset prefix on the customer domain. The whole prefix is
+// NORG-served (currently just /.norg/theme.css — the mirror shell's stylesheet)
+// before classification, for every caller. Kept in sync with the backend's
+// app/services/edge_routing/paths.py::EDGE_THEME_PATH.
+export const RESERVED_NORG_PREFIX = "/.norg/";
+
+// Public cache headers for reserved assets. Unlike a tenant render, theme CSS
+// is identical for every caller, so it is a public, cacheable asset. Matches
+// theme_css_builder.MASTER_CSS_CACHE_CONTROL's intent (instant theme updates).
+export const RESERVED_ASSET_CACHE_CONTROL =
+  "public, max-age=60, s-maxage=30, stale-while-revalidate=300";
+
+// Marks our own subrequests so a misconfigured route can't recurse into us.
+export const LOOP_GUARD_HEADER = "x-norg-edge";
+
+// Health probes present the site key in this header; without it the path is
+// left alone, so we never shadow a real customer URL.
+export const HEALTH_CHECK_HEADER = "x-norg-edge-check";
+
 // Budgets. The origin is always the fallback, so a slow NORG must cost the
 // visitor a few hundred ms at worst, never a failed page.
 export const MIRROR_FETCH_TIMEOUT_MS = 4000;
@@ -156,4 +175,58 @@ export const STRIP_KEEP_ATTRIBUTES = new Set([
   "content",
   "name",
   "rel",
+]);
+
+// Per-page sibling artifacts published beside index.html (MIRROR 03) and
+// advertised by absolute URL in that page's mcp.json alternates. Matched by
+// filename in ANY directory, since every mirrored route publishes its own set.
+export const SIBLING_ARTIFACT_FILENAMES = new Set([
+  "index.md",
+  "index.json",
+  "index.jsonld",
+  "index.pdf",
+  "index.openai.json",
+  "webmcp.js",
+]);
+
+// Site-level OpenAI product-feed discovery artifacts (MIRROR 10). Published to
+// R2 only when the site has product pages on a paid plan; they never exist on
+// the customer origin, so they are served to every caller before classification
+// (identical bytes for all — not a cloaking surface) and a miss falls through to
+// origin. No render request and no crawler-visit event.
+export const OPENAI_FEED_PATHS = new Set([
+  "/.well-known/ai-plugin.json",
+  "/openapi.json",
+  "/openapi.yaml",
+]);
+
+// Subresource extensions that are never a mirrorable document. A request for
+// one is the browser fetching part of a page, not an agent asking for the page
+// — NORG has no mirror for it and never will, so the whole pipeline
+// (classification, R2 lookup, render request, visit logging) is pure waste.
+//
+// Mirrors _ASSET_SUFFIXES in app/services/edge_routing/render_requests.py,
+// which is the source of truth, MINUS .xml/.txt/.json — those are excluded on
+// purpose: /llms.txt, /tree.json, /graph.jsonld, /.well-known/mcp.json and
+// /openapi.json are NORG's own surfaces and a blanket rule here would proxy
+// them to the customer's origin. Do NOT "complete" this list from the Python
+// one; tests/test_edge_worker_asset_suffixes.py fails if the subset breaks.
+//
+// Extension-less asset URLs (/img?id=123) are not covered. Sec-Fetch-Dest
+// would catch them, but it is a browser fetch-metadata convention that
+// scripted agent traffic often omits, so it is a future addition rather than a
+// replacement for this list. To drop these requests before the Worker is
+// invoked at all, the tool is a zone-level Cloudflare Cache/route rule on the
+// customer's zone — configuration, not code.
+export const STATIC_ASSET_SUFFIXES = new Set([
+  ".css", ".js", ".mjs", ".map",
+  ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".avif", ".bmp",
+  ".tiff", ".heic",
+  ".woff", ".woff2", ".ttf", ".eot", ".otf",
+  ".mp4", ".webm", ".mov", ".avi", ".mkv", ".m4v", ".ogv",
+  ".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac", ".weba",
+  ".vtt", ".srt",
+  ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+  ".zip", ".gz", ".rar", ".tar", ".7z",
+  ".webmanifest",
 ]);

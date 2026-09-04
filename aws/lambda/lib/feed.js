@@ -179,6 +179,19 @@ export async function getBotFeed(env) {
 }
 
 /**
+ * Does this container currently hold an authenticated feed?
+ *
+ * Reported by the health probe: an unentitled router passes everything through
+ * and is otherwise indistinguishable from not being installed at all, so this
+ * is the first question to ask about an install that is "doing nothing".
+ *
+ * @returns {boolean} True when NORG has authenticated this install.
+ */
+export function isEntitled() {
+  return feedCache.entitled;
+}
+
+/**
  * Reset feed state. Test-only.
  *
  * @param {?Object} entry Entry to seed, or null for a cold container.

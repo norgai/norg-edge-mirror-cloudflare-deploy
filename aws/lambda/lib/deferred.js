@@ -68,10 +68,16 @@ function mustAwaitFlush() {
 /**
  * Start every queued task, and await them only when the queue demands it.
  *
- * Call this at the START of an invocation, not the end: tasks left in flight
- * here are resumed by the next invocation of the same container, whereas work
- * started just before the handler returns is frozen immediately and may never
- * complete.
+ * Call this BOTH at the start of an invocation and again just before returning.
+ * The two calls do different jobs, and only having both makes the queue safe:
+ *
+ *  - The start call gives work suspended when this container last froze a full
+ *    request's worth of event loop to finish in.
+ *  - The end call STARTS the work this invocation queued. That matters because
+ *    an unstarted thunk can only ever run on a later invocation, whereas a
+ *    promise already in flight suspends and resumes on the next thaw — so a
+ *    container that serves one request and is never reused still gets its
+ *    telemetry away, instead of dropping all of it.
  *
  * Rejections are swallowed. Telemetry must never affect what the visitor sees,
  * and an unhandled rejection in Lambda can fail the whole invocation — which
