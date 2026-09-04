@@ -68,23 +68,18 @@ import {
   MCP_FORWARD_TIMEOUT_MS,
   MIRROR_FETCH_TIMEOUT_MS,
   STRIP_WORD_FLOOR,
-} from "./lib/constants.mjs";
-import {
-  EDGE_SCRIPT_VERSION,
-  binding,
-  contentStem,
-  isConfigured,
-  readConfig,
-} from "./lib/config.js";
+} from "../../core/constants.mjs";
+import { EDGE_SCRIPT_VERSION, readConfig } from "./lib/config.js";
+import { binding, contentStem, isConfigured } from "../../core/config.js";
 import {
   agentOverrideClassification,
   anonymousClassification,
   classifyAgent,
   mayDivert,
   verifiedSource,
-} from "./lib/agent.js";
-import { flushDeferred } from "./lib/deferred.js";
-import { getBotFeed, isEntitled } from "./lib/feed.js";
+} from "../../core/agent.js";
+import { flushDeferred } from "../../core/deferred.js";
+import { getBotFeed, isEntitled } from "../../core/feed.js";
 import { clientIp, passthrough as toPassthrough, toCloudFrontResponse, toRequest } from "./lib/event.js";
 import {
   PASSTHROUGH,
@@ -101,7 +96,7 @@ import {
   receptionistHeaders,
   reservedAssetResponse,
   strippedResponse,
-} from "./lib/norg.js";
+} from "../../core/norg.js";
 import {
   hasAgentOverride,
   isDiscoveryPath,
@@ -114,9 +109,9 @@ import {
   isStaticAssetPath,
   isTraditionalSearchBot,
   siblingPageOf,
-} from "./lib/paths.js";
-import { countVisibleWords, stripHtml } from "./lib/strip.js";
-import { logEdgeEvent, maybeHeartbeat, requestRender } from "./lib/telemetry.js";
+} from "../../core/paths.js";
+import { countVisibleWords, stripHtml } from "../../core/strip.js";
+import { logEdgeEvent, maybeHeartbeat, requestRender } from "../../core/telemetry.js";
 
 // Leaves a margin under Lambda@Edge's 30s origin-request ceiling. Hitting the
 // platform timeout is a 502; hitting this is an origin passthrough.

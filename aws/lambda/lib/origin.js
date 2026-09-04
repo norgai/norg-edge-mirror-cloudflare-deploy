@@ -23,7 +23,7 @@
  *    and streams the mirror with no size limit at all.
  */
 
-import { LOOP_GUARD_HEADER } from "./constants.mjs";
+import { LOOP_GUARD_HEADER } from "../../../core/constants.mjs";
 
 /**
  * Sentinel meaning "hand the request back to CloudFront untouched".

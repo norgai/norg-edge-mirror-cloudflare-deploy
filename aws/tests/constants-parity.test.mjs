@@ -3,7 +3,7 @@
  *
  * @description Fails when a shared constant drifts between the two routers.
  *
- * `aws/lambda/lib/constants.mjs` copies its declarations from
+ * `core/constants.mjs` copies its declarations from
  * `workers/edge-router-worker.js` rather than importing them, because that
  * worker's bundle is SHA-256-pinned by content-craft and editing it would force
  * an EDGE_SCRIPT_VERSION bump (see the header of constants.mjs). This test is
@@ -26,7 +26,7 @@ const cloudflareSource = readFileSync(
   "utf8",
 );
 const awsSource = readFileSync(
-  join(repoRoot, "aws", "lambda", "lib", "constants.mjs"),
+  join(repoRoot, "core", "constants.mjs"),
   "utf8",
 );
 
@@ -115,14 +115,14 @@ for (const name of SHARED_CONSTANTS) {
     assert.equal(
       declarationOf(awsSource, name),
       declarationOf(cloudflareSource, name),
-      `${name} has drifted — update aws/lambda/lib/constants.mjs to match ` +
+      `${name} has drifted — update core/constants.mjs to match ` +
         "workers/edge-router-worker.js (or vice versa)",
     );
   });
 }
 
 test("every shared constant is actually exported by the AWS copy", async () => {
-  const module = await import("../lambda/lib/constants.mjs");
+  const module = await import("../../core/constants.mjs");
   for (const name of SHARED_CONSTANTS) {
     assert.ok(name in module, `constants.mjs does not export ${name}`);
   }

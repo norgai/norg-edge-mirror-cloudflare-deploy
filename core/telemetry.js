@@ -24,7 +24,7 @@ import {
   RENDER_DEDUP_MAX_ENTRIES,
   RENDER_DEDUP_TTL_MS,
 } from "./constants.mjs";
-import { EDGE_SCRIPT_VERSION, binding, controlHeaders, edgeEnv } from "./config.js";
+import { binding, controlHeaders, edgeEnv } from "./config.js";
 import { defer } from "./deferred.js";
 
 // Served values that describe an untouched origin response. Reported only when
@@ -136,15 +136,15 @@ export function maybeHeartbeat(env, trigger) {
 
   defer(() =>
     postControl(env, "/api/v1/edge/heartbeat", {
-      script_version: EDGE_SCRIPT_VERSION,
+      script_version: env.EDGE_SCRIPT_VERSION || "unknown",
       trigger,
       // The environment this install believes it is bound to. NORG warns when
       // this disagrees with the environment it can confirm, surfacing a
       // wrong-env manual install.
       env: edgeEnv(env),
       // Tells NORG which artifact is reporting, so drift detection compares
-      // against EDGE_WORKER_VERSION_CLOUDFRONT rather than the Cloudflare one.
-      platform: "cloudfront",
+      // against that provider's version setting rather than the Cloudflare one.
+      platform: env.EDGE_PLATFORM || "unknown",
     }),
   );
 }

@@ -15,7 +15,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { classifyAgent, mayDivert } from "../lambda/lib/agent.js";
+import { classifyAgent, mayDivert } from "../../core/agent.js";
 
 const functionPath = join(
   dirname(fileURLToPath(import.meta.url)),

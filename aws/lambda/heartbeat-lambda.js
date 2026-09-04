@@ -25,7 +25,7 @@
  * here rather than being threaded through a request.
  */
 
-import { CONTROL_CALL_TIMEOUT_MS } from "./lib/constants.mjs";
+import { CONTROL_CALL_TIMEOUT_MS } from "../../core/constants.mjs";
 import { EDGE_SCRIPT_VERSION } from "./lib/config.js";
 
 /**

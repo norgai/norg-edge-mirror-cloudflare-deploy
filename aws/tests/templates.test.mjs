@@ -152,8 +152,8 @@ test("every generated carve-out has NO Lambda and NO CloudFront function", async
 });
 
 test("the generated carve-outs match the shared suffix list exactly", async () => {
-  const { STATIC_ASSET_SUFFIXES } = await import("../lambda/lib/constants.mjs");
-  const { DEFAULT_ROUTE_EXCLUSIONS } = await import("../lambda/lib/exclusions.mjs");
+  const { STATIC_ASSET_SUFFIXES } = await import("../../core/constants.mjs");
+  const { DEFAULT_ROUTE_EXCLUSIONS } = await import("../../core/exclusions.mjs");
   const template = readFileSync(join(cfnDir, "new-distribution.yaml"), "utf8");
   const block = /# BEGIN GENERATED CACHE BEHAVIOURS\n([\s\S]*?)# END GENERATED/.exec(template)[1];
   const patterns = [...block.matchAll(/PathPattern: "([^"]+)"/g)].map((m) => m[1]);

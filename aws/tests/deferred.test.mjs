@@ -13,7 +13,7 @@ import {
   __test_state,
   defer,
   flushDeferred,
-} from "../lambda/lib/deferred.js";
+} from "../../core/deferred.js";
 
 /**
  * Resolve after the microtask queue and timer queue have drained once.

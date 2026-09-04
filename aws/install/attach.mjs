@@ -44,7 +44,7 @@ import {
   CURATED_ASSET_SUFFIXES,
   DEFAULT_ROUTE_EXCLUSIONS,
   PROTECTED_PATH_PREFIXES,
-} from "../lambda/lib/exclusions.mjs";
+} from "../../core/exclusions.mjs";
 
 const REGION = "us-east-1";
 

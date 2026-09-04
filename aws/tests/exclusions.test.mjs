@@ -19,8 +19,8 @@ import {
   PROTECTED_PATH_PREFIXES,
   SHOPIFY_ROUTE_EXCLUSIONS,
   WORDPRESS_EXCLUSION_SIGNATURE,
-} from "../lambda/lib/exclusions.mjs";
-import { STATIC_ASSET_SUFFIXES } from "../lambda/lib/constants.mjs";
+} from "../../core/exclusions.mjs";
+import { STATIC_ASSET_SUFFIXES } from "../../core/constants.mjs";
 
 test("Next.js/Vercel exclusions match route_scope.NEXTJS_VERCEL_ROUTE_EXCLUSIONS", () => {
   assert.deepEqual(NEXTJS_VERCEL_ROUTE_EXCLUSIONS, ["/_next/*", "/_vercel/*"]);

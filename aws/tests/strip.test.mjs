@@ -13,8 +13,8 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 
-import { countVisibleWords, shouldKeepAttribute, stripHtml } from "../lambda/lib/strip.js";
-import { STRIP_REMOVE_SELECTORS } from "../lambda/lib/constants.mjs";
+import { countVisibleWords, shouldKeepAttribute, stripHtml } from "../../core/strip.js";
+import { STRIP_REMOVE_SELECTORS } from "../../core/constants.mjs";
 
 const TAG_SELECTORS = STRIP_REMOVE_SELECTORS.filter((s) => /^[a-z]+$/.test(s));
 // `input` is void: it has no closing tag and so no subtree to remove. It is

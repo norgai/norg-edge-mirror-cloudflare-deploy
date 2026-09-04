@@ -27,7 +27,7 @@
  * over-serving humans, and gate 3 still fails closed.
  */
 
-import { classifyRequest, classifyScriptAutomation } from "../../../workers/lib/classify.mjs";
+import { classifyRequest, classifyScriptAutomation } from "../workers/lib/classify.mjs";
 
 /**
  * The serving policy NORG published for a matched pattern.

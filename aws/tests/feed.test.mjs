@@ -7,12 +7,12 @@
 import { strict as assert } from "node:assert";
 import { afterEach, test } from "node:test";
 
-import { __test_getFeed, __test_setFeed, getBotFeed, refreshFeed } from "../lambda/lib/feed.js";
+import { __test_getFeed, __test_setFeed, getBotFeed, refreshFeed } from "../../core/feed.js";
 import {
   __test_reset as resetDeferred,
   __test_state as deferredState,
   flushDeferred,
-} from "../lambda/lib/deferred.js";
+} from "../../core/deferred.js";
 
 const ENV = { SITE_ID: "site-1", NORG_SITE_KEY: "nek_live_key" };
 

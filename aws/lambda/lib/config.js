@@ -17,11 +17,9 @@
  * customHeaders.
  *
  * The object it returns is deliberately shaped like the Cloudflare worker's
- * `env`, so `binding()`, `controlHeaders()` and `contentStem()` below are the
- * same functions as their counterparts there.
+ * `env`, so every reader of it lives in core/config.js and is identical for
+ * every provider.
  */
-
-import { BINDING_DEFAULTS } from "./constants.mjs";
 
 /**
  * Version of this artifact, reported on every control call and heartbeat.
@@ -64,7 +62,9 @@ const CONFIG_HEADERS = {
  */
 export function readConfig(cfRequest) {
   const customHeaders = cfRequest.origin?.custom?.customHeaders;
-  const env = {};
+  // The version rides on the config object because core reads it there — each
+  // provider's artifact is versioned and pinned separately by content-craft.
+  const env = { EDGE_SCRIPT_VERSION, EDGE_PLATFORM: "cloudfront" };
   if (!customHeaders) return env;
 
   for (const [header, name] of Object.entries(CONFIG_HEADERS)) {
@@ -77,72 +77,5 @@ export function readConfig(cfRequest) {
   return env;
 }
 
-/**
- * Resolve a binding, falling back to its baked default.
- *
- * Only an ABSENT binding takes the default; an explicitly-set value is returned
- * unchanged. Identical to `binding()` in the Cloudflare worker.
- *
- * @param {Object} env Config object from readConfig.
- * @param {string} name Binding name present in BINDING_DEFAULTS.
- * @returns {string} The configured value, or the baked default.
- */
-export function binding(env, name) {
-  const value = env[name];
-  return value === undefined ? BINDING_DEFAULTS[name] : value;
-}
-
-/**
- * NORG environment this install is bound to.
- *
- * A test-bound install serves TEST content, so it must be identifiable from
- * outside and must never look like a prod install; "unknown" is the fallback.
- *
- * @param {Object} env Config object.
- * @returns {string} "production" | "test" | "unknown".
- */
-export function edgeEnv(env) {
-  return env.EDGE_ENV || "unknown";
-}
-
-/**
- * Headers authenticating this install to the NORG control endpoints.
- *
- * @param {Object} env Config object.
- * @returns {Object} Header map for a control call.
- */
-export function controlHeaders(env) {
-  return {
-    "Content-Type": "application/json",
-    "X-Norg-Site-Id": env.SITE_ID || "",
-    "X-Norg-Site-Key": env.NORG_SITE_KEY || "",
-    "X-Norg-Edge-Version": EDGE_SCRIPT_VERSION,
-  };
-}
-
-/**
- * Base URL for this site's mirror objects on the edge-content receptionist.
- *
- * @param {Object} env Config object.
- * @returns {string} Content base with the site id appended, no trailing slash.
- */
-export function contentStem(env) {
-  const base = binding(env, "NORG_CONTENT_BASE").replace(/\/+$/, "");
-  return `${base}/${env.SITE_ID || ""}`;
-}
-
-/**
- * Is this install configured enough to do anything at all?
- *
- * Rule 3 of the worker contract: SITE_ID + NORG_SITE_KEY are compulsory, and
- * without both, every NORG endpoint refuses this install, so the correct
- * behaviour is total passthrough rather than a stream of doomed calls.
- *
- * @param {Object} env Config object.
- * @returns {boolean} True when both credentials are present.
- */
-export function isConfigured(env) {
-  return Boolean(env.SITE_ID && env.NORG_SITE_KEY);
-}
 
 export { CONFIG_HEADERS as __test_CONFIG_HEADERS };

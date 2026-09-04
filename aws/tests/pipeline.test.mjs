@@ -14,9 +14,9 @@ import { strict as assert } from "node:assert";
 import { afterEach, test } from "node:test";
 
 import { handler } from "../lambda/edge-router-lambda.js";
-import { __test_setFeed } from "../lambda/lib/feed.js";
-import { __test_reset as resetDeferred } from "../lambda/lib/deferred.js";
-import { __test_reset as resetTelemetry } from "../lambda/lib/telemetry.js";
+import { __test_setFeed } from "../../core/feed.js";
+import { __test_reset as resetDeferred } from "../../core/deferred.js";
+import { __test_reset as resetTelemetry } from "../../core/telemetry.js";
 import {
   CHROME_UA,
   GOOGLEBOT_UA,

@@ -27,7 +27,7 @@ import {
   MIRROR_FETCH_TIMEOUT_MS,
   RESERVED_ASSET_CACHE_CONTROL,
 } from "./constants.mjs";
-import { EDGE_SCRIPT_VERSION, binding, contentStem, controlHeaders, edgeEnv } from "./config.js";
+import { binding, contentStem, controlHeaders, edgeEnv } from "./config.js";
 
 /**
  * Fetch a NORG-rendered object for this path from the edge-content
@@ -194,10 +194,10 @@ export function healthResponse(env, entitled) {
   return new Response(
     JSON.stringify({
       site_id: env.SITE_ID || null,
-      version: EDGE_SCRIPT_VERSION,
+      version: env.EDGE_SCRIPT_VERSION || "unknown",
       env: edgeEnv(env),
       disabled: binding(env, "EDGE_DISABLED") === "true",
-      platform: "cloudfront",
+      platform: env.EDGE_PLATFORM || "unknown",
       // Whether this container currently holds an authenticated feed. The first
       // question to ask when an install is "doing nothing" — an unentitled
       // router passes everything through and is otherwise indistinguishable

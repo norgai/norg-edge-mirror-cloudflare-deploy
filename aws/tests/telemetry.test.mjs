@@ -12,15 +12,21 @@ import {
   logEdgeEvent,
   maybeHeartbeat,
   requestRender,
-} from "../lambda/lib/telemetry.js";
+} from "../../core/telemetry.js";
 import {
   __test_reset as resetDeferred,
   __test_state as deferredState,
   flushDeferred,
-} from "../lambda/lib/deferred.js";
-import { RENDER_DEDUP_MAX_ENTRIES } from "../lambda/lib/constants.mjs";
+} from "../../core/deferred.js";
+import { RENDER_DEDUP_MAX_ENTRIES } from "../../core/constants.mjs";
 
-const ENV = { SITE_ID: "site-1", NORG_SITE_KEY: "k" };
+const ENV = {
+  SITE_ID: "site-1",
+  NORG_SITE_KEY: "k",
+  // Stamped by the provider adapter; core reads both from the config object.
+  EDGE_SCRIPT_VERSION: "0.2.0",
+  EDGE_PLATFORM: "cloudfront",
+};
 const BOT = { is_ai_bot: true, bot_name: "GPTBot", company: "OpenAI", purpose: "training" };
 
 const realFetch = globalThis.fetch;

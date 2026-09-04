@@ -7,14 +7,14 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 
+import { readConfig } from "../lambda/lib/config.js";
 import {
   binding,
   contentStem,
   controlHeaders,
   edgeEnv,
   isConfigured,
-  readConfig,
-} from "../lambda/lib/config.js";
+} from "../../core/config.js";
 
 /**
  * Build a CloudFront request carrying the given custom origin headers.
@@ -43,7 +43,16 @@ test("reads every binding from custom origin headers", () => {
     "x-norg-events-verbose": "true",
   });
 
-  assert.deepEqual(readConfig(request), {
+  const env = readConfig(request);
+  // The adapter stamps its own identity onto the config object; core reads the
+  // version and platform from there rather than importing a constant, so one
+  // core serves every provider.
+  assert.equal(env.EDGE_SCRIPT_VERSION, "0.2.0");
+  assert.equal(env.EDGE_PLATFORM, "cloudfront");
+  delete env.EDGE_SCRIPT_VERSION;
+  delete env.EDGE_PLATFORM;
+
+  assert.deepEqual(env, {
     SITE_ID: "site-1",
     NORG_SITE_KEY: "nek_live_secret",
     NORG_API_URL: "https://api.test.norg.ai",
@@ -81,8 +90,14 @@ test("deletes config headers even when unset, and leaves the customer's own alon
 });
 
 test("survives an origin with no custom headers at all", () => {
-  assert.deepEqual(readConfig({ uri: "/", origin: { custom: { domainName: "e.com" } } }), {});
-  assert.deepEqual(readConfig({ uri: "/" }), {});
+  // Still carries the adapter's identity — an unconfigured install is inert,
+  // but it still knows which artifact it is.
+  for (const request of [{ uri: "/", origin: { custom: { domainName: "e.com" } } }, { uri: "/" }]) {
+    assert.deepEqual(readConfig(request), {
+      EDGE_SCRIPT_VERSION: "0.2.0",
+      EDGE_PLATFORM: "cloudfront",
+    });
+  }
 });
 
 test("absent bindings take the baked default, set ones override it", () => {
@@ -107,10 +122,18 @@ test("contentStem joins the content base to the site id without a double slash",
 });
 
 test("control headers carry both credentials and the script version", () => {
-  const headers = controlHeaders({ SITE_ID: "site-1", NORG_SITE_KEY: "k" });
+  const headers = controlHeaders({
+    SITE_ID: "site-1",
+    NORG_SITE_KEY: "k",
+    EDGE_SCRIPT_VERSION: "0.2.0",
+  });
   assert.equal(headers["X-Norg-Site-Id"], "site-1");
   assert.equal(headers["X-Norg-Site-Key"], "k");
   assert.match(headers["X-Norg-Edge-Version"], /^\d+\.\d+\.\d+$/);
+
+  // A config object with no version still produces a usable header rather than
+  // "undefined" reaching NORG.
+  assert.equal(controlHeaders({})["X-Norg-Edge-Version"], "unknown");
 });
 
 test("an install missing either credential is not configured", () => {
