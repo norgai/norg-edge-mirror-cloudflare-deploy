@@ -288,21 +288,48 @@ test("a mirror too large to inline is served by repointing the origin at NORG", 
   );
 });
 
-test("a mirror with no declared length is treated as large rather than risking a 502", async () => {
+test("a STREAMED mirror is inlined with NORG headers, not handed to CloudFront", async () => {
+  // The receptionist is a Workers service: it streams over HTTP/2 and sends no
+  // content-length, so this is the normal case, not an edge case. Treating it
+  // as oversized made the origin-switch fallback the only path ever taken, and
+  // that path cannot stamp the headers the install's verification looks for.
   const { result } = await run(
     { headers: { "user-agent": GPTBOT_UA } },
     {
-      // A streamed body has no content-length, which is the case that matters:
-      // guessing "small" and being wrong is a 502.
       mirror: () =>
         new Response(
           new ReadableStream({
             start(controller) {
-              controller.enqueue(new TextEncoder().encode("<html>stream</html>"));
+              controller.enqueue(new TextEncoder().encode("<html><body>NORG render</body></html>"));
               controller.close();
             },
           }),
-          { status: 200, headers: { "content-type": "text/html" } },
+          { status: 200, headers: { "content-type": "text/html; charset=utf-8" } },
+        ),
+    },
+  );
+
+  assert.equal(header(result, "x-norg-edge"), "mirror", "a streamed mirror must still be labelled");
+  assert.equal(header(result, "cache-control"), "private, no-store");
+  assert.equal(header(result, "x-norg-edge-env"), "test");
+  assert.match(result.body, /NORG render/);
+});
+
+test("a streamed mirror that overflows the cap still falls back to the origin switch", async () => {
+  const { result } = await run(
+    { headers: { "user-agent": GPTBOT_UA } },
+    {
+      // Streamed AND over the inline cap: nothing can be returned as a
+      // generated response, so CloudFront must fetch it itself.
+      mirror: () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode("x".repeat(900 * 1024)));
+              controller.close();
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/pdf" } },
         ),
     },
   );

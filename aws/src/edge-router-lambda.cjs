@@ -1113,20 +1113,24 @@ async function forwardMcpToNorg(request, env, url) {
     return null;
   }
 }
-function serveMirror(cfRequest, response, env, url, keySuffix) {
+async function serveMirror(cfRequest, response, env, url, keySuffix) {
+  const switchOrigin = () => switchOriginToNorg(cfRequest, contentStem(env), keySuffix, receptionistHeaders(env));
   const declaredLength = response.headers.get("content-length");
-  const declared = declaredLength === null ? Number.NaN : Number(declaredLength);
-  if (!Number.isFinite(declared) || declared > MAX_INLINE_MIRROR_BYTES) {
-    return switchOriginToNorg(cfRequest, contentStem(env), keySuffix, receptionistHeaders(env));
+  if (declaredLength !== null) {
+    const declared = Number(declaredLength);
+    if (!Number.isFinite(declared) || declared > MAX_INLINE_MIRROR_BYTES) return switchOrigin();
   }
-  return withAlternateFormatHeaders(mirrorResponse(response, env), url, url.pathname);
+  const buffered = Buffer.from(await response.arrayBuffer());
+  if (buffered.byteLength > MAX_INLINE_MIRROR_BYTES) return switchOrigin();
+  const inlined = new Response(buffered, { status: 200, headers: response.headers });
+  return withAlternateFormatHeaders(mirrorResponse(inlined, env), url, url.pathname);
 }
 async function serveAgent(cfRequest, request, env, url, classification) {
   const keySuffix = pathToKeySuffix(url.pathname);
   const { response, missing } = await fetchFromNorg(env, keySuffix);
   if (response) {
     logEdgeEvent(env, request, classification, "mirror", null, response.status);
-    return serveMirror(cfRequest, response, env, url, keySuffix);
+    return await serveMirror(cfRequest, response, env, url, keySuffix);
   }
   if (missing && binding(env, "LAZY_RENDER_ENABLED") !== "false") {
     requestRender(env, url);
@@ -1162,7 +1166,7 @@ async function serveAgenticPath(cfRequest, request, env, url, prefix) {
     return PASSTHROUGH;
   }
   logEdgeEvent(env, request, classification, "agentic_path", null, response.status);
-  return serveMirror(cfRequest, response, env, url, keySuffix);
+  return await serveMirror(cfRequest, response, env, url, keySuffix);
 }
 async function serveAgentOverride(cfRequest, request, env, url) {
   const classification = agentOverrideClassification();
@@ -1170,7 +1174,7 @@ async function serveAgentOverride(cfRequest, request, env, url) {
   const { response } = await fetchFromNorg(env, keySuffix);
   if (response) {
     logEdgeEvent(env, request, classification, "agent_param_override", null, response.status);
-    return serveMirror(cfRequest, response, env, url, keySuffix);
+    return await serveMirror(cfRequest, response, env, url, keySuffix);
   }
   logEdgeEvent(env, request, classification, "agent_param_override_miss", null, null);
   return PASSTHROUGH;

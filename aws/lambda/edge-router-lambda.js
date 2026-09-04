@@ -275,21 +275,32 @@ async function forwardMcpToNorg(request, env, url) {
  * @param {string} keySuffix Mirror key suffix.
  * @returns {Response|Object} Response, or PASSTHROUGH after an origin switch.
  */
-function serveMirror(cfRequest, response, env, url, keySuffix) {
-  // An object too large to return as a generated response is handed to
-  // CloudFront to fetch itself. Unknown length is treated as large: guessing
-  // small and being wrong is a 502, guessing large costs one re-fetch.
-  //
-  // The header is checked for presence BEFORE coercion, because Number(null)
-  // is 0 — which is finite and under the cap, so a streamed body with no
-  // content-length would take the inline path and risk the very 502 this
-  // branch exists to avoid.
+async function serveMirror(cfRequest, response, env, url, keySuffix) {
+  const switchOrigin = () =>
+    switchOriginToNorg(cfRequest, contentStem(env), keySuffix, receptionistHeaders(env));
+
+  // A DECLARED length over the cap is handed straight to CloudFront: there is
+  // no point buffering a body we already know we cannot return.
   const declaredLength = response.headers.get("content-length");
-  const declared = declaredLength === null ? Number.NaN : Number(declaredLength);
-  if (!Number.isFinite(declared) || declared > MAX_INLINE_MIRROR_BYTES) {
-    return switchOriginToNorg(cfRequest, contentStem(env), keySuffix, receptionistHeaders(env));
+  if (declaredLength !== null) {
+    const declared = Number(declaredLength);
+    if (!Number.isFinite(declared) || declared > MAX_INLINE_MIRROR_BYTES) return switchOrigin();
   }
-  return withAlternateFormatHeaders(mirrorResponse(response, env), url, url.pathname);
+
+  // An ABSENT length is the normal case, not the exception: the receptionist is
+  // a Workers service that streams over HTTP/2 and sends no content-length at
+  // all. Treating unknown as "too large" therefore made the origin-switch
+  // fallback the only path ever taken — and on that path CloudFront fetches the
+  // mirror itself, so nothing here can stamp X-Norg-Edge, the no-store
+  // directives or X-Norg-Edge-Env. Every mirror was served without the headers
+  // that identify it, which is what the install's own verification checks for.
+  //
+  // So buffer instead, and only fall back when the bytes actually overflow.
+  const buffered = Buffer.from(await response.arrayBuffer());
+  if (buffered.byteLength > MAX_INLINE_MIRROR_BYTES) return switchOrigin();
+
+  const inlined = new Response(buffered, { status: 200, headers: response.headers });
+  return withAlternateFormatHeaders(mirrorResponse(inlined, env), url, url.pathname);
 }
 
 /**
@@ -336,7 +347,7 @@ async function serveAgent(cfRequest, request, env, url, classification) {
 
   if (response) {
     logEdgeEvent(env, request, classification, "mirror", null, response.status);
-    return serveMirror(cfRequest, response, env, url, keySuffix);
+    return await serveMirror(cfRequest, response, env, url, keySuffix);
   }
 
   // Only a definite 404 means "NORG has not rendered this yet".
@@ -413,7 +424,7 @@ async function serveAgenticPath(cfRequest, request, env, url, prefix) {
     return PASSTHROUGH;
   }
   logEdgeEvent(env, request, classification, "agentic_path", null, response.status);
-  return serveMirror(cfRequest, response, env, url, keySuffix);
+  return await serveMirror(cfRequest, response, env, url, keySuffix);
 }
 
 /**
@@ -436,7 +447,7 @@ async function serveAgentOverride(cfRequest, request, env, url) {
 
   if (response) {
     logEdgeEvent(env, request, classification, "agent_param_override", null, response.status);
-    return serveMirror(cfRequest, response, env, url, keySuffix);
+    return await serveMirror(cfRequest, response, env, url, keySuffix);
   }
   logEdgeEvent(env, request, classification, "agent_param_override_miss", null, null);
   return PASSTHROUGH;
