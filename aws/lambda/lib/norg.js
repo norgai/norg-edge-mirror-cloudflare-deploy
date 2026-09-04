@@ -205,6 +205,16 @@ export function healthResponse(env, entitled) {
       entitled,
       ts: Date.now(),
     }),
-    { status: 200, headers: { "Content-Type": "application/json" } },
+    {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json",
+        // Not in the Cloudflare worker, and needed here: CloudFront applies its
+        // cache policy's default TTL to a 200 that says nothing, so a probe
+        // answer would be cached and later probes would read a stale `ts` and
+        // `entitled` — the two fields the probe exists to report.
+        "Cache-Control": "private, no-store",
+      },
+    },
   );
 }
