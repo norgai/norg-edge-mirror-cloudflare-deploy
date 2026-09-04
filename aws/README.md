@@ -238,12 +238,25 @@ diverted on CloudFront where it would be on Cloudflare. The failure direction is
 the safe one — it under-serves agents rather than over-serving humans — but it
 means fewer diverts on some crawlers.
 
-**There is no mirror response cache.** On Cloudflare the render is cached in the
-colo under a synthetic, tenant-unique key that no public request can reach. On
-CloudFront the only cache available is your distribution's, keyed by your public
-URL — where a cached mirror could be replayed to a human, the exact failure
-`no-store` exists to prevent. NORG's own edge-content service still caches
-behind its auth check, so what is lost is a hop, not correctness.
+**There is no mirror response cache.** Not because the cache key is too coarse
+— it does include `x-norg-agent`, so agent and human traffic already occupy
+different entries. The reason is what that header can mean: it is stamped by a
+viewer-request function that has no network access, so it cannot check the
+authenticated feed or verify a source IP, and it is deliberately a *superset* of
+what actually gets diverted. A spoofed `curl -A GPTBot` from any address lands
+in the same bucket as a real, verified GPTBot.
+
+That is harmless today, because everything in that bucket still reaches the
+router, which then applies classification, serving policy and IP verification.
+Caching a mirror there would not be: a cache hit skips the router entirely, and
+the spoofer would be served a mirror a genuine crawler had warmed.
+
+Making it cacheable needs exact classification at viewer-request, which means
+putting the bot feed in a CloudFront KeyValueStore — possible, but it places a
+local copy of the patterns at the edge and means a revoked site key stops
+diverting only when entries expire rather than at once. NORG's edge-content
+service caches behind its own auth check regardless, so what is lost today is a
+hop, not correctness.
 
 ---
 

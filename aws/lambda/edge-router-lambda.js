@@ -294,13 +294,33 @@ function serveMirror(cfRequest, response, env, url, keySuffix) {
 /**
  * Serve an AI agent: the NORG render if it exists, else the stripped origin.
  *
- * NO RESPONSE CACHE, unlike Cloudflare. There the mirror is cached in the colo
- * under a synthetic tenant-unique key, unreachable by a public request. On
- * CloudFront the only cache available is the distribution's own, keyed by the
- * customer's public URL — so a cached mirror could be replayed to a human, the
- * exact failure `private, no-store` exists to prevent. The receptionist keeps
- * its own cache behind its auth check, so the bucket still only sees cold
- * misses; what is lost is a hop, not correctness.
+ * NO RESPONSE CACHE, unlike Cloudflare, and the reason is subtler than "the
+ * CloudFront cache is keyed by URL" — it is not, the cache key here includes
+ * `x-norg-agent` precisely so agent and human traffic cannot share an entry.
+ *
+ * The problem is what that header means. It is stamped by a viewer-request
+ * function with no network access, so it cannot consult the authenticated feed
+ * and cannot verify a source IP. It is therefore a deliberate SUPERSET of the
+ * divert set (see viewer-classifier.js): a spoofed `curl -A GPTBot` from any
+ * address lands in the same `x-norg-agent: 1` bucket as a genuinely verified
+ * GPTBot, as do a never_divert crawler and a person on an unusual browser.
+ *
+ * Today that over-inclusion is harmless — everyone in the bucket still reaches
+ * this function, which applies classification, serving_policy and CIDR
+ * verification and passes them through. Caching the mirror there would make it
+ * harmful: a cache HIT skips this function entirely, so the spoofer would be
+ * served a mirror a real crawler had warmed. That is exactly the harvesting
+ * verifiedSource exists to prevent, reintroduced through the cache.
+ *
+ * Caching mirrors safely needs an EXACT stamp — classification plus the CIDR
+ * check at viewer-request — which means putting the feed in a CloudFront
+ * KeyValueStore. That is a real option, with two costs to weigh first: it puts
+ * a local copy of the patterns at the edge (rule 3), and because cache hits no
+ * longer reach this function, a NORG key revocation stops diverting only when
+ * the entry expires rather than immediately.
+ *
+ * Meanwhile the receptionist keeps its own cache behind its auth check, so the
+ * bucket still only sees cold misses; what is lost is a hop, not correctness.
  *
  * @param {Object} cfRequest CloudFront request object.
  * @param {Request} request Request view.
