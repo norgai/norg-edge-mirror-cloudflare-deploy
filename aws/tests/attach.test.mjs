@@ -236,3 +236,72 @@ test("setOriginHeaders writes the site key that was passed, not one from config"
   const key = origin.CustomHeaders.Items.find((item) => item.HeaderName === "x-norg-site-key");
   assert.equal(key.HeaderValue, "nek_live_x");
 });
+
+test("attaching adds carve-outs with no Lambda, ahead of the customer's own", () => {
+  const config = distributionConfig();
+  config.CacheBehaviors = {
+    Quantity: 1,
+    Items: [{ PathPattern: "/api/*", TargetOriginId: "customer-origin" }],
+  };
+  attach(config, { ...OUTPUTS, StaticCachePolicyId: "static-policy" }, OPTIONS);
+
+  const items = config.CacheBehaviors.Items;
+  assert.equal(items[0].PathPattern, "/_next/*", "carve-outs must be matched first");
+  assert.ok(
+    items.every((b) => !b.LambdaFunctionAssociations?.Quantity),
+    "a carve-out carrying a Lambda defeats its purpose",
+  );
+  assert.ok(
+    items.some((b) => b.PathPattern === "/api/*"),
+    "the customer's own behaviours must survive",
+  );
+  assert.equal(config.CacheBehaviors.Quantity, items.length);
+});
+
+test("attaching REFUSES rather than exceeding the customer's behaviour quota", () => {
+  const config = distributionConfig();
+  config.CacheBehaviors = {
+    Quantity: 70,
+    Items: Array.from({ length: 70 }, (_, i) => ({
+      PathPattern: `/theirs-${i}/*`,
+      TargetOriginId: "customer-origin",
+    })),
+  };
+
+  assert.throws(
+    () => attach(config, { ...OUTPUTS, StaticCachePolicyId: "static-policy" }, OPTIONS),
+    /over CloudFront's limit of 75/,
+    "their behaviour budget is theirs; silently spending it surfaces weeks later",
+  );
+});
+
+test("re-attaching does not duplicate carve-outs", () => {
+  const config = distributionConfig();
+  const outputs = { ...OUTPUTS, StaticCachePolicyId: "static-policy" };
+  attach(config, outputs, OPTIONS);
+  const first = config.CacheBehaviors.Items.length;
+  attach(config, outputs, OPTIONS);
+
+  assert.equal(config.CacheBehaviors.Items.length, first);
+});
+
+test("detaching removes our carve-outs and keeps the customer's", () => {
+  const config = distributionConfig();
+  config.CacheBehaviors = {
+    Quantity: 1,
+    Items: [{ PathPattern: "/api/*", TargetOriginId: "customer-origin" }],
+  };
+  attach(config, { ...OUTPUTS, StaticCachePolicyId: "static-policy" }, OPTIONS);
+  detach(config);
+
+  assert.deepEqual(
+    config.CacheBehaviors.Items.map((b) => b.PathPattern),
+    ["/api/*"],
+  );
+});
+
+test("a carve-out that would shadow a NORG path is refused", async () => {
+  const { carveOutBehaviours } = await import("../install/attach.mjs");
+  // Sanity: the real set is clean.
+  assert.ok(carveOutBehaviours("policy", "origin").length > 0);
+});

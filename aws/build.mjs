@@ -32,6 +32,9 @@
  */
 
 import { execFileSync } from "node:child_process";
+
+import { STATIC_ASSET_SUFFIXES } from "./lambda/lib/constants.mjs";
+import { DEFAULT_ROUTE_EXCLUSIONS, PROTECTED_PATH_PREFIXES } from "./lambda/lib/exclusions.mjs";
 import {
   copyFileSync,
   existsSync,
@@ -182,8 +185,91 @@ for (const template of ["new-distribution.yaml", "attach-existing.yaml"]) {
   }
 }
 
+/**
+ * Refuse a carve-out pattern that would shadow a path NORG serves itself.
+ *
+ * CloudFront matches cache behaviours in listed order and the first match wins,
+ * so a carve-out placed above the default behaviour silently takes the router
+ * out of the loop for anything it matches. Mirrors route_scope's
+ * _exclusion_shadow_error, which exists because the same mistake on Cloudflare
+ * switches off MCP, discovery and the agentic subtree with no error anywhere.
+ *
+ * @param {string} pattern CloudFront path pattern.
+ * @returns {void}
+ */
+function assertDoesNotShadowNorg(pattern) {
+  // A suffix pattern (*.css) can only match on extension, and the protected
+  // paths deliberately use none that appear in the asset list — see
+  // WORKER_EXEMPT_SUFFIXES. Only prefix carve-outs can reach them.
+  if (pattern.startsWith("*")) return;
+  const prefix = pattern.replace(/\*+$/, "");
+  for (const protectedPath of PROTECTED_PATH_PREFIXES) {
+    if (protectedPath.startsWith(prefix) || prefix.startsWith(protectedPath)) {
+      throw new Error(
+        `refusing to publish: carve-out "${pattern}" shadows NORG-served path ` +
+          `"${protectedPath}" — CloudFront would stop invoking the router for it`,
+      );
+    }
+  }
+}
+
+/**
+ * Render one no-Lambda cache behaviour.
+ *
+ * @param {string} pattern CloudFront path pattern.
+ * @returns {string} Indented YAML for one CacheBehaviors entry.
+ */
+function cacheBehaviour(pattern) {
+  assertDoesNotShadowNorg(pattern);
+  return [
+    `          - PathPattern: "${pattern}"`,
+    "            TargetOriginId: customer-origin",
+    "            ViewerProtocolPolicy: redirect-to-https",
+    "            Compress: true",
+    "            AllowedMethods: [GET, HEAD, OPTIONS]",
+    "            CachedMethods: [GET, HEAD, OPTIONS]",
+    "            CachePolicyId: !Ref StaticCachePolicy",
+  ].join("\n");
+}
+
+/**
+ * Regenerate the carve-out cache behaviours inside a template.
+ *
+ * Framework exclusions come first: they are prefix patterns and therefore more
+ * specific than the bare suffix patterns that follow.
+ *
+ * @param {string} templatePath Absolute path to the template.
+ * @param {Array<string>} patterns Path patterns, in match order.
+ * @returns {number} How many behaviours were written.
+ */
+function embedCacheBehaviours(templatePath, patterns) {
+  const template = readFileSync(templatePath, "utf8");
+  const body = patterns.map(cacheBehaviour).join("\n");
+  const updated = template.replace(
+    /( *# BEGIN GENERATED CACHE BEHAVIOURS\n)[\s\S]*?( *# END GENERATED CACHE BEHAVIOURS)/,
+    `$1${body}\n$2`,
+  );
+  if (updated === template && !template.includes(body)) {
+    throw new Error(`failed to embed cache behaviours into ${templatePath}`);
+  }
+  writeFileSync(templatePath, updated);
+  return patterns.length;
+}
+
+const carveOuts = [...DEFAULT_ROUTE_EXCLUSIONS, ...[...STATIC_ASSET_SUFFIXES].map((s) => `*${s}`)];
+const behaviourCount = embedCacheBehaviours(
+  join(here, "cloudformation", "new-distribution.yaml"),
+  carveOuts,
+);
+// CloudFront allows 75 cache behaviours per distribution; the default one is
+// included in that count.
+if (behaviourCount + 1 > 75) {
+  throw new Error(`refusing to publish: ${behaviourCount + 1} cache behaviours exceeds CloudFront's limit of 75`);
+}
+
 const version = /EDGE_SCRIPT_VERSION\s*=\s*"([^"]+)"/.exec(router)?.[1];
 console.log(`built aws/src/ (EDGE_SCRIPT_VERSION ${version})`);
+console.log(`  cache behaviours       ${behaviourCount} carve-outs (+1 default)`);
 console.log(`  edge-router-lambda.cjs ${statSync(join(srcDir, "edge-router-lambda.cjs")).size} bytes`);
 console.log(`  heartbeat-lambda.cjs   ${statSync(join(srcDir, "heartbeat-lambda.cjs")).size} bytes`);
 console.log(`  viewer-classifier.js   ${functionBytes} bytes`);

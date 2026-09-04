@@ -39,6 +39,13 @@ import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { pathToFileURL } from "node:url";
 
+import {
+  CLOUDFRONT_BEHAVIOUR_QUOTA,
+  CURATED_ASSET_SUFFIXES,
+  DEFAULT_ROUTE_EXCLUSIONS,
+  PROTECTED_PATH_PREFIXES,
+} from "../lambda/lib/exclusions.mjs";
+
 const REGION = "us-east-1";
 
 /**
@@ -225,6 +232,7 @@ function attach(config, outputs, options) {
   setOriginHeaders(origin, outputs, options);
   changes.push(`origin headers  -> ${origin.Id} (install config, incl. the site key)`);
 
+  changes.push(...addCarveOuts(config, outputs));
   return changes;
 }
 
@@ -270,6 +278,14 @@ function detach(config) {
   behaviour.LambdaFunctionAssociations = { Quantity: 0, Items: [] };
   behaviour.FunctionAssociations = { Quantity: 0, Items: [] };
 
+  const ourPatterns = new Set(
+    carveOutBehaviours("", "").map((b) => b.PathPattern),
+  );
+  const keptBehaviours = (config.CacheBehaviors?.Items || []).filter(
+    (b) => !ourPatterns.has(b.PathPattern),
+  );
+  config.CacheBehaviors = { Quantity: keptBehaviours.length, Items: keptBehaviours };
+
   for (const origin of config.Origins.Items) {
     const kept = (origin.CustomHeaders?.Items || []).filter(
       (item) => !item.HeaderName.startsWith("x-norg-"),
@@ -281,7 +297,89 @@ function detach(config) {
     "origin-request  -> removed",
     "viewer-request  -> removed",
     "origin headers  -> x-norg-* removed",
+    "carve-outs      -> removed (yours kept)",
     "cache policy    unchanged (change it back yourself if you replaced it)",
+  ];
+}
+
+/**
+ * Carve-out behaviours: paths the router must never be invoked for.
+ *
+ * The CloudFront equivalent of the no-worker routes Cloudflare binds — a
+ * behaviour with no Lambda association means the router is never invoked and
+ * never billed. Framework exclusions first, since prefix patterns are more
+ * specific than the bare suffix patterns after them.
+ *
+ * @param {string} staticCachePolicyId Cache policy for these behaviours.
+ * @param {string} targetOriginId Origin the default behaviour points at.
+ * @returns {Array<Object>} Behaviour items in match order.
+ */
+function carveOutBehaviours(staticCachePolicyId, targetOriginId) {
+  const patterns = [
+    ...DEFAULT_ROUTE_EXCLUSIONS,
+    ...CURATED_ASSET_SUFFIXES.map((suffix) => `*${suffix}`),
+  ];
+  for (const pattern of patterns) {
+    if (pattern.startsWith("*")) continue;
+    const prefix = pattern.replace(/\*+$/, "");
+    const clash = PROTECTED_PATH_PREFIXES.find(
+      (p) => p.startsWith(prefix) || prefix.startsWith(p),
+    );
+    if (clash) {
+      throw new Error(
+        `carve-out "${pattern}" shadows NORG-served path "${clash}" — ` +
+          "CloudFront would stop invoking the router for it",
+      );
+    }
+  }
+  return patterns.map((PathPattern) => ({
+    PathPattern,
+    TargetOriginId: targetOriginId,
+    ViewerProtocolPolicy: "redirect-to-https",
+    Compress: true,
+    AllowedMethods: { Quantity: 3, Items: ["GET", "HEAD", "OPTIONS"],
+      CachedMethods: { Quantity: 3, Items: ["GET", "HEAD", "OPTIONS"] } },
+    CachePolicyId: staticCachePolicyId,
+    LambdaFunctionAssociations: { Quantity: 0, Items: [] },
+    FunctionAssociations: { Quantity: 0, Items: [] },
+  }));
+}
+
+/**
+ * Add the carve-outs, refusing rather than exceeding the customer's quota.
+ *
+ * Their behaviour budget is theirs; silently spending the last of it is the
+ * kind of change that surfaces weeks later as "we cannot add a behaviour".
+ *
+ * @param {Object} config Distribution config, mutated in place.
+ * @param {Object} outputs Stack outputs.
+ * @returns {Array<string>} Summary lines.
+ */
+function addCarveOuts(config, outputs) {
+  const behaviour = config.DefaultCacheBehavior;
+  const existing = config.CacheBehaviors?.Items || [];
+  const ours = carveOutBehaviours(outputs.StaticCachePolicyId, behaviour.TargetOriginId);
+  const mine = new Set(ours.map((b) => b.PathPattern));
+  const theirs = existing.filter((b) => !mine.has(b.PathPattern));
+
+  const total = theirs.length + ours.length + 1; // +1 for the default behaviour
+  if (total > CLOUDFRONT_BEHAVIOUR_QUOTA) {
+    throw new Error(
+      `this distribution has ${theirs.length} cache behaviours; adding ${ours.length} ` +
+        `carve-outs would reach ${total}, over CloudFront's limit of ` +
+        `${CLOUDFRONT_BEHAVIOUR_QUOTA}.\nRequest a quota increase, or remove some ` +
+        "behaviours first — the router works without the carve-outs, they only " +
+        "stop it being invoked for static assets.",
+    );
+  }
+
+  // Ours go FIRST: CloudFront matches in order and the first match wins, so a
+  // broad customer behaviour listed above them would swallow the carve-outs.
+  const items = [...ours, ...theirs];
+  config.CacheBehaviors = { Quantity: items.length, Items: items };
+  return [
+    `carve-outs      +${ours.length} behaviours with no Lambda ` +
+      `(${theirs.length} of yours kept, ${total}/${CLOUDFRONT_BEHAVIOUR_QUOTA} used)`,
   ];
 }
 
@@ -367,4 +465,4 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   });
 }
 
-export { attach, detach, parseArgs, resolveCachePolicy, setOriginHeaders };
+export { addCarveOuts, attach, carveOutBehaviours, detach, parseArgs, resolveCachePolicy, setOriginHeaders };

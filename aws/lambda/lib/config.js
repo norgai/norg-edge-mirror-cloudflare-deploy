@@ -30,8 +30,12 @@ import { BINDING_DEFAULTS } from "./constants.mjs";
  * deployable with its own SHA-256 pin; content-craft compares it against
  * EDGE_WORKER_VERSION_CLOUDFRONT, not EDGE_WORKER_VERSION. Behaviour tracks
  * edge-router-worker.js 0.11.6.
+ *
+ * 0.2.0 — carve-out cache behaviours and a 192 MB router. No request-handling
+ * change; the version moves because the deployed artifact and the distribution
+ * shape it expects both did.
  */
-export const EDGE_SCRIPT_VERSION = "0.1.0";
+export const EDGE_SCRIPT_VERSION = "0.2.0";
 
 // Custom origin header -> binding name. Mirrors build_worker_bindings() in
 // content-craft's install_service.py; adding a binding there means adding it

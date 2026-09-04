@@ -67,6 +67,17 @@ for (const file of TEMPLATES) {
     );
   });
 
+  test(`${file}: the router runs at 192 MB, not the original 512`, () => {
+    // Measured peak was 116 MB across 91 live invocations. Lambda@Edge bills
+    // GB-seconds with no free tier, so provisioning is a direct cost multiplier.
+    // Extract the resource block rather than matching within a character
+    // window — a window breaks the moment someone adds a comment.
+    const block = /^  EdgeRouterFunction:\n((?:    .*\n|\n)*)/m.exec(template);
+    assert.ok(block, "no EdgeRouterFunction resource");
+    assert.match(block[1], /MemorySize: 192/);
+    assert.equal(/MemorySize: 512/.test(block[1]), false);
+  });
+
   test(`${file}: the Lambda@Edge role trusts both required principals`, () => {
     // edgelambda.amazonaws.com is what replicates the function to the edge;
     // without it the association fails at deploy with an opaque error.
@@ -127,6 +138,54 @@ for (const file of TEMPLATES) {
     assert.equal(dedented, source.trimEnd(), "run: npm run build:aws");
   });
 }
+
+test("every generated carve-out has NO Lambda and NO CloudFront function", async () => {
+  // A carve-out that kept an association would defeat its entire purpose: the
+  // router would still be invoked, and still billed, for every static asset.
+  const template = readFileSync(join(cfnDir, "new-distribution.yaml"), "utf8");
+  const block = /# BEGIN GENERATED CACHE BEHAVIOURS\n([\s\S]*?)# END GENERATED/.exec(template);
+  assert.ok(block, "no generated cache-behaviour block");
+
+  assert.equal(/LambdaFunctionAssociations/.test(block[1]), false);
+  assert.equal(/FunctionAssociations/.test(block[1]), false);
+  assert.match(block[1], /CachePolicyId: !Ref StaticCachePolicy/);
+});
+
+test("the generated carve-outs match the shared suffix list exactly", async () => {
+  const { STATIC_ASSET_SUFFIXES } = await import("../lambda/lib/constants.mjs");
+  const { DEFAULT_ROUTE_EXCLUSIONS } = await import("../lambda/lib/exclusions.mjs");
+  const template = readFileSync(join(cfnDir, "new-distribution.yaml"), "utf8");
+  const block = /# BEGIN GENERATED CACHE BEHAVIOURS\n([\s\S]*?)# END GENERATED/.exec(template)[1];
+  const patterns = [...block.matchAll(/PathPattern: "([^"]+)"/g)].map((m) => m[1]);
+
+  const expected = [
+    ...DEFAULT_ROUTE_EXCLUSIONS,
+    ...[...STATIC_ASSET_SUFFIXES].map((s) => `*${s}`),
+  ];
+  assert.deepEqual(patterns, expected, "run: npm run build:aws");
+});
+
+test("framework exclusions are matched before the bare suffix patterns", () => {
+  // CloudFront takes the first match; a prefix carve-out must out-rank the
+  // suffix ones so /_next/static/x.css lands on the framework behaviour.
+  const template = readFileSync(join(cfnDir, "new-distribution.yaml"), "utf8");
+  const block = /# BEGIN GENERATED CACHE BEHAVIOURS\n([\s\S]*?)# END GENERATED/.exec(template)[1];
+  const patterns = [...block.matchAll(/PathPattern: "([^"]+)"/g)].map((m) => m[1]);
+
+  const firstSuffix = patterns.findIndex((p) => p.startsWith("*"));
+  const lastPrefix = patterns.map((p) => !p.startsWith("*")).lastIndexOf(true);
+  assert.ok(lastPrefix < firstSuffix, "a prefix carve-out is listed after a suffix one");
+});
+
+test("the carve-out cache policy does not split the cache by agent", () => {
+  // These bytes are identical for every caller; keying on x-norg-agent would
+  // double the entries for nothing.
+  const template = readFileSync(join(cfnDir, "new-distribution.yaml"), "utf8");
+  const policy = /StaticCachePolicy:[\s\S]*?CookieBehavior: none/.exec(template);
+  assert.ok(policy, "no StaticCachePolicy");
+  assert.equal(/x-norg-agent/.test(policy[0]), false);
+  assert.match(policy[0], /HeaderBehavior: none/);
+});
 
 test("the origin-request association includes the request body", () => {
   // The MCP JSON-RPC transport is a POST the router forwards to NORG.

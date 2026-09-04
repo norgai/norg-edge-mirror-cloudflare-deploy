@@ -129,7 +129,13 @@ Resources:
       Runtime: nodejs20.x
       Role: !GetAtt EdgeFunctionRole.Arn
       Timeout: 30
-      MemorySize: 512
+      # 192 MB, not the 512 MB this started at. Measured on a live install:
+      # peak 116 MB across 91 invocations, so this keeps ~65% headroom while
+      # cutting billed GB-seconds by 62% — Lambda@Edge charges per GB-second and
+      # has no free tier, so the over-provisioning was a straight multiplier on
+      # every request. Do not drop to 128 MB: the strip fallback buffers a whole
+      # origin response body.
+      MemorySize: 192
       Code:
         S3Bucket: !Ref ArtifactBucket
         S3Key: !Ref ArtifactKey
@@ -313,6 +319,27 @@ Resources:
         CookiesConfig:
           CookieBehavior: all
 
+  # Cache policy for the no-Lambda carve-outs the attach CLI adds. No
+  # x-norg-agent in the key: these bytes are identical for every caller.
+  StaticCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub "${AWS::StackName}-norg-static"
+        Comment: NORG edge router - carve-outs served without invoking the router
+        DefaultTTL: 86400
+        MinTTL: 0
+        MaxTTL: 31536000
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingGzip: true
+          EnableAcceptEncodingBrotli: true
+          HeadersConfig:
+            HeaderBehavior: none
+          QueryStringsConfig:
+            QueryStringBehavior: all
+          CookiesConfig:
+            CookieBehavior: none
+
   HeartbeatRole:
     Type: AWS::IAM::Role
     Properties:
@@ -377,6 +404,10 @@ Outputs:
     Export: { Name: !Sub "${AWS::StackName}-CachePolicyId" }
   OriginRequestPolicyId:
     Value: !Ref OriginRequestPolicy
+    Export: { Name: !Sub "${AWS::StackName}-OriginRequestPolicyId" }
+  StaticCachePolicyId:
+    Description: Cache policy for the carve-out behaviours the attach CLI adds.
+    Value: !Ref StaticCachePolicy
     Export: { Name: !Sub "${AWS::StackName}-OriginRequestPolicyId" }
   OriginCustomHeaders:
     Description: >-
