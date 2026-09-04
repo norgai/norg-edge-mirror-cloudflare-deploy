@@ -235,11 +235,7 @@ var CONFIG_HEADERS = {
   // CloudFront-only. Origin-request fires on a cache miss, so the passthrough
   // event stream is incomplete here and rides the customer's human traffic;
   // it is off unless an install explicitly asks for it. See telemetry.js.
-  "x-norg-events-verbose": "EDGE_EVENTS_VERBOSE",
-  // CloudFront-only. "true" asks the origin for its OWN hostname instead of the
-  // viewer's — needed only when the origin does not recognise the
-  // CloudFront-facing name. See resolveOriginHost in origin.js.
-  "x-norg-align-host": "EDGE_ALIGN_HOST"
+  "x-norg-events-verbose": "EDGE_EVENTS_VERBOSE"
 };
 function readConfig(cfRequest) {
   const customHeaders = cfRequest.origin?.custom?.customHeaders;
@@ -628,10 +624,6 @@ async function fetchOrigin(cfRequest, request, timeoutMs) {
     console.error("norg edge origin fetch failed", e);
     return null;
   }
-}
-function resolveOriginHost(cfRequest, env) {
-  if (env.EDGE_ALIGN_HOST !== "true") return cfRequest;
-  return alignHostToOrigin(cfRequest);
 }
 function alignHostToOrigin(cfRequest) {
   const domainName = cfRequest.origin?.custom?.domainName;
@@ -1256,9 +1248,9 @@ async function handler(event) {
     ]).finally(() => clearTimeout(watchdog));
     await flushed;
     await flushDeferred();
-    if (result === PASSTHROUGH) return passthrough(resolveOriginHost(cfRequest, env));
+    if (result === PASSTHROUGH) return passthrough(alignHostToOrigin(cfRequest));
     const response = await toCloudFrontResponse(result);
-    return response || passthrough(resolveOriginHost(pristine, env));
+    return response || passthrough(alignHostToOrigin(pristine));
   } catch (e) {
     console.error("norg edge router error", e);
     return pristine;

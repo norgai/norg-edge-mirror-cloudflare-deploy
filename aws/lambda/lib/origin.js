@@ -93,48 +93,32 @@ export async function fetchOrigin(cfRequest, request, timeoutMs) {
 }
 
 /**
- * Decide what Host the origin should be asked for.
+ * Point the Host header at the origin this request is bound for.
  *
- * CloudFront sends the origin's own domain name as Host unless the origin
- * request policy forwards the viewer's — and this install's policy does forward
- * it, because that is the only header behaviour that also supplies the
- * CloudFront-Viewer-* geo headers the visit events report.
+ * THIS IS A PLATFORM REQUIREMENT, NOT A CHOICE. When an origin-request function
+ * returns a request for a custom origin, CloudFront requires the Host header to
+ * match `request.origin.custom.domainName`. A mismatch is rejected before the
+ * origin is contacted: the viewer gets a CloudFront 403 "Bad request" and
+ * NOTHING is written to the function's log, because the function did not fail —
+ * its output was refused. AWS's own origin-modification helpers set Host to the
+ * origin domain for exactly this reason.
  *
- * PRESERVING the viewer's Host is the default because it is what a real install
- * needs. The distribution fronts the customer's own domain, so the viewer's
- * Host IS the hostname their origin serves, and rewriting it actively breaks
- * any host-aware origin: absolute URLs, canonical tags, cookie domains and
- * auth middleware all key off it. Observed for real — an auth layer on the
- * origin read the rewritten Host and 307'd every visitor to the origin's own
- * hostname, so the CloudFront domain could never hold a session.
+ * DO NOT make this conditional to "preserve the viewer's Host". That was tried,
+ * shipped, and took the site down with a blanket 403 within minutes. The
+ * motivation was real — see the consequence below — but this is not where it
+ * can be fixed.
  *
- * ALIGNING is the opt-in (`x-norg-align-host: true`), for the case where the
- * origin does not recognise the CloudFront-facing hostname at all: testing on
- * the *.cloudfront.net name before a DNS cutover, or an origin whose virtual
- * host list cannot be changed. Without it such an origin answers 404 for every
- * request, so the escape hatch has to exist — it just must not be the default.
+ * The consequence, which is a property of putting Lambda@Edge on origin-request
+ * at all: the origin always sees ITS OWN hostname, never the one the visitor
+ * typed. A host-aware origin therefore builds absolute URLs, canonical tags,
+ * cookie domains and auth redirects from the origin's name. An auth layer that
+ * redirects to its own host will bounce visitors off the CloudFront domain.
+ * The fix for that lives at the origin (serve the CloudFront-facing hostname
+ * directly, or stop emitting host-absolute redirects), not here.
  *
- * Either way the value is read from origin.custom.domainName, which keeps it
- * correct after an origin switch: switchOriginToNorg has already repointed that
- * field at the receptionist by the time this runs, and the receptionist must
- * always be addressed by its own name.
- *
- * @param {Object} cfRequest CloudFront request object, mutated in place.
- * @param {Object} env Install config.
- * @returns {Object} The same request object.
- */
-export function resolveOriginHost(cfRequest, env) {
-  // No marker is needed for the origin-switch case: switchOriginToNorg has
-  // already set the Host to the receptionist, and preserving means leaving the
-  // header alone — so the switched request keeps the right value either way.
-  // Adding a field to the request object to track it would risk CloudFront
-  // rejecting the whole response as a malformed request.
-  if (env.EDGE_ALIGN_HOST !== "true") return cfRequest;
-  return alignHostToOrigin(cfRequest);
-}
-
-/**
- * Force the Host header to the origin's own domain name.
+ * Reading the value from origin.custom.domainName keeps it correct after an
+ * origin switch too: switchOriginToNorg has already repointed that field at the
+ * receptionist by the time this runs.
  *
  * @param {Object} cfRequest CloudFront request object, mutated in place.
  * @returns {Object} The same request object.

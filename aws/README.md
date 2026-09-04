@@ -158,6 +158,20 @@ its access logs.
 | `x-norg-lazy-render` | `true` | `false` serves the strip without asking NORG to render |
 | `x-norg-events-verbose` | *(off)* | `true` also reports plain origin passthroughs |
 
+### What your origin sees as `Host`
+
+CloudFront requires an origin-request function to send the origin its **own**
+hostname, so your origin always sees the origin domain — never the hostname the
+visitor typed. This is not configurable: a mismatch is rejected with a 403
+before your origin is contacted.
+
+It matters if your origin is host-aware. Absolute URLs, canonical tags, cookie
+domains and especially **auth middleware** will be built from the origin's
+hostname. An auth layer that redirects to its own host will bounce visitors off
+the CloudFront domain entirely. If that affects you, the fix is at the origin —
+have it serve the CloudFront-facing hostname directly, or stop emitting
+host-absolute redirects.
+
 > **Where the site key is visible.** It sits in your distribution's
 > configuration and in the heartbeat function's environment variables. Anyone
 > who can read those in your AWS account can read it. It is scoped to this one

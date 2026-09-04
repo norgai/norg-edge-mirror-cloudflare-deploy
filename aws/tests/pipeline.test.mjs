@@ -522,65 +522,50 @@ test("?agent=true forces the mirror for a browser but enqueues no render", async
 
 // --- The Host header on passthrough ----------------------------------------
 
-test("a passthrough PRESERVES the viewer's Host by default", async () => {
-  // The distribution fronts the customer's own domain, so the viewer's Host is
-  // the hostname their origin serves. Rewriting it breaks any host-aware
-  // origin — an auth layer on a real origin read the rewritten Host and 307'd
-  // every visitor away to the origin's own hostname.
+test("a passthrough asks the origin for the hostname the ORIGIN serves", async () => {
+  // Required by CloudFront, not a preference: an origin-request function whose
+  // returned Host does not match origin.custom.domainName is refused outright —
+  // the viewer gets a 403 "Bad request" and the function logs nothing, because
+  // it did not fail. Making this conditional took a live site down.
   const { result } = await run({ headers: { "user-agent": CHROME_UA } });
-
-  assert.ok(isPassthroughResult(result));
-  assert.equal(result.headers.host[0].value, "shop.example.com");
-});
-
-test("x-norg-align-host=true asks the origin for its own hostname instead", async () => {
-  // The escape hatch, for an origin that does not recognise the
-  // CloudFront-facing name at all (pre-DNS-cutover testing, fixed vhost lists).
-  const { result } = await run({
-    headers: { "user-agent": CHROME_UA },
-    config: { "x-norg-align-host": "true" },
-  });
 
   assert.ok(isPassthroughResult(result));
   assert.equal(result.headers.host[0].value, "origin.example.com");
 });
 
-test("every early passthrough honours the host setting too", async () => {
+test("EVERY passthrough aligns the Host, including the early exits", async () => {
+  // One unaligned exit is one blanket 403 on that class of request.
   for (const options of [
     { config: { "x-norg-disabled": "true" } },
     { headers: { "x-norg-edge": "1" } },
+    { headers: { upgrade: "websocket" } },
     { method: "PUT" },
     { uri: "/assets/app.css" },
+    { uri: "/checkout", headers: { "user-agent": GPTBOT_UA } },
+    { headers: { "user-agent": GOOGLEBOT_UA } },
   ]) {
-    const preserved = await run(options);
+    const { result } = await run(options);
+    assert.ok(isPassthroughResult(result), `not a passthrough: ${JSON.stringify(options)}`);
     assert.equal(
-      preserved.result.headers.host[0].value,
-      "shop.example.com",
-      `Host not preserved for ${JSON.stringify(options)}`,
-    );
-
-    const aligned = await run({ ...options, config: { ...(options.config || {}), "x-norg-align-host": "true" } });
-    assert.equal(
-      aligned.result.headers.host[0].value,
+      result.headers.host[0].value,
       "origin.example.com",
       `Host not aligned for ${JSON.stringify(options)}`,
     );
   }
 });
 
-test("an origin switch addresses the receptionist by name, whatever the host setting", async () => {
+test("an origin switch addresses the receptionist by name", async () => {
   const big = "x".repeat(900 * 1024);
-  for (const config of [{}, { "x-norg-align-host": "true" }]) {
-    const { result } = await run(
-      { headers: { "user-agent": GPTBOT_UA }, config },
-      { mirror: () => mirrorHit(big) },
-    );
-    assert.equal(
-      result.headers.host[0].value,
-      "edge-content.test.norg.ai",
-      "the receptionist must always be addressed by its own name",
-    );
-  }
+  const { result } = await run(
+    { headers: { "user-agent": GPTBOT_UA } },
+    { mirror: () => mirrorHit(big) },
+  );
+
+  assert.equal(
+    result.headers.host[0].value,
+    "edge-content.test.norg.ai",
+    "after an origin switch the Host must name the receptionist, not the customer origin",
+  );
 });
 
 // --- Rule 1 under failure --------------------------------------------------

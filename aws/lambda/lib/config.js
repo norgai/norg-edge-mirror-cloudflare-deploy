@@ -49,10 +49,6 @@ const CONFIG_HEADERS = {
   // event stream is incomplete here and rides the customer's human traffic;
   // it is off unless an install explicitly asks for it. See telemetry.js.
   "x-norg-events-verbose": "EDGE_EVENTS_VERBOSE",
-  // CloudFront-only. "true" asks the origin for its OWN hostname instead of the
-  // viewer's — needed only when the origin does not recognise the
-  // CloudFront-facing name. See resolveOriginHost in origin.js.
-  "x-norg-align-host": "EDGE_ALIGN_HOST",
 };
 
 /**
