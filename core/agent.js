@@ -28,6 +28,7 @@
  */
 
 import { classifyRequest, classifyScriptAutomation } from "../workers/lib/classify.mjs";
+import { cidrVerdictFor } from "../workers/lib/cidr.mjs";
 
 /**
  * The serving policy NORG published for a matched pattern.
@@ -77,59 +78,21 @@ export function mayDivert(classification) {
 }
 
 /**
- * Parse an IPv4 dotted quad into a 32-bit integer.
- *
- * @param {?string} ip Address to parse.
- * @returns {?number} Integer value, or null when not valid IPv4.
- */
-function ipv4ToInt(ip) {
-  const parts = (ip || "").split(".");
-  if (parts.length !== 4) return null;
-  let value = 0;
-  for (const part of parts) {
-    const octet = Number(part);
-    if (!Number.isInteger(octet) || octet < 0 || octet > 255) return null;
-    value = value * 256 + octet;
-  }
-  return value;
-}
-
-/**
- * Is an IPv4 address inside a CIDR block?
- *
- * @param {number} ipInt Address as a 32-bit integer.
- * @param {string} cidr Block in "a.b.c.d/len" form ("/len" optional).
- * @returns {boolean} True when the address falls inside the block.
- */
-export function ipv4InCidr(ipInt, cidr) {
-  const [network, bitsRaw] = String(cidr).split("/");
-  const networkInt = ipv4ToInt(network);
-  if (networkInt === null) return false;
-  const bits = bitsRaw === undefined ? 32 : Number(bitsRaw);
-  if (!Number.isInteger(bits) || bits < 0 || bits > 32) return false;
-  // A /0 would shift by 32, which JS evaluates as a shift by 0 — special-cased.
-  if (bits === 0) return true;
-  const mask = (0xffffffff << (32 - bits)) >>> 0;
-  return ((ipInt & mask) >>> 0) === ((networkInt & mask) >>> 0);
-}
-
-/**
  * Verify the source against the operator's published CIDR set.
  *
- * @param {string} clientIp Viewer IP, from CloudFront's own clientIp field.
+ * Family-aware (workers/lib/cidr.mjs): an IPv6 client is measured against the
+ * operator's IPv6 ranges when any are published, and is unmeasurable — null,
+ * never false — when none are, so a crawler of an IPv4-only operator is not
+ * refused for arriving over IPv6. Every operator manifest is IPv4-only today,
+ * so this changes nothing live until one publishes IPv6.
+ *
+ * @param {string} clientIp Viewer IP, from the platform's own client field.
  * @param {Object} cidrRanges Per-operator ranges from the feed.
  * @param {Object} classification Classification from classifyAgent.
  * @returns {?boolean} Verdict, or null when no usable CIDR set applies.
  */
 export function cidrVerdict(clientIp, cidrRanges, classification) {
-  const entry = (cidrRanges || {})[classification.company];
-  const cidrs = entry && Array.isArray(entry.cidrs) ? entry.cidrs : null;
-  if (!cidrs || !cidrs.length) return null;
-  // The published sets are IPv4-only, so an IPv6 client is not a mismatch — it
-  // is unmeasurable here, and answering false would refuse every IPv6 bot.
-  const ipInt = ipv4ToInt(clientIp);
-  if (ipInt === null) return null;
-  return cidrs.some((cidr) => ipv4InCidr(ipInt, cidr));
+  return cidrVerdictFor(clientIp, cidrRanges, classification);
 }
 
 /**
