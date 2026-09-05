@@ -35,7 +35,7 @@ import {
   UNENTITLED_TTL_MS,
 } from "./constants.mjs";
 import { binding, controlHeaders } from "./config.js";
-import { edgeFetch } from "./http.js";
+import { edgeFetch, timeoutSignal } from "./http.js";
 import { defer } from "./deferred.js";
 
 // The authenticated feed for this container. Starts unentitled: nothing is
@@ -123,7 +123,7 @@ export async function refreshFeed(env) {
     response = await edgeFetch(env, `${binding(env, "NORG_API_URL")}/api/v1/edge/bot-patterns`, {
       method: "GET",
       headers,
-      signal: AbortSignal.timeout(PATTERN_FETCH_TIMEOUT_MS),
+      signal: timeoutSignal(PATTERN_FETCH_TIMEOUT_MS),
     });
   } catch (e) {
     console.error("norg edge feed refresh failed", e);
