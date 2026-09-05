@@ -67,8 +67,10 @@ import {
 } from "./lib/classify.mjs";
 import { pathToKeySuffix } from "./lib/r2-content.mjs";
 import { withAlternateFormatHeaders } from "./lib/alternate-format.mjs";
+import { cidrContains, cidrVerdictFor } from "./lib/cidr.mjs";
+import { mcpForwardHeaders } from "./lib/mcp-forward.mjs";
 
-export const EDGE_SCRIPT_VERSION = "0.11.6";
+export const EDGE_SCRIPT_VERSION = "0.11.7";
 
 // Baked binding defaults (EDGEPAR 04). Five bindings never vary across manual
 // and deploy-button installs, so they default here and a hand install only
@@ -1190,6 +1192,9 @@ async function handleMcp(request, env, url) {
  * NORG costs the visitor at most that budget before the origin fallback,
  * rather than relying on the platform default.
  *
+ * Only the headers JSON-RPC needs are relayed (lib/mcp-forward.mjs): a Cookie
+ * or Authorization header sent to the customer's domain never reaches NORG.
+ *
  * @param {Request} request Incoming request (already cloned by the caller so
  *   its one-shot body survives for the origin fallback).
  * @param {Object} env Worker bindings.
@@ -1200,7 +1205,7 @@ async function forwardMcpToNorg(request, env, url) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), MCP_FORWARD_TIMEOUT_MS);
   try {
-    const headers = new Headers(request.headers);
+    const headers = mcpForwardHeaders(request.headers);
     headers.set("X-Norg-Site-Id", env.SITE_ID || "");
     headers.set("X-Norg-Site-Key", env.NORG_SITE_KEY || "");
     headers.set("X-Norg-Edge-Page", url.pathname);
@@ -1383,42 +1388,12 @@ function mayDivert(classification) {
 }
 
 /**
- * Parse an IPv4 dotted quad into a 32-bit integer.
- * @param {?string} ip Address to parse.
- * @returns {?number} Integer value, or null when not valid IPv4.
- */
-function ipv4ToInt(ip) {
-  const parts = (ip || "").split(".");
-  if (parts.length !== 4) return null;
-  let value = 0;
-  for (const part of parts) {
-    const octet = Number(part);
-    if (!Number.isInteger(octet) || octet < 0 || octet > 255) return null;
-    value = value * 256 + octet;
-  }
-  return value;
-}
-
-/**
- * Is an IPv4 address inside a CIDR block?
- * @param {number} ipInt Address as a 32-bit integer.
- * @param {string} cidr Block in "a.b.c.d/len" form ("/len" optional).
- * @returns {boolean} True when the address falls inside the block.
- */
-function ipv4InCidr(ipInt, cidr) {
-  const [network, bitsRaw] = String(cidr).split("/");
-  const networkInt = ipv4ToInt(network);
-  if (networkInt === null) return false;
-  const bits = bitsRaw === undefined ? 32 : Number(bitsRaw);
-  if (!Number.isInteger(bits) || bits < 0 || bits > 32) return false;
-  // A /0 would shift by 32, which JS evaluates as a shift by 0 — special-cased.
-  if (bits === 0) return true;
-  const mask = (0xffffffff << (32 - bits)) >>> 0;
-  return ((ipInt & mask) >>> 0) === ((networkInt & mask) >>> 0);
-}
-
-/**
  * Verify the source against the operator's published CIDR set.
+ *
+ * Family-aware (lib/cidr.mjs): an IPv6 client is measured against the
+ * operator's IPv6 ranges when any are published, and is unmeasurable — null,
+ * never false — when none are, so a crawler of an IPv4-only operator is not
+ * refused for arriving over IPv6.
  *
  * @param {Request} request Incoming request.
  * @param {Object} cidrRanges Per-operator ranges from the feed.
@@ -1427,14 +1402,7 @@ function ipv4InCidr(ipInt, cidr) {
  *   caller must fall back to Cloudflare's own verification.
  */
 function cidrVerdict(request, cidrRanges, classification) {
-  const entry = (cidrRanges || {})[classification.company];
-  const cidrs = entry && Array.isArray(entry.cidrs) ? entry.cidrs : null;
-  if (!cidrs || !cidrs.length) return null;
-  // The published sets are IPv4-only, so an IPv6 client is not a mismatch —
-  // it is unmeasurable here, and answering false would refuse every IPv6 bot.
-  const ipInt = ipv4ToInt(request.headers.get("cf-connecting-ip"));
-  if (ipInt === null) return null;
-  return cidrs.some((cidr) => ipv4InCidr(ipInt, cidr));
+  return cidrVerdictFor(request.headers.get("cf-connecting-ip"), cidrRanges, classification);
 }
 
 /**
@@ -1981,7 +1949,7 @@ export {
   getBotFeed as __test_getBotFeed,
   mayDivert as __test_mayDivert,
   verifiedSource as __test_verifiedSource,
-  ipv4InCidr as __test_ipv4InCidr,
+  cidrContains as __test_cidrContains,
   cidrVerdict as __test_cidrVerdict,
   isPassthrough as __test_isPassthrough,
   isMcpPath as __test_isMcpPath,
