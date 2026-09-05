@@ -33,7 +33,7 @@
  * change; the version moves because the deployed artifact and the distribution
  * shape it expects both did.
  */
-export const EDGE_SCRIPT_VERSION = "0.2.0";
+export const EDGE_SCRIPT_VERSION = "0.2.1";
 
 // Custom origin header -> binding name. Mirrors build_worker_bindings() in
 // content-craft's install_service.py; adding a binding there means adding it

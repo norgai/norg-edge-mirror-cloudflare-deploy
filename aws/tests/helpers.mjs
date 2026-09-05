@@ -20,6 +20,9 @@ export const GOOGLEBOT_UA = "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www
 // An OpenAI-published range, and an address inside it.
 export const VERIFIED_IP = "20.171.5.9";
 export const UNVERIFIED_IP = "8.8.8.8";
+// IPv6 counterparts: inside / outside the v6 range the feed publishes for openai.
+export const VERIFIED_IPV6 = "2001:db8:1::42";
+export const UNVERIFIED_IPV6 = "2001:db8:2::42";
 
 export const FEED = {
   patterns: [
@@ -31,7 +34,7 @@ export const FEED = {
     { pattern: "heldbot", company: "heldco", purpose: "training", serving_policy: "never_divert" },
   ],
   cidr_ranges: {
-    openai: { cidrs: ["20.171.0.0/16"] },
+    openai: { cidrs: ["20.171.0.0/16", "2001:db8:1::/48"] },
     heldco: { cidrs: ["20.171.0.0/16"] },
   },
   agentic_path_prefix: "/ai",

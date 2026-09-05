@@ -41,7 +41,7 @@ var UNENTITLED = Object.freeze({
 });
 
 // aws/lambda/lib/config.js
-var EDGE_SCRIPT_VERSION = "0.2.0";
+var EDGE_SCRIPT_VERSION = "0.2.1";
 
 // aws/lambda/heartbeat-lambda.js
 async function handler() {

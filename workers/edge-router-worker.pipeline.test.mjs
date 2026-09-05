@@ -2296,3 +2296,101 @@ test("a skipped page's sibling artifacts are skipped too", async () => {
     "the mirror must never be consulted for a skipped page's siblings",
   );
 });
+
+// --- IPv6 source verification (lib/cidr.mjs) ------------------------------
+
+const OPENAI_DUAL_STACK = { openai: { cidrs: ["203.0.113.0/24", "2001:db8:1::/48"] } };
+
+test("an IPv6 client inside the operator's published IPv6 range is served", async () => {
+  installFetch([
+    patternsRoute(undefined, OPENAI_DUAL_STACK),
+    ["r2.norg.test", async () => new Response("<html>render</html>", { status: 200 })],
+  ]);
+
+  // cf: {} — no Cloudflare verification at all, so only the CIDR can allow it.
+  const response = await handleRequest(
+    ipReq("/products/widget/", GPTBOT, "2001:db8:1::42", {}),
+    env,
+    ctx,
+  );
+  await drain();
+
+  assert.equal(response.headers.get("X-Norg-Edge"), "mirror");
+});
+
+test("an IPv6 client outside the operator's IPv6 range gets the origin, even when cf says verified", async () => {
+  installFetch([
+    patternsRoute(undefined, OPENAI_DUAL_STACK),
+    ["r2.norg.test", async () => new Response("<html>render</html>", { status: 200 })],
+  ]);
+
+  const response = await handleRequest(
+    ipReq("/products/widget/", GPTBOT, "2001:db8:2::42", VERIFIED_CF),
+    env,
+    ctx,
+  );
+  await drain();
+
+  assert.equal(response.headers.get("X-Norg-Edge"), null, "a published IPv6 set is authoritative, like IPv4");
+  assert.ok(!calls.find((c) => c.url.includes("r2.norg.test")), "must not reach the mirror");
+});
+
+test("an IPv4 client is unaffected by IPv6 ranges in the same set", async () => {
+  installFetch([
+    patternsRoute(undefined, OPENAI_DUAL_STACK),
+    ["r2.norg.test", async () => new Response("<html>render</html>", { status: 200 })],
+  ]);
+
+  const response = await handleRequest(
+    ipReq("/products/widget/", GPTBOT, "203.0.113.7", {}),
+    env,
+    ctx,
+  );
+  await drain();
+
+  assert.equal(response.headers.get("X-Norg-Edge"), "mirror");
+});
+
+// --- MCP forward carries only what JSON-RPC needs ---------------------------
+
+test("MCP POST: cookies and authorization never reach NORG; JSON-RPC headers do", async () => {
+  let forwarded = null;
+  installFetch([
+    patternsRoute(),
+    [
+      "/public-mcp",
+      async (_url, init) => {
+        forwarded = new Headers(init.headers);
+        return new Response("{}", { status: 200 });
+      },
+    ],
+  ]);
+
+  const request = new Request(MCP_ORIGIN_URL, {
+    method: "POST",
+    headers: {
+      "user-agent": BROWSER,
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      "mcp-session-id": "sess-1",
+      cookie: "session=secret",
+      authorization: "Bearer customer-token",
+      "x-forwarded-for": "198.51.100.9",
+      "cf-connecting-ip": "198.51.100.9",
+    },
+    body: MCP_JSONRPC,
+  });
+  const response = await handleRequest(request, env, ctx);
+  await drain();
+
+  assert.equal(response.status, 200);
+  assert.ok(forwarded, "NORG must have been called");
+  for (const name of ["cookie", "authorization", "x-forwarded-for", "cf-connecting-ip"]) {
+    assert.equal(forwarded.get(name), null, `${name} must not be forwarded`);
+  }
+  assert.equal(forwarded.get("content-type"), "application/json");
+  assert.equal(forwarded.get("accept"), "application/json, text/event-stream");
+  assert.equal(forwarded.get("mcp-session-id"), "sess-1");
+  assert.equal(forwarded.get("X-Norg-Site-Id"), env.SITE_ID);
+  assert.equal(forwarded.get("X-Norg-Site-Key"), env.NORG_SITE_KEY);
+});

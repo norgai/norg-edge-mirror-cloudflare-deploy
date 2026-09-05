@@ -81,6 +81,26 @@ function isAgenticPath(pathname, prefix) {
   return pathname === prefix || pathname.startsWith(`${prefix}/`);
 }
 
+// workers/lib/mcp-forward.mjs
+var MCP_FORWARD_HEADER_ALLOWLIST = Object.freeze([
+  "accept",
+  "accept-language",
+  "content-type",
+  "user-agent",
+  "mcp-session-id",
+  "mcp-protocol-version",
+  "last-event-id"
+]);
+function mcpForwardHeaders(source) {
+  const out = new Headers();
+  if (!source || typeof source.get !== "function") return out;
+  for (const name of MCP_FORWARD_HEADER_ALLOWLIST) {
+    const value = source.get(name);
+    if (value !== null && value !== void 0) out.set(name, value);
+  }
+  return out;
+}
+
 // core/constants.mjs
 var BINDING_DEFAULTS = {
   NORG_API_URL: "https://content-craft-api.norg.ai",
@@ -222,7 +242,7 @@ var STATIC_ASSET_SUFFIXES = /* @__PURE__ */ new Set([
 ]);
 
 // aws/lambda/lib/config.js
-var EDGE_SCRIPT_VERSION = "0.2.0";
+var EDGE_SCRIPT_VERSION = "0.2.1";
 var CONFIG_HEADERS = {
   "x-norg-site-id": "SITE_ID",
   "x-norg-site-key": "NORG_SITE_KEY",
@@ -340,6 +360,85 @@ function classifyScriptAutomation(userAgent) {
   return null;
 }
 
+// workers/lib/cidr.mjs
+var V4_BITS = 32n;
+var V6_BITS = 128n;
+function parseIpv4(ip) {
+  const parts = ip.split(".");
+  if (parts.length !== 4) return null;
+  let value = 0n;
+  for (const part of parts) {
+    if (!/^\d{1,3}$/.test(part)) return null;
+    const octet = Number(part);
+    if (octet > 255) return null;
+    value = value << 8n | BigInt(octet);
+  }
+  return value;
+}
+function expandEmbeddedIpv4(ip) {
+  const idx = ip.lastIndexOf(":");
+  const last = ip.slice(idx + 1);
+  if (!last.includes(".")) return ip;
+  const v4 = parseIpv4(last);
+  if (v4 === null) return null;
+  return `${ip.slice(0, idx + 1)}${(v4 >> 16n).toString(16)}:${(v4 & 0xffffn).toString(16)}`;
+}
+function parseIpv6(raw) {
+  if (raw.includes("%")) return null;
+  const ip = expandEmbeddedIpv4(raw);
+  if (ip === null) return null;
+  const halves = ip.split("::");
+  if (halves.length > 2) return null;
+  const head = halves[0] === "" ? [] : halves[0].split(":");
+  const tail = halves.length === 2 && halves[1] !== "" ? halves[1].split(":") : [];
+  const missing = 8 - head.length - tail.length;
+  if (halves.length === 2 ? missing < 1 : missing !== 0) return null;
+  const groups = [...head, ...Array(halves.length === 2 ? missing : 0).fill("0"), ...tail];
+  let value = 0n;
+  for (const group of groups) {
+    if (!/^[0-9a-f]{1,4}$/i.test(group)) return null;
+    value = value << 16n | BigInt(parseInt(group, 16));
+  }
+  return value;
+}
+function parseIp(ip) {
+  const text = String(ip || "").trim();
+  if (!text) return null;
+  if (text.includes(":")) {
+    const value2 = parseIpv6(text);
+    return value2 === null ? null : { family: 6, value: value2 };
+  }
+  const value = parseIpv4(text);
+  return value === null ? null : { family: 4, value };
+}
+function cidrFamily(cidr) {
+  const net = parseIp(String(cidr).split("/")[0]);
+  return net ? net.family : null;
+}
+function cidrContains(ip, cidr) {
+  const addr = typeof ip === "object" && ip !== null ? ip : parseIp(ip);
+  if (!addr) return false;
+  const [network, bitsRaw, extra] = String(cidr).split("/");
+  if (extra !== void 0) return false;
+  const net = parseIp(network);
+  if (!net || net.family !== addr.family) return false;
+  const width = addr.family === 4 ? V4_BITS : V6_BITS;
+  const bits = bitsRaw === void 0 ? width : /^\d{1,3}$/.test(bitsRaw) ? BigInt(bitsRaw) : -1n;
+  if (bits < 0n || bits > width) return false;
+  const mask = bits === 0n ? 0n : (1n << bits) - 1n << width - bits;
+  return (addr.value & mask) === (net.value & mask);
+}
+function cidrVerdictFor(clientIp2, cidrRanges, classification) {
+  const entry = (cidrRanges || {})[classification && classification.company];
+  const cidrs = entry && Array.isArray(entry.cidrs) ? entry.cidrs : null;
+  if (!cidrs || !cidrs.length) return null;
+  const addr = parseIp(clientIp2);
+  if (!addr) return null;
+  const sameFamily = cidrs.filter((cidr) => cidrFamily(cidr) === addr.family);
+  if (!sameFamily.length) return null;
+  return sameFamily.some((cidr) => cidrContains(addr, cidr));
+}
+
 // core/agent.js
 function servingPolicyFor(botName, patterns) {
   const match = patterns.find((p) => p.pattern === botName);
@@ -357,34 +456,8 @@ function classifyAgent(userAgent, patterns) {
 function mayDivert(classification) {
   return classification.serving_policy === "divert";
 }
-function ipv4ToInt(ip) {
-  const parts = (ip || "").split(".");
-  if (parts.length !== 4) return null;
-  let value = 0;
-  for (const part of parts) {
-    const octet = Number(part);
-    if (!Number.isInteger(octet) || octet < 0 || octet > 255) return null;
-    value = value * 256 + octet;
-  }
-  return value;
-}
-function ipv4InCidr(ipInt, cidr) {
-  const [network, bitsRaw] = String(cidr).split("/");
-  const networkInt = ipv4ToInt(network);
-  if (networkInt === null) return false;
-  const bits = bitsRaw === void 0 ? 32 : Number(bitsRaw);
-  if (!Number.isInteger(bits) || bits < 0 || bits > 32) return false;
-  if (bits === 0) return true;
-  const mask = 4294967295 << 32 - bits >>> 0;
-  return (ipInt & mask) >>> 0 === (networkInt & mask) >>> 0;
-}
 function cidrVerdict(clientIp2, cidrRanges, classification) {
-  const entry = (cidrRanges || {})[classification.company];
-  const cidrs = entry && Array.isArray(entry.cidrs) ? entry.cidrs : null;
-  if (!cidrs || !cidrs.length) return null;
-  const ipInt = ipv4ToInt(clientIp2);
-  if (ipInt === null) return null;
-  return cidrs.some((cidr) => ipv4InCidr(ipInt, cidr));
+  return cidrVerdictFor(clientIp2, cidrRanges, classification);
 }
 function verifiedSource(clientIp2, cidrRanges, classification) {
   return cidrVerdict(clientIp2, cidrRanges, classification) === true;
@@ -1097,8 +1170,7 @@ async function handleMcp(request, env, url) {
 }
 async function forwardMcpToNorg(request, env, url) {
   try {
-    const headers = new Headers(request.headers);
-    headers.delete("host");
+    const headers = mcpForwardHeaders(request.headers);
     headers.set("X-Norg-Site-Id", env.SITE_ID || "");
     headers.set("X-Norg-Site-Key", env.NORG_SITE_KEY || "");
     headers.set("X-Norg-Edge-Page", url.pathname);
