@@ -29,3 +29,29 @@ export function edgeFetch(env, url, init) {
   const impl = env && env.EDGE_FETCH;
   return impl ? impl(url, init) : fetch(url, init);
 }
+
+/**
+ * An abort signal that fires after `ms`, where the runtime provides one.
+ *
+ * WHY THIS EXISTS. Fastly's js-compute runtime does not implement
+ * AbortController/AbortSignal at all, so a bare `AbortSignal.timeout(ms)` at a
+ * call site throws ReferenceError on Fastly — inside the try/catch of whatever
+ * is calling it, which turns every outbound NORG call into a silent failure.
+ * That was not hypothetical: it made the feed refresh fail on every request, so
+ * the install never became entitled and passed the whole site through forever,
+ * looking exactly like a service that was not installed.
+ *
+ * Returning undefined is safe: `fetch` ignores an undefined signal. On Fastly
+ * the bound is enforced instead by the per-backend connect/first-byte timeouts
+ * declared in fastly.toml, which is that platform's own mechanism for this.
+ *
+ * @param {number} ms Timeout in milliseconds.
+ * @returns {AbortSignal|undefined} A timeout signal, or undefined if the
+ *   runtime has no AbortSignal.
+ */
+export function timeoutSignal(ms) {
+  return typeof AbortSignal !== "undefined" &&
+    typeof AbortSignal.timeout === "function"
+    ? AbortSignal.timeout(ms)
+    : undefined;
+}

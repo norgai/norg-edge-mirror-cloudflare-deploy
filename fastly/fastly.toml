@@ -10,6 +10,18 @@
 # service — so they are declared as static backends here. That avoids the
 # service-level dynamic-backends toggle (which needs a Fastly support ticket on
 # some accounts) and keeps the set of reachable hosts auditable by the customer.
+#
+# TIMEOUTS ARE LOAD-BEARING ON THIS PLATFORM, AND THEY ARE NOT SET IN THIS FILE.
+# Every other provider bounds its outbound NORG calls with AbortSignal.timeout();
+# Fastly's runtime has no AbortSignal, so core/http.js:timeoutSignal() returns
+# undefined here and the ONLY thing bounding a hung NORG is the per-backend
+# first_byte_timeout on the SERVICE backends, set at install time via the API
+# (the [local_server] block below is a dev harness and ignores timeout keys).
+# Match core/constants.mjs when creating them: norg_api 5000ms — the feed fetch,
+# the longest call it serves — and norg_content 4000ms for the mirror fetch.
+# Omitting them does not fall back to some other limit; it removes the limit.
+# The customer's own origin keeps Fastly's defaults: we never impose a shorter
+# timeout on their site than they chose for it.
 authors = ["NORG.ai"]
 description = "Serves NORG-optimised content to AI agents at your own URLs; every other visitor gets your site unchanged."
 language = "javascript"
@@ -24,6 +36,9 @@ service_id = ""
 
   [local_server.backends]
 
+    # Placeholder. `fastly compute serve` reads this block only; point it at the
+    # site you are testing against and add `override_host` to match, or the
+    # origin sees Host: 127.0.0.1 and a host-routed origin will refuse it.
     [local_server.backends.customer_origin]
       url = "https://example.com"
 

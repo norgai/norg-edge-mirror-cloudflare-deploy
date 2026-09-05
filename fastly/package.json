@@ -1,0 +1,14 @@
+{
+  "name": "norg-edge-router-fastly",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "NORG edge router for Fastly Compute. Serves NORG-optimised content to AI agents at your own URLs; every other visitor gets your site unchanged.",
+  "scripts": {
+    "build": "js-compute-runtime src/index.js bin/main.wasm",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "devDependencies": {
+    "@fastly/js-compute": "^3.45.0"
+  }
+}

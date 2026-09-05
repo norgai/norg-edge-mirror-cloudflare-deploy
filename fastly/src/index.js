@@ -15,14 +15,16 @@ import { flushDeferred } from "../../core/deferred.js";
 
 import { readConfig } from "./lib/config.js";
 import { backendFetch, handleRequest } from "./router.js";
-import { passthrough } from "./lib/origin.js";
+import { safePassthrough } from "./lib/origin.js";
 
 /**
  * Handle one request.
  *
- * The catch is the whole safety story, and on Fastly it is genuinely simple:
- * any failure falls through to an ordinary origin fetch, because passthrough
- * here is a real Response rather than Lambda@Edge's mutated request object.
+ * The catch is the whole safety story. On Fastly it is simpler than
+ * Lambda@Edge — passthrough is a real Response rather than a mutated request
+ * object — but it is NOT free: a Fastly backend error rejects rather than
+ * resolving, so the catch must use safePassthrough, which cannot itself throw.
+ * A plain passthrough here let a down origin escape as a 500 we generated.
  *
  * @param {FetchEvent} event Fastly fetch event.
  * @returns {Promise<Response>} Response for the visitor.
@@ -33,7 +35,7 @@ async function app(event) {
     const env = await readConfig();
     // Rule 3: without both credentials every NORG call would be refused, so the
     // correct behaviour is to do nothing rather than fail slowly on each one.
-    if (!isConfigured(env)) return passthrough(request);
+    if (!isConfigured(env)) return safePassthrough(request);
 
     env.EDGE_FETCH = backendFetch(env);
     const response = await handleRequest(request, env, event.client.address);
@@ -44,7 +46,7 @@ async function app(event) {
     return response;
   } catch (e) {
     console.error("norg edge router error", e);
-    return passthrough(request);
+    return safePassthrough(request);
   }
 }
 

@@ -25,7 +25,7 @@ import {
   RENDER_DEDUP_TTL_MS,
 } from "./constants.mjs";
 import { binding, controlHeaders, edgeEnv } from "./config.js";
-import { edgeFetch } from "./http.js";
+import { edgeFetch, timeoutSignal } from "./http.js";
 import { defer } from "./deferred.js";
 
 // Served values that describe an untouched origin response. Reported only when
@@ -49,7 +49,7 @@ async function postControl(env, path, body) {
       method: "POST",
       headers: controlHeaders(env),
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(CONTROL_CALL_TIMEOUT_MS),
+      signal: timeoutSignal(CONTROL_CALL_TIMEOUT_MS),
     });
   } catch (e) {
     console.error("norg edge control call failed", path, e);
