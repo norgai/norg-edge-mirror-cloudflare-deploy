@@ -31,7 +31,7 @@ import { SecretStore } from "fastly:secret-store";
  * deployable with its own pin; content-craft compares it against
  * EDGE_WORKER_VERSION_FASTLY.
  */
-export const EDGE_SCRIPT_VERSION = "0.1.0";
+export const EDGE_SCRIPT_VERSION = "0.1.1";
 
 /** Names of the two stores this install expects. */
 export const CONFIG_STORE_NAME = "norg_edge_config";
