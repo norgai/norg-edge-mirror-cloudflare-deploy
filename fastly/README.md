@@ -131,12 +131,34 @@ by anything in your account. Traffic-driven heartbeats work normally.
 ## Development
 
 ```bash
-npm run test:fastly     # node:test, nothing to install
+# From the repository root — the decision path, no toolchain needed.
+npm run test:fastly
+
+# From this directory — compile to Wasm and serve it locally.
+npm install             # @fastly/js-compute
+npm run build           # -> bin/main.wasm
+fastly compute serve    # Viceroy, on http://127.0.0.1:7676
 ```
 
 `src/router.js` holds the pipeline and imports no `fastly:` modules, so the
 whole decision path is testable without the Fastly toolchain. `src/index.js` is
 the only file that touches the platform SDK.
+
+**Run it under Viceroy before you trust it.** `npm run test:fastly` runs under
+Node, where the whole web platform exists; the Wasm runs on a deliberate subset.
+Two bugs lived behind twelve green tests until the compiled module served its
+first real request — `AbortSignal`, which Fastly does not implement, and a
+backend error rejecting where Cloudflare's would have resolved. Both are covered
+now by `tests/runtime-gaps.test.mjs`, and that file is the right home for the
+next one.
+
+**Before adding a web API to `core/`, check Fastly implements it.** `core/` is
+shared with Cloudflare, CloudFront and Vercel, all of which are more complete
+than Compute. A call that is unremarkable on the others can throw here, and
+because the call sites sit inside their own `try/catch` the failure is silent —
+it looks like a network problem, not a missing global. `core/http.js` shows the
+shape of the fix: probe for the capability, degrade to the platform's own
+mechanism, and say in a comment which mechanism took over.
 
 Provider-neutral logic lives in **`core/`** at the repository root and is shared
 with the other providers — the strip rewriter, bot classification, the feed and
