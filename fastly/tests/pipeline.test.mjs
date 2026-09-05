@@ -34,7 +34,7 @@ const VERIFIED_IP = "20.171.5.9";
 const FEED = {
   entitled: true,
   patterns: [{ pattern: "gptbot", company: "openai", purpose: "training", serving_policy: "divert" }],
-  cidrRanges: { openai: { cidrs: ["20.171.0.0/16"] } },
+  cidrRanges: { openai: { cidrs: ["20.171.0.0/16", "2001:db8:1::/48"] } },
   agenticPathPrefix: "/ai",
   skipPaths: ["/checkout"],
   responseCache: { enabled: false, ttl: 300 },
@@ -60,7 +60,7 @@ function makeEnv(overrides = {}, { mirror, origin } = {}) {
     NORG_API_URL: API,
     NORG_CONTENT_BASE: CONTENT,
     EDGE_ENV: "test",
-    EDGE_SCRIPT_VERSION: "0.1.0",
+    EDGE_SCRIPT_VERSION: "0.1.1",
     EDGE_PLATFORM: "fastly",
     ...overrides,
   };
@@ -223,4 +223,25 @@ test("?agent=true forces the mirror but enqueues no render", async () => {
 
   assert.equal(response.headers.get("x-norg-edge"), "mirror");
   assert.equal(calls.some((u) => u.includes("/render-requests")), false);
+});
+
+// --- IPv6 source verification (workers/lib/cidr.mjs via core/agent.js) -------
+
+test("an IPv6 client inside the operator's published IPv6 range gets the mirror", async () => {
+  // Fastly, like CloudFront, has no verified-bot fallback: before family-aware
+  // matching an IPv6 client was unmeasurable and therefore refused.
+  __test_setFeed(FEED);
+  const env = makeEnv({}, { mirror: () => new Response("<html><body>NORG render</body></html>", { status: 200, headers: { "content-type": "text/html" } }) });
+  const response = await run("/widgets/", GPTBOT, env, "2001:db8:1::42");
+
+  assert.equal(response.headers.get("x-norg-edge"), "mirror");
+});
+
+test("an IPv6 client outside the operator's IPv6 range is not diverted", async () => {
+  __test_setFeed(FEED);
+  const env = makeEnv({}, { mirror: () => new Response("<html>M</html>", { status: 200 }) });
+  const response = await run("/widgets/", GPTBOT, env, "2001:db8:2::42");
+
+  assert.equal(response.headers.get("x-norg-edge"), null);
+  assert.equal(calls.some((u) => u.startsWith(CONTENT)), false, "no mirror lookup for an unverified source");
 });
