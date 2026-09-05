@@ -23,6 +23,8 @@ import {
   GPTBOT_UA,
   SITE_KEY,
   UNVERIFIED_IP,
+  UNVERIFIED_IPV6,
+  VERIFIED_IPV6,
   cloudFrontEvent,
   header,
   isPassthroughResult,
@@ -626,4 +628,64 @@ test("the site key never survives into the origin request", async () => {
       `the site key leaked for ${JSON.stringify(options)}`,
     );
   }
+});
+
+// --- IPv6 source verification (workers/lib/cidr.mjs) -----------------------
+
+test("an IPv6 viewer inside the operator's published IPv6 range gets the mirror", async () => {
+  // CloudFront has no verified-bot fallback, so before family-aware matching an
+  // IPv6 viewer was unmeasurable and therefore refused. With a v6 range in the
+  // feed it is now measured, and verified.
+  const { result } = await run(
+    { headers: { "user-agent": GPTBOT_UA }, clientIp: VERIFIED_IPV6 },
+    { mirror: () => mirrorHit("<html><body>NORG render</body></html>") },
+  );
+  assert.equal(header(result, "x-norg-edge"), "mirror");
+});
+
+test("an IPv6 viewer outside the operator's IPv6 range is passed through", async () => {
+  const { result, calls } = await run(
+    { headers: { "user-agent": GPTBOT_UA }, clientIp: UNVERIFIED_IPV6 },
+    { mirror: () => mirrorHit() },
+  );
+  assert.ok(isPassthroughResult(result), "a v6 address outside the published v6 set must not divert");
+  assert.equal(calls.some((c) => c.url.includes("edge-content")), false);
+});
+
+// --- MCP forward carries only what JSON-RPC needs ---------------------------
+
+test("MCP POST forwards JSON-RPC headers and NORG identity, never cookies or authorization", async () => {
+  let forwarded = null;
+  const { result } = await run(
+    {
+      method: "POST",
+      uri: "/mcp",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        "mcp-session-id": "sess-1",
+        cookie: "session=secret",
+        authorization: "Bearer customer-token",
+        "x-forwarded-for": "198.51.100.9",
+      },
+    },
+    {
+      control: (_url, init) => {
+        forwarded = new Headers(init.headers);
+        return new Response('{"jsonrpc":"2.0"}', { status: 200 });
+      },
+    },
+  );
+
+  assert.equal(result.status, "200");
+  assert.ok(forwarded, "NORG must have been called");
+  for (const name of ["cookie", "authorization", "x-forwarded-for", "host"]) {
+    assert.equal(forwarded.get(name), null, `${name} must not be forwarded`);
+  }
+  assert.equal(forwarded.get("content-type"), "application/json");
+  assert.equal(forwarded.get("accept"), "application/json, text/event-stream");
+  assert.equal(forwarded.get("mcp-session-id"), "sess-1");
+  assert.ok(forwarded.get("x-norg-site-id"), "site id must still be attached");
+  assert.ok(forwarded.get("x-norg-site-key"), "site key must still be attached");
+  assert.ok(forwarded.get("x-norg-edge-version"), "version must still be attached");
 });

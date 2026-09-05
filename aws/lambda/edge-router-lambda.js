@@ -61,6 +61,7 @@
 
 import { withAlternateFormatHeaders } from "../../workers/lib/alternate-format.mjs";
 import { isAgenticPath, pathToKeySuffix } from "../../workers/lib/r2-content.mjs";
+import { mcpForwardHeaders } from "../../workers/lib/mcp-forward.mjs";
 
 import {
   HEALTH_CHECK_HEADER,
@@ -230,6 +231,10 @@ async function handleMcp(request, env, url) {
  * error arrives as HTTP 200 and IS the caller's answer. Any non-2xx, throw or
  * timeout means "NORG cannot serve this".
  *
+ * Only the headers JSON-RPC needs are relayed (workers/lib/mcp-forward.mjs): a
+ * Cookie or Authorization header sent to the customer's domain never reaches
+ * NORG.
+ *
  * @param {Request} request Incoming request.
  * @param {Object} env Install config.
  * @param {URL} url Parsed request URL.
@@ -237,8 +242,7 @@ async function handleMcp(request, env, url) {
  */
 async function forwardMcpToNorg(request, env, url) {
   try {
-    const headers = new Headers(request.headers);
-    headers.delete("host");
+    const headers = mcpForwardHeaders(request.headers);
     headers.set("X-Norg-Site-Id", env.SITE_ID || "");
     headers.set("X-Norg-Site-Key", env.NORG_SITE_KEY || "");
     headers.set("X-Norg-Edge-Page", url.pathname);
