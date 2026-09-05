@@ -12,6 +12,12 @@ an API token, and never gets deploy access to anything in your account.
 > but the Shopify (Cloudflare O2O) setup has extra steps and two rules you
 > must not break.
 
+> **On AWS CloudFront rather than Cloudflare?** Follow
+> [aws/README.md](aws/README.md) — the same product as a Lambda@Edge function,
+> installed on your own distribution. Read its "Differences from the Cloudflare
+> install" section first: bot verification is CIDR-only there, and rollback is
+> minutes rather than seconds.
+
 If you'd rather NORG handle the deploy and keep it automatically up to date,
 ask your NORG contact about the **API-token install** instead — see
 [Trade-offs vs. the API-token install](#trade-offs-vs-the-api-token-install)

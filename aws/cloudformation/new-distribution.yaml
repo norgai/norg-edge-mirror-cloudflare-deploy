@@ -1,0 +1,875 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+# NORG Edge Router — creates a NEW CloudFront distribution in front of your site.
+#
+# MUST be launched in us-east-1. Lambda@Edge functions can only live there; the
+# distribution itself is global either way.
+#
+# Use this template when your site is NOT already served through CloudFront.
+# It builds a distribution in front of your existing origin, and you repoint DNS
+# to it when you are satisfied. If you ALREADY have a CloudFront distribution,
+# use attach-existing.yaml instead — CloudFormation cannot modify a
+# distribution it did not create, and replacing yours would lose its config.
+#
+# WHAT THIS COSTS YOU IN CONTROL. Creating the distribution means this template
+# chooses your caching behaviour. It deliberately chooses the least opinionated
+# option available: DefaultTTL 0, so CloudFront honours the Cache-Control your
+# origin already sends, and cookies and query strings are forwarded. Review the
+# CachePolicy and OriginRequestPolicy below before launching in front of a site
+# that matters — they are the parts most likely to need tuning to your app.
+
+Description: NORG edge router on a new CloudFront distribution (Lambda@Edge, us-east-1)
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: { default: Your site }
+        Parameters: [OriginDomainName, AlternateDomainNames, AcmCertificateArn]
+      - Label: { default: NORG install credentials }
+        Parameters: [SiteId, SiteKey, NorgEnvironment]
+      - Label: { default: Advanced }
+        Parameters:
+          [ArtifactBucket, ArtifactKey, HeartbeatArtifactKey, ArtifactObjectVersion,
+           HeartbeatObjectVersion, NorgApiUrl, NorgContentBase, StripFallbackEnabled,
+           LazyRenderEnabled]
+
+Parameters:
+  OriginDomainName:
+    Type: String
+    Description: >-
+      The hostname CloudFront should fetch your real pages from, e.g.
+      origin.example.com. This must NOT be the public domain you will later
+      point at CloudFront, or requests will loop back into the distribution.
+    AllowedPattern: ^[a-zA-Z0-9.-]+$
+
+  AlternateDomainNames:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: >-
+      Optional. Public domains this distribution will serve once you cut DNS
+      over, e.g. www.example.com. Requires AcmCertificateArn. Leave blank to
+      test on the *.cloudfront.net name first, which is the safer order.
+
+  AcmCertificateArn:
+    Type: String
+    Default: ""
+    Description: >-
+      Optional. ACM certificate ARN in us-east-1 covering the alternate domain
+      names. Required if, and only if, you set them.
+
+  SiteId:
+    Type: String
+    Description: The SITE_ID NORG issued when you registered this site.
+    AllowedPattern: ^[0-9a-fA-F-]{36}$
+
+  SiteKey:
+    Type: String
+    NoEcho: true
+    Description: >-
+      The NORG_SITE_KEY NORG showed you once. It is stored as a CloudFront
+      origin custom header and as an environment variable on the heartbeat
+      function; anyone who can read this distribution's configuration in your
+      account can read it. It is scoped to this one site.
+
+  NorgEnvironment:
+    Type: String
+    Default: production
+    AllowedValues: [production, test]
+    Description: >-
+      Which NORG environment this install is bound to. A test-bound install
+      serves TEST content and must never be left looking like a production one.
+
+  NorgApiUrl:
+    Type: String
+    Default: https://content-craft-api.norg.ai
+  NorgContentBase:
+    Type: String
+    Default: https://edge-content.norg.ai
+  StripFallbackEnabled:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: Serve a stripped copy of your own page when NORG has not rendered it yet.
+  LazyRenderEnabled:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: Ask NORG to render a page the first time an agent asks for it.
+
+  # DELIBERATELY NO DEFAULT. S3 bucket names are globally unique across all AWS
+  # accounts, and this repository is public — so a default naming a bucket that
+  # NORG had not yet created could be claimed by anyone, and every stack
+  # launched from this template would then install THEIR code as a Lambda@Edge
+  # function, with an IAM role, in front of the whole site. Requiring the value
+  # means a deploy cannot silently resolve to an unowned name.
+  #
+  # Ask NORG for the current bucket, key and object version. Mirroring the
+  # objects into your own bucket and pointing these at it is fully supported and
+  # is the right choice if your policy forbids deploying third-party code.
+  ArtifactBucket:
+    Type: String
+    MinLength: 3
+    Description: >-
+      S3 bucket (us-east-1) holding the published router zip, as given to you by
+      NORG. Lambda code cannot be inlined above 4 KB, so it is fetched from here.
+  ArtifactKey:
+    Type: String
+    MinLength: 1
+    Description: S3 key of the edge-router zip, e.g. edge-router-lambda/0.1.0.zip
+  HeartbeatArtifactKey:
+    Type: String
+    MinLength: 1
+    Description: S3 key of the heartbeat zip, e.g. heartbeat-lambda/0.1.0.zip
+  ArtifactObjectVersion:
+    Type: String
+    Default: ""
+    Description: >-
+      Optional but recommended. S3 object version of the edge-router zip. Pinning
+      it means the code deployed into your account cannot change even if the
+      object behind the key is later replaced.
+  HeartbeatObjectVersion:
+    Type: String
+    Default: ""
+    Description: Optional. S3 object version of the heartbeat zip.
+
+Conditions:
+  HasArtifactObjectVersion: !Not [!Equals [!Ref ArtifactObjectVersion, ""]]
+  HasHeartbeatObjectVersion: !Not [!Equals [!Ref HeartbeatObjectVersion, ""]]
+  HasAlternateDomainNames: !Not [!Equals [!Join ["", !Ref AlternateDomainNames], ""]]
+
+Resources:
+  # Lambda@Edge requires BOTH principals: lambda.amazonaws.com to create the
+  # function, edgelambda.amazonaws.com to replicate it to the edge locations.
+  EdgeFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [lambda.amazonaws.com, edgelambda.amazonaws.com]
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  EdgeRouterFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: edge-router-lambda.handler
+      Runtime: nodejs20.x
+      Role: !GetAtt EdgeFunctionRole.Arn
+      # Lambda@Edge caps origin-request at 30s; this leaves room under it while
+      # the function's own watchdog degrades to the origin well before either.
+      Timeout: 30
+      # 192 MB, not the 512 MB this started at. Measured on a live install:
+      # peak 116 MB across 91 invocations, so this keeps ~65% headroom while
+      # cutting billed GB-seconds by 62% — Lambda@Edge charges per GB-second and
+      # has no free tier, so the over-provisioning was a straight multiplier on
+      # every request. Do not drop to 128 MB: the strip fallback buffers a whole
+      # origin response body.
+      MemorySize: 192
+      Code:
+        S3Bucket: !Ref ArtifactBucket
+        S3Key: !Ref ArtifactKey
+        S3ObjectVersion: !If [HasArtifactObjectVersion, !Ref ArtifactObjectVersion, !Ref "AWS::NoValue"]
+
+  # Lambda@Edge cannot reference $LATEST or an alias — only a numbered version.
+  #
+  # The Description is load-bearing, not documentation. AWS::Lambda::Version
+  # publishes a new version only when ITS OWN properties change, and
+  # FunctionName does not change when the function's code does — so updating the
+  # artifact would update $LATEST while the distribution stayed pinned to the
+  # version it first published. The router would appear to deploy and the edge
+  # would keep running the old code, silently, forever. Naming the artifact here
+  # is what forces a new version whenever the code changes.
+  EdgeRouterVersion:
+    Type: AWS::Lambda::Version
+    Properties:
+      FunctionName: !Ref EdgeRouterFunction
+      Description: !Sub "${ArtifactKey}@${ArtifactObjectVersion}"
+
+  # The cache-key stamp. Small enough to inline, unlike the router.
+  ViewerClassifier:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub "${AWS::StackName}-norg-viewer-classifier"
+      AutoPublish: true
+      FunctionConfig:
+        Comment: NORG edge router - stamps x-norg-agent for the cache key
+        Runtime: cloudfront-js-2.0
+      FunctionCode: |
+        /**
+         * NORG edge router — viewer-request cache-key stamp (CloudFront Function).
+         *
+         * Sets `x-norg-agent` so agent traffic and human traffic occupy different cache
+         * entries. The distribution's cache policy must include this header in the
+         * cache key, or nothing here has any effect.
+         *
+         * WHY THIS EXISTS. On Cloudflare the worker runs before the cache on every
+         * request, so it sees everything. CloudFront looks up its cache BETWEEN
+         * viewer-request and origin-request, and the router is an origin-request
+         * function — so it only runs on a cache MISS. Once a human has warmed the cache
+         * for a page, a later GPTBot request for the same URL is a cache HIT, the
+         * router never runs, and the agent silently gets the origin. The whole feature
+         * fails, quietly, on exactly the popular pages that matter most.
+         *
+         * WHY A COARSE TEST IS SAFE. This function does not decide what to serve — it
+         * only decides which cache bucket a request lands in. The router still requires
+         * an authenticated feed, a published serving_policy and a verified source IP
+         * before anything is diverted, so rule 3 is untouched and no local pattern list
+         * is being trusted here.
+         *
+         * The two directions of error are NOT symmetric, and that asymmetry is the
+         * whole design:
+         *
+         *   stamped "1" but actually human -> one extra cache variant and one extra
+         *       Lambda invocation. Costs money, breaks nothing.
+         *   stamped "0" but actually an agent -> the agent may be served a human's
+         *       cached page and the router never runs. The feature fails silently.
+         *
+         * So the test is deliberately lopsided: stamp "0" ONLY for a user-agent that is
+         * confidently an ordinary browser, and stamp "1" for everything else, including
+         * an absent user-agent. Over-stamping is the intended behaviour, not sloppiness
+         * — the set of requests marked as agents must be a SUPERSET of everything the
+         * router might divert.
+         *
+         * Runtime: cloudfront-js-2.0. No network, no async, 10 KB limit. Written in
+         * conservative ES5 so it also runs unchanged on cloudfront-js-1.0.
+         */
+
+        // Tokens that never appear in an ordinary browser user-agent, and do appear in
+        // crawler and scripted-client ones. "compatible;" is included on purpose: every
+        // major crawler uses the "Mozilla/5.0 (compatible; Name/1.0; +url)" form, and
+        // among real browsers only legacy IE does — which is worth one extra cache
+        // variant.
+        var BOT_MARKERS = [
+          "bot", "crawl", "spider", "slurp", "scrape", "fetch", "agent",
+          "compatible;", "http://", "https://", "headless", "preview",
+          "python", "curl", "wget", "java/", "okhttp", "axios", "node-fetch",
+          "go-http", "ruby", "perl", "libwww", "httpx", "aiohttp",
+        ];
+
+        // A real browser presents Mozilla/5.0 AND one of these engine or brand tokens.
+        var BROWSER_MARKERS = ["chrome/", "safari/", "firefox/", "edg/", "opr/", "trident/"];
+
+        /**
+         * Does the string contain any of the needles?
+         *
+         * @param {string} haystack Lower-cased subject.
+         * @param {Array} needles Tokens to look for.
+         * @returns {boolean} True on the first match.
+         */
+        function containsAny(haystack, needles) {
+          for (var i = 0; i < needles.length; i++) {
+            if (haystack.indexOf(needles[i]) !== -1) return true;
+          }
+          return false;
+        }
+
+        /**
+         * Is this confidently an ordinary browser?
+         *
+         * @param {string} userAgent Raw User-Agent header.
+         * @returns {boolean} True only when the shape is unambiguously a browser.
+         */
+        function isOrdinaryBrowser(userAgent) {
+          if (!userAgent) return false;
+          var ua = userAgent.toLowerCase();
+          if (ua.indexOf("mozilla/5.0") !== 0) return false;
+          if (containsAny(ua, BOT_MARKERS)) return false;
+          return containsAny(ua, BROWSER_MARKERS);
+        }
+
+        /**
+         * Stamp the cache-key header on a viewer request.
+         *
+         * @param {Object} event CloudFront Functions event.
+         * @returns {Object} The request, with x-norg-agent set.
+         */
+        function handler(event) {
+          var request = event.request;
+          var headers = request.headers || {};
+          var querystring = request.querystring || {};
+
+          var value;
+          if (headers["x-norg-edge-check"]) {
+            // A health probe answers with install state, not page content. Its own
+            // bucket keeps it from ever colliding with a real page's cache entry.
+            value = "probe";
+          } else if (querystring.agent && querystring.agent.value === "true") {
+            // ?agent=true forces the mirror, so it must not share a human's entry.
+            value = "1";
+          } else {
+            var userAgent = headers["user-agent"] ? headers["user-agent"].value : "";
+            value = isOrdinaryBrowser(userAgent) ? "0" : "1";
+          }
+
+          request.headers["x-norg-agent"] = { value: value };
+          return request;
+        }
+  # x-norg-agent is in the cache key so agent and human traffic cannot share an
+  # entry; `agent` is there because ?agent=true forces a different response.
+  # DefaultTTL 0 hands caching decisions back to your origin's own headers.
+  CachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub "${AWS::StackName}-norg-cache"
+        Comment: NORG edge router - splits agent and human cache entries
+        DefaultTTL: 0
+        MinTTL: 0
+        MaxTTL: 31536000
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingGzip: true
+          EnableAcceptEncodingBrotli: true
+          HeadersConfig:
+            HeaderBehavior: whitelist
+            Headers: [x-norg-agent]
+          QueryStringsConfig:
+            QueryStringBehavior: whitelist
+            QueryStrings: [agent]
+          CookiesConfig:
+            CookieBehavior: none
+
+  # Cache policy for the no-Lambda carve-outs. Deliberately does NOT include
+  # x-norg-agent in the cache key: these bytes are identical for every caller,
+  # so splitting them by agent would double the entries for no reason. Query
+  # strings ARE in the key, because framework asset URLs use them as
+  # cache-busters (?dpl=…) and for parameters (/_next/image?url=…&w=640).
+  StaticCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub "${AWS::StackName}-norg-static"
+        Comment: NORG edge router - carve-outs served without invoking the router
+        DefaultTTL: 86400
+        MinTTL: 0
+        MaxTTL: 31536000
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingGzip: true
+          EnableAcceptEncodingBrotli: true
+          HeadersConfig:
+            HeaderBehavior: none
+          QueryStringsConfig:
+            QueryStringBehavior: all
+          CookiesConfig:
+            CookieBehavior: none
+
+  # The router reports where a visit came from. CloudFront only adds these
+  # headers when a policy asks for it, and they are unavailable to viewer-facing
+  # functions either way — which is one reason the router is origin-facing.
+  OriginRequestPolicy:
+    Type: AWS::CloudFront::OriginRequestPolicy
+    Properties:
+      OriginRequestPolicyConfig:
+        Name: !Sub "${AWS::StackName}-norg-origin-request"
+        Comment: NORG edge router - forwards viewer geo headers to the function
+        HeadersConfig:
+          HeaderBehavior: allViewerAndWhitelistCloudFront
+          Headers:
+            - CloudFront-Viewer-Country
+            - CloudFront-Viewer-City
+            - CloudFront-Viewer-ASN
+            - CloudFront-Viewer-HTTP-Version
+            - CloudFront-Viewer-TLS
+        QueryStringsConfig:
+          QueryStringBehavior: all
+        CookiesConfig:
+          CookieBehavior: all
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub "NORG edge router - ${OriginDomainName}"
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        Aliases: !If [HasAlternateDomainNames, !Ref AlternateDomainNames, !Ref "AWS::NoValue"]
+        ViewerCertificate: !If
+          - HasAlternateDomainNames
+          - AcmCertificateArn: !Ref AcmCertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
+        Origins:
+          - Id: customer-origin
+            DomainName: !Ref OriginDomainName
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols: [TLSv1.2]
+              OriginReadTimeout: 30
+              OriginKeepaliveTimeout: 5
+            # This is how install config reaches the router: Lambda@Edge
+            # supports no environment variables at all. The router deletes
+            # these before the request continues, so they never reach your own
+            # web server or its access logs.
+            OriginCustomHeaders:
+              - HeaderName: x-norg-site-id
+                HeaderValue: !Ref SiteId
+              - HeaderName: x-norg-site-key
+                HeaderValue: !Ref SiteKey
+              - HeaderName: x-norg-api-url
+                HeaderValue: !Ref NorgApiUrl
+              - HeaderName: x-norg-content-base
+                HeaderValue: !Ref NorgContentBase
+              - HeaderName: x-norg-env
+                HeaderValue: !Ref NorgEnvironment
+              - HeaderName: x-norg-strip-fallback
+                HeaderValue: !Ref StripFallbackEnabled
+              - HeaderName: x-norg-lazy-render
+                HeaderValue: !Ref LazyRenderEnabled
+        # GENERATED by aws/build.mjs from STATIC_ASSET_SUFFIXES and
+        # DEFAULT_ROUTE_EXCLUSIONS — do not hand-edit; run `npm run build:aws`.
+        #
+        # These carry NO Lambda association, so the router is never invoked for
+        # them and never billed. That is the CloudFront equivalent of the
+        # no-worker routes install_exclusion_routes.py binds on Cloudflare.
+        #
+        # ORDER IS LOAD-BEARING: CloudFront matches behaviours in listed order,
+        # first match wins, and the default behaviour is always last. Nothing
+        # here may shadow a NORG-served path — build.mjs asserts that.
+        CacheBehaviors:
+          # BEGIN GENERATED CACHE BEHAVIOURS
+          - PathPattern: "/_next/*"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "/_vercel/*"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.css"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.js"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.mjs"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.map"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.png"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.jpg"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.jpeg"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.gif"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.webp"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.svg"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.ico"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.avif"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.bmp"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.tiff"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.heic"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.woff"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.woff2"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.ttf"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.eot"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.otf"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.mp4"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.webm"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.mov"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.avi"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.mkv"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.m4v"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.ogv"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.mp3"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.wav"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.ogg"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.m4a"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.aac"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.flac"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.weba"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.vtt"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.srt"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.pdf"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.doc"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.docx"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.xls"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.xlsx"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.ppt"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.pptx"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.zip"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.gz"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.rar"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.tar"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.7z"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          - PathPattern: "*.webmanifest"
+            TargetOriginId: customer-origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: !Ref StaticCachePolicy
+          # END GENERATED CACHE BEHAVIOURS
+        DefaultCacheBehavior:
+          TargetOriginId: customer-origin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          # POST is allowed because the MCP JSON-RPC transport needs it; the
+          # router passes every other non-GET method straight through.
+          AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+          CachedMethods: [GET, HEAD, OPTIONS]
+          CachePolicyId: !Ref CachePolicy
+          OriginRequestPolicyId: !Ref OriginRequestPolicy
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt ViewerClassifier.FunctionARN
+          LambdaFunctionAssociations:
+            - EventType: origin-request
+              LambdaFunctionARN: !Ref EdgeRouterVersion
+              # Required, not optional: the MCP JSON-RPC transport is a POST
+              # whose body the router forwards to NORG, and without this
+              # CloudFront hands the function an empty body. Access is
+              # read-only, so your origin still receives the full original body.
+              IncludeBody: true
+
+  # Replaces the Cloudflare cron trigger, which Lambda@Edge has no equivalent
+  # of. Not an edge function, so it MAY use environment variables.
+  HeartbeatRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  HeartbeatFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: heartbeat-lambda.handler
+      Runtime: nodejs20.x
+      Role: !GetAtt HeartbeatRole.Arn
+      Timeout: 10
+      MemorySize: 128
+      Environment:
+        Variables:
+          SITE_ID: !Ref SiteId
+          NORG_SITE_KEY: !Ref SiteKey
+          NORG_API_URL: !Ref NorgApiUrl
+          EDGE_ENV: !Ref NorgEnvironment
+      Code:
+        S3Bucket: !Ref ArtifactBucket
+        S3Key: !Ref HeartbeatArtifactKey
+        S3ObjectVersion: !If [HasHeartbeatObjectVersion, !Ref HeartbeatObjectVersion, !Ref "AWS::NoValue"]
+
+  HeartbeatSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: NORG edge router liveness beat
+      # The same cadence as the Cloudflare worker's cron trigger.
+      ScheduleExpression: rate(30 minutes)
+      State: ENABLED
+      Targets:
+        - Id: heartbeat
+          Arn: !GetAtt HeartbeatFunction.Arn
+
+  HeartbeatPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref HeartbeatFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt HeartbeatSchedule.Arn
+
+Outputs:
+  DistributionDomainName:
+    Description: Test against this before pointing any DNS at it.
+    Value: !GetAtt Distribution.DomainName
+  DistributionId:
+    Value: !Ref Distribution
+  EdgeRouterVersionArn:
+    Description: Give this to NORG if you want the install verified from their side.
+    Value: !Ref EdgeRouterVersion

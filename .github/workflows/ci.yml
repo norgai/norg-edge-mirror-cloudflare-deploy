@@ -1,4 +1,4 @@
-# Worker tests + bundle freshness for the customer-zone edge-router worker.
+# Tests + bundle freshness for the customer-zone edge router, on both providers.
 #
 # src/edge-router-worker.js is a committed build artifact: the Deploy button
 # deploys it and NORG's backend pins it by SHA-256. A source edit without a
@@ -14,7 +14,7 @@ on:
 
 jobs:
   test-and-build:
-    name: Worker tests + bundle freshness
+    name: Worker + Lambda tests, bundle freshness
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -27,17 +27,22 @@ jobs:
       - name: Run worker tests
         run: node --test workers/*.test.mjs
 
-      - name: Rebuild the bundle
-        run: node build.mjs
+      - name: Run AWS CloudFront tests
+        run: node --test aws/tests/*.test.mjs
 
-      - name: Assert src/edge-router-worker.js is up to date
+      - name: Rebuild the bundles
+        run: |
+          node build.mjs
+          node aws/build.mjs
+
+      - name: Assert the committed bundles are up to date
         run: |
           # --porcelain, not `git diff --exit-code`: diff ignores UNTRACKED
           # files, so a never-committed bundle would still pass.
-          STALE=$(git status --porcelain -- src/)
+          STALE=$(git status --porcelain -- src/ aws/src/ aws/cloudformation/)
           if [ -n "$STALE" ]; then
-            echo "Built bundle differs from the committed one:"
-            git diff -- src/
-            echo "Run: npm run build && git add src/"
+            echo "Built bundles differ from the committed ones:"
+            git diff -- src/ aws/src/ aws/cloudformation/
+            echo "Run: npm run build && git add src/ aws/src/ aws/cloudformation/"
             exit 1
           fi

@@ -1,0 +1,417 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+# NORG Edge Router — for a site ALREADY served through CloudFront.
+#
+# MUST be launched in us-east-1.
+#
+# This stack creates the functions and policies ONLY. It does not touch your
+# distribution, because CloudFormation cannot modify a resource it does not own
+# — importing yours to change it would put your production distribution's whole
+# configuration under this stack's control, and a later stack delete would take
+# it with them. That is not a trade worth making for a routing change.
+#
+# So attaching is a second, explicit step against your live distribution:
+#
+#   node aws/install/attach.mjs --distribution-id EXXXXXXXXXXXX --stack <this stack>
+#
+# The CLI prints the exact change and asks before applying it, and
+# --detach reverses it.
+#
+# BEFORE YOU RUN THIS ON A PRODUCTION DISTRIBUTION. Changing a distribution
+# takes 5-15 minutes to propagate globally, and a Lambda@Edge replica can take
+# up to ~30 minutes before it can be deleted — so backing this out is far slower
+# than removing a Cloudflare Worker route. If the site matters, attach to a
+# CloudFront continuous-deployment staging distribution first and shift traffic
+# to it gradually. The router degrades to your origin on every failure path, but
+# "degrades safely" and "reverts quickly" are not the same property.
+
+Description: NORG edge router functions for an existing CloudFront distribution (us-east-1)
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: { default: NORG install credentials }
+        Parameters: [SiteId, SiteKey, NorgEnvironment]
+      - Label: { default: Advanced }
+        Parameters:
+          [ArtifactBucket, ArtifactKey, HeartbeatArtifactKey, ArtifactObjectVersion,
+           HeartbeatObjectVersion, NorgApiUrl, NorgContentBase, StripFallbackEnabled,
+           LazyRenderEnabled]
+
+Parameters:
+  SiteId:
+    Type: String
+    Description: The SITE_ID NORG issued when you registered this site.
+    AllowedPattern: ^[0-9a-fA-F-]{36}$
+  SiteKey:
+    Type: String
+    NoEcho: true
+    Description: >-
+      The NORG_SITE_KEY NORG showed you once. The attach CLI writes it to your
+      distribution as an origin custom header; anyone who can read the
+      distribution's configuration in your account can read it.
+  NorgEnvironment:
+    Type: String
+    Default: production
+    AllowedValues: [production, test]
+  NorgApiUrl:
+    Type: String
+    Default: https://content-craft-api.norg.ai
+  NorgContentBase:
+    Type: String
+    Default: https://edge-content.norg.ai
+  StripFallbackEnabled:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+  LazyRenderEnabled:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+  # DELIBERATELY NO DEFAULT. S3 bucket names are globally unique across all AWS
+  # accounts, and this repository is public — so a default naming a bucket that
+  # NORG had not yet created could be claimed by anyone, and every stack
+  # launched from this template would then install THEIR code as a Lambda@Edge
+  # function, with an IAM role, in front of the whole site. Requiring the value
+  # means a deploy cannot silently resolve to an unowned name.
+  #
+  # Ask NORG for the current bucket, key and object version. Mirroring the
+  # objects into your own bucket and pointing these at it is fully supported and
+  # is the right choice if your policy forbids deploying third-party code.
+  ArtifactBucket:
+    Type: String
+    MinLength: 3
+    Description: >-
+      S3 bucket (us-east-1) holding the published router zip, as given to you by
+      NORG. Lambda code cannot be inlined above 4 KB, so it is fetched from here.
+  ArtifactKey:
+    Type: String
+    MinLength: 1
+    Description: S3 key of the edge-router zip, e.g. edge-router-lambda/0.1.0.zip
+  HeartbeatArtifactKey:
+    Type: String
+    MinLength: 1
+    Description: S3 key of the heartbeat zip, e.g. heartbeat-lambda/0.1.0.zip
+  ArtifactObjectVersion:
+    Type: String
+    Default: ""
+    Description: >-
+      Optional but recommended. S3 object version of the edge-router zip. Pinning
+      it means the code deployed into your account cannot change even if the
+      object behind the key is later replaced.
+  HeartbeatObjectVersion:
+    Type: String
+    Default: ""
+    Description: Optional. S3 object version of the heartbeat zip.
+
+Conditions:
+  HasArtifactObjectVersion: !Not [!Equals [!Ref ArtifactObjectVersion, ""]]
+  HasHeartbeatObjectVersion: !Not [!Equals [!Ref HeartbeatObjectVersion, ""]]
+
+Resources:
+  EdgeFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [lambda.amazonaws.com, edgelambda.amazonaws.com]
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  EdgeRouterFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: edge-router-lambda.handler
+      Runtime: nodejs20.x
+      Role: !GetAtt EdgeFunctionRole.Arn
+      Timeout: 30
+      # 192 MB, not the 512 MB this started at. Measured on a live install:
+      # peak 116 MB across 91 invocations, so this keeps ~65% headroom while
+      # cutting billed GB-seconds by 62% — Lambda@Edge charges per GB-second and
+      # has no free tier, so the over-provisioning was a straight multiplier on
+      # every request. Do not drop to 128 MB: the strip fallback buffers a whole
+      # origin response body.
+      MemorySize: 192
+      Code:
+        S3Bucket: !Ref ArtifactBucket
+        S3Key: !Ref ArtifactKey
+        S3ObjectVersion: !If [HasArtifactObjectVersion, !Ref ArtifactObjectVersion, !Ref "AWS::NoValue"]
+
+  # Lambda@Edge cannot reference $LATEST or an alias — only a numbered version.
+  #
+  # The Description is load-bearing, not documentation. AWS::Lambda::Version
+  # publishes a new version only when ITS OWN properties change, and
+  # FunctionName does not change when the function's code does — so updating the
+  # artifact would update $LATEST while the distribution stayed pinned to the
+  # version it first published. The router would appear to deploy and the edge
+  # would keep running the old code, silently, forever. Naming the artifact here
+  # is what forces a new version whenever the code changes.
+  EdgeRouterVersion:
+    Type: AWS::Lambda::Version
+    Properties:
+      FunctionName: !Ref EdgeRouterFunction
+      Description: !Sub "${ArtifactKey}@${ArtifactObjectVersion}"
+
+  ViewerClassifier:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub "${AWS::StackName}-norg-viewer-classifier"
+      AutoPublish: true
+      FunctionConfig:
+        Comment: NORG edge router - stamps x-norg-agent for the cache key
+        Runtime: cloudfront-js-2.0
+      FunctionCode: |
+        /**
+         * NORG edge router — viewer-request cache-key stamp (CloudFront Function).
+         *
+         * Sets `x-norg-agent` so agent traffic and human traffic occupy different cache
+         * entries. The distribution's cache policy must include this header in the
+         * cache key, or nothing here has any effect.
+         *
+         * WHY THIS EXISTS. On Cloudflare the worker runs before the cache on every
+         * request, so it sees everything. CloudFront looks up its cache BETWEEN
+         * viewer-request and origin-request, and the router is an origin-request
+         * function — so it only runs on a cache MISS. Once a human has warmed the cache
+         * for a page, a later GPTBot request for the same URL is a cache HIT, the
+         * router never runs, and the agent silently gets the origin. The whole feature
+         * fails, quietly, on exactly the popular pages that matter most.
+         *
+         * WHY A COARSE TEST IS SAFE. This function does not decide what to serve — it
+         * only decides which cache bucket a request lands in. The router still requires
+         * an authenticated feed, a published serving_policy and a verified source IP
+         * before anything is diverted, so rule 3 is untouched and no local pattern list
+         * is being trusted here.
+         *
+         * The two directions of error are NOT symmetric, and that asymmetry is the
+         * whole design:
+         *
+         *   stamped "1" but actually human -> one extra cache variant and one extra
+         *       Lambda invocation. Costs money, breaks nothing.
+         *   stamped "0" but actually an agent -> the agent may be served a human's
+         *       cached page and the router never runs. The feature fails silently.
+         *
+         * So the test is deliberately lopsided: stamp "0" ONLY for a user-agent that is
+         * confidently an ordinary browser, and stamp "1" for everything else, including
+         * an absent user-agent. Over-stamping is the intended behaviour, not sloppiness
+         * — the set of requests marked as agents must be a SUPERSET of everything the
+         * router might divert.
+         *
+         * Runtime: cloudfront-js-2.0. No network, no async, 10 KB limit. Written in
+         * conservative ES5 so it also runs unchanged on cloudfront-js-1.0.
+         */
+
+        // Tokens that never appear in an ordinary browser user-agent, and do appear in
+        // crawler and scripted-client ones. "compatible;" is included on purpose: every
+        // major crawler uses the "Mozilla/5.0 (compatible; Name/1.0; +url)" form, and
+        // among real browsers only legacy IE does — which is worth one extra cache
+        // variant.
+        var BOT_MARKERS = [
+          "bot", "crawl", "spider", "slurp", "scrape", "fetch", "agent",
+          "compatible;", "http://", "https://", "headless", "preview",
+          "python", "curl", "wget", "java/", "okhttp", "axios", "node-fetch",
+          "go-http", "ruby", "perl", "libwww", "httpx", "aiohttp",
+        ];
+
+        // A real browser presents Mozilla/5.0 AND one of these engine or brand tokens.
+        var BROWSER_MARKERS = ["chrome/", "safari/", "firefox/", "edg/", "opr/", "trident/"];
+
+        /**
+         * Does the string contain any of the needles?
+         *
+         * @param {string} haystack Lower-cased subject.
+         * @param {Array} needles Tokens to look for.
+         * @returns {boolean} True on the first match.
+         */
+        function containsAny(haystack, needles) {
+          for (var i = 0; i < needles.length; i++) {
+            if (haystack.indexOf(needles[i]) !== -1) return true;
+          }
+          return false;
+        }
+
+        /**
+         * Is this confidently an ordinary browser?
+         *
+         * @param {string} userAgent Raw User-Agent header.
+         * @returns {boolean} True only when the shape is unambiguously a browser.
+         */
+        function isOrdinaryBrowser(userAgent) {
+          if (!userAgent) return false;
+          var ua = userAgent.toLowerCase();
+          if (ua.indexOf("mozilla/5.0") !== 0) return false;
+          if (containsAny(ua, BOT_MARKERS)) return false;
+          return containsAny(ua, BROWSER_MARKERS);
+        }
+
+        /**
+         * Stamp the cache-key header on a viewer request.
+         *
+         * @param {Object} event CloudFront Functions event.
+         * @returns {Object} The request, with x-norg-agent set.
+         */
+        function handler(event) {
+          var request = event.request;
+          var headers = request.headers || {};
+          var querystring = request.querystring || {};
+
+          var value;
+          if (headers["x-norg-edge-check"]) {
+            // A health probe answers with install state, not page content. Its own
+            // bucket keeps it from ever colliding with a real page's cache entry.
+            value = "probe";
+          } else if (querystring.agent && querystring.agent.value === "true") {
+            // ?agent=true forces the mirror, so it must not share a human's entry.
+            value = "1";
+          } else {
+            var userAgent = headers["user-agent"] ? headers["user-agent"].value : "";
+            value = isOrdinaryBrowser(userAgent) ? "0" : "1";
+          }
+
+          request.headers["x-norg-agent"] = { value: value };
+          return request;
+        }
+  # Your distribution already has a cache policy tuned to your application, and
+  # replacing it would be this stack making a caching decision on your behalf.
+  # The attach CLI therefore prefers to ADD x-norg-agent to the policy you
+  # already use; this one exists only for the case where yours is a CloudFront
+  # managed policy, which cannot be edited.
+  CachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub "${AWS::StackName}-norg-cache"
+        Comment: NORG edge router - splits agent and human cache entries
+        DefaultTTL: 0
+        MinTTL: 0
+        MaxTTL: 31536000
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingGzip: true
+          EnableAcceptEncodingBrotli: true
+          HeadersConfig:
+            HeaderBehavior: whitelist
+            Headers: [x-norg-agent]
+          QueryStringsConfig:
+            QueryStringBehavior: whitelist
+            QueryStrings: [agent]
+          CookiesConfig:
+            CookieBehavior: none
+
+  OriginRequestPolicy:
+    Type: AWS::CloudFront::OriginRequestPolicy
+    Properties:
+      OriginRequestPolicyConfig:
+        Name: !Sub "${AWS::StackName}-norg-origin-request"
+        Comment: NORG edge router - forwards viewer geo headers to the function
+        HeadersConfig:
+          HeaderBehavior: allViewerAndWhitelistCloudFront
+          Headers:
+            - CloudFront-Viewer-Country
+            - CloudFront-Viewer-City
+            - CloudFront-Viewer-ASN
+            - CloudFront-Viewer-HTTP-Version
+            - CloudFront-Viewer-TLS
+        QueryStringsConfig:
+          QueryStringBehavior: all
+        CookiesConfig:
+          CookieBehavior: all
+
+  # Cache policy for the no-Lambda carve-outs the attach CLI adds. No
+  # x-norg-agent in the key: these bytes are identical for every caller.
+  StaticCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub "${AWS::StackName}-norg-static"
+        Comment: NORG edge router - carve-outs served without invoking the router
+        DefaultTTL: 86400
+        MinTTL: 0
+        MaxTTL: 31536000
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingGzip: true
+          EnableAcceptEncodingBrotli: true
+          HeadersConfig:
+            HeaderBehavior: none
+          QueryStringsConfig:
+            QueryStringBehavior: all
+          CookiesConfig:
+            CookieBehavior: none
+
+  HeartbeatRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  HeartbeatFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: heartbeat-lambda.handler
+      Runtime: nodejs20.x
+      Role: !GetAtt HeartbeatRole.Arn
+      Timeout: 10
+      MemorySize: 128
+      Environment:
+        Variables:
+          SITE_ID: !Ref SiteId
+          NORG_SITE_KEY: !Ref SiteKey
+          NORG_API_URL: !Ref NorgApiUrl
+          EDGE_ENV: !Ref NorgEnvironment
+      Code:
+        S3Bucket: !Ref ArtifactBucket
+        S3Key: !Ref HeartbeatArtifactKey
+        S3ObjectVersion: !If [HasHeartbeatObjectVersion, !Ref HeartbeatObjectVersion, !Ref "AWS::NoValue"]
+
+  HeartbeatSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: NORG edge router liveness beat
+      ScheduleExpression: rate(30 minutes)
+      State: ENABLED
+      Targets:
+        - Id: heartbeat
+          Arn: !GetAtt HeartbeatFunction.Arn
+
+  HeartbeatPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref HeartbeatFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt HeartbeatSchedule.Arn
+
+Outputs:
+  EdgeRouterVersionArn:
+    Description: Associate on origin-request. Lambda@Edge accepts only a numbered version.
+    Value: !Ref EdgeRouterVersion
+    Export: { Name: !Sub "${AWS::StackName}-EdgeRouterVersionArn" }
+  ViewerClassifierArn:
+    Description: Associate on viewer-request.
+    Value: !GetAtt ViewerClassifier.FunctionARN
+    Export: { Name: !Sub "${AWS::StackName}-ViewerClassifierArn" }
+  CachePolicyId:
+    Description: Use only if your current cache policy is a managed one and cannot be edited.
+    Value: !Ref CachePolicy
+    Export: { Name: !Sub "${AWS::StackName}-CachePolicyId" }
+  OriginRequestPolicyId:
+    Value: !Ref OriginRequestPolicy
+    Export: { Name: !Sub "${AWS::StackName}-OriginRequestPolicyId" }
+  StaticCachePolicyId:
+    Description: Cache policy for the carve-out behaviours the attach CLI adds.
+    Value: !Ref StaticCachePolicy
+    Export: { Name: !Sub "${AWS::StackName}-OriginRequestPolicyId" }
+  OriginCustomHeaders:
+    Description: >-
+      Add these to the origin the router sits in front of. The site key is
+      omitted here on purpose — the attach CLI reads it from the stack
+      parameter rather than printing it into your console output.
+    Value: !Sub "x-norg-site-id=${SiteId}, x-norg-api-url=${NorgApiUrl}, x-norg-content-base=${NorgContentBase}, x-norg-env=${NorgEnvironment}, x-norg-strip-fallback=${StripFallbackEnabled}, x-norg-lazy-render=${LazyRenderEnabled}"
