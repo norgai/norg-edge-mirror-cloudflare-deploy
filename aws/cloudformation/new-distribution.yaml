@@ -157,7 +157,12 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       Handler: edge-router-lambda.handler
-      Runtime: nodejs20.x
+      # nodejs24.x, not 20.x: Node 20 reached Lambda end-of-support on
+      # 2026-04-30 — no security patches, no new functions from 2027-02-01,
+      # no updates to existing ones from 2027-03-01. Lambda@Edge accepts 24
+      # (verified by association, despite third-party docs still claiming
+      # 18/20 only). Keep both functions on the same runtime.
+      Runtime: nodejs24.x
       Role: !GetAtt EdgeFunctionRole.Arn
       # Lambda@Edge caps origin-request at 30s; this leaves room under it while
       # the function's own watchdog degrades to the origin well before either.
@@ -830,7 +835,8 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       Handler: heartbeat-lambda.handler
-      Runtime: nodejs20.x
+      # Same runtime as EdgeRouterFunction — see the note there.
+      Runtime: nodejs24.x
       Role: !GetAtt HeartbeatRole.Arn
       Timeout: 10
       MemorySize: 128
