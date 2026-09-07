@@ -18,6 +18,11 @@ an API token, and never gets deploy access to anything in your account.
 > install" section first: bot verification is CIDR-only there, and rollback is
 > minutes rather than seconds.
 
+> **On bunny.net?** Follow [bunny/README.md](bunny/README.md) — the same product
+> as an Edge Scripting middleware script on your own pull zone. Read its "The
+> cache is the hazard" section first: a Bunny middleware script runs on a cache
+> MISS only, so a cacheable origin silently keeps the router out of the loop.
+
 If you'd rather NORG handle the deploy and keep it automatically up to date,
 ask your NORG contact about the **API-token install** instead — see
 [Trade-offs vs. the API-token install](#trade-offs-vs-the-api-token-install)

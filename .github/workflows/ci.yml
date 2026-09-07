@@ -14,7 +14,7 @@ on:
 
 jobs:
   test-and-build:
-    name: Worker + Lambda tests, bundle freshness
+    name: Worker + Lambda + Bunny tests, bundle freshness
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -30,19 +30,23 @@ jobs:
       - name: Run AWS CloudFront tests
         run: node --test aws/tests/*.test.mjs
 
+      - name: Run Bunny Edge Scripting tests
+        run: node --test bunny/tests/*.test.mjs
+
       - name: Rebuild the bundles
         run: |
           node build.mjs
           node aws/build.mjs
+          node bunny/build.mjs
 
       - name: Assert the committed bundles are up to date
         run: |
           # --porcelain, not `git diff --exit-code`: diff ignores UNTRACKED
           # files, so a never-committed bundle would still pass.
-          STALE=$(git status --porcelain -- src/ aws/src/ aws/cloudformation/)
+          STALE=$(git status --porcelain -- src/ aws/src/ aws/cloudformation/ bunny/dist/)
           if [ -n "$STALE" ]; then
             echo "Built bundles differ from the committed ones:"
-            git diff -- src/ aws/src/ aws/cloudformation/
-            echo "Run: npm run build && git add src/ aws/src/ aws/cloudformation/"
+            git diff -- src/ aws/src/ aws/cloudformation/ bunny/dist/
+            echo "Run: npm run build && git add src/ aws/src/ aws/cloudformation/ bunny/dist/"
             exit 1
           fi
