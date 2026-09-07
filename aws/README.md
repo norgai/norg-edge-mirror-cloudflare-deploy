@@ -191,8 +191,11 @@ There are now three groups of generated behaviours, matched in this order:
    router receives no request body at all (see Operational notes).
 2. **Dynamic paths** (`/api/*`, `/wp-json/*`, `/wp-admin/*`, `/wp-login.php`,
    `/cart`, `/cart/*`, `/checkout`, `/checkout/*`) — no Lambda and **no cache**:
-   CloudFront's managed `CachingDisabled` + `AllViewer`, every method allowed.
-   Your origin sees exactly what it would have without the router. A 24-hour
+   CloudFront's managed `CachingDisabled` + `AllViewerExceptHostHeader`, every
+   method allowed. Your origin sees exactly what it would have without the
+   router — including its *own* `Host`, which is why it is not plain
+   `AllViewer`: that forwards the viewer's `Host`, and a host-routed origin
+   (Vercel, API Gateway) answers it with 403. A 24-hour
    default TTL on `/cart` would serve one visitor's page to the next, which is
    why these do not share the static policy. `/account*` and `/login*` are
    deliberately absent — they also match marketing slugs like `/accounting`.

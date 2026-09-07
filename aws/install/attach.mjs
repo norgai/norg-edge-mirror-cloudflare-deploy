@@ -44,7 +44,7 @@ import {
   CURATED_ASSET_SUFFIXES,
   DEFAULT_ROUTE_EXCLUSIONS,
   DYNAMIC_ROUTE_EXCLUSIONS,
-  MANAGED_ALL_VIEWER_ORIGIN_REQUEST_ID,
+  MANAGED_ALL_VIEWER_EXCEPT_HOST_ORIGIN_REQUEST_ID,
   MANAGED_CACHING_DISABLED_ID,
   MCP_PATH_PATTERNS,
   PROTECTED_PATH_PREFIXES,
@@ -421,7 +421,7 @@ function carveOutBehaviours(outputs, targetOriginId) {
       ...base(pattern),
       AllowedMethods: ALL_METHODS,
       CachePolicyId: MANAGED_CACHING_DISABLED_ID,
-      OriginRequestPolicyId: MANAGED_ALL_VIEWER_ORIGIN_REQUEST_ID,
+      OriginRequestPolicyId: MANAGED_ALL_VIEWER_EXCEPT_HOST_ORIGIN_REQUEST_ID,
       LambdaFunctionAssociations: { Quantity: 0, Items: [] },
       FunctionAssociations: { Quantity: 0, Items: [] },
     };
@@ -472,7 +472,7 @@ function isOurs(behaviour, config) {
   if (DYNAMIC_ROUTE_EXCLUSIONS.includes(behaviour.PathPattern)) {
     return (
       behaviour.CachePolicyId === MANAGED_CACHING_DISABLED_ID &&
-      behaviour.OriginRequestPolicyId === MANAGED_ALL_VIEWER_ORIGIN_REQUEST_ID
+      behaviour.OriginRequestPolicyId === MANAGED_ALL_VIEWER_EXCEPT_HOST_ORIGIN_REQUEST_ID
     );
   }
   return true;

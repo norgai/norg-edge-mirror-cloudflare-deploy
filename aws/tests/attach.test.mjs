@@ -22,7 +22,7 @@ import {
 } from "../install/attach.mjs";
 import {
   DYNAMIC_ROUTE_EXCLUSIONS,
-  MANAGED_ALL_VIEWER_ORIGIN_REQUEST_ID,
+  MANAGED_ALL_VIEWER_EXCEPT_HOST_ORIGIN_REQUEST_ID,
   MANAGED_CACHING_DISABLED_ID,
   MCP_PATH_PATTERNS,
 } from "../../core/exclusions.mjs";
@@ -128,7 +128,7 @@ test("dynamic carve-outs are NOT cached and forward everything", () => {
   for (const pattern of DYNAMIC_ROUTE_EXCLUSIONS) {
     const b = byPattern[pattern];
     assert.equal(b.CachePolicyId, MANAGED_CACHING_DISABLED_ID, pattern);
-    assert.equal(b.OriginRequestPolicyId, MANAGED_ALL_VIEWER_ORIGIN_REQUEST_ID, pattern);
+    assert.equal(b.OriginRequestPolicyId, MANAGED_ALL_VIEWER_EXCEPT_HOST_ORIGIN_REQUEST_ID, pattern);
     assert.equal(b.LambdaFunctionAssociations.Quantity, 0, pattern);
     assert.ok(b.AllowedMethods.Items.includes("POST"), `${pattern} must accept POST`);
   }

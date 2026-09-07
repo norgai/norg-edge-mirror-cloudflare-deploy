@@ -40,7 +40,7 @@ import { createHash } from "node:crypto";
 import {
   DEFAULT_ROUTE_EXCLUSIONS,
   DYNAMIC_ROUTE_EXCLUSIONS,
-  MANAGED_ALL_VIEWER_ORIGIN_REQUEST_ID,
+  MANAGED_ALL_VIEWER_EXCEPT_HOST_ORIGIN_REQUEST_ID,
   MANAGED_CACHING_DISABLED_ID,
   MCP_PATH_PATTERNS,
   PROTECTED_PATH_PREFIXES,
@@ -320,7 +320,7 @@ function dynamicBehaviour(pattern) {
     "            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]",
     "            CachedMethods: [GET, HEAD, OPTIONS]",
     `            CachePolicyId: ${MANAGED_CACHING_DISABLED_ID}`,
-    `            OriginRequestPolicyId: ${MANAGED_ALL_VIEWER_ORIGIN_REQUEST_ID}`,
+    `            OriginRequestPolicyId: ${MANAGED_ALL_VIEWER_EXCEPT_HOST_ORIGIN_REQUEST_ID}`,
   ].join("\n");
 }
 

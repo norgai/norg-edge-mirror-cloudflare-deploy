@@ -236,7 +236,7 @@ test("the MCP behaviours are the ONLY place the request body is included", async
 
 test("dynamic carve-outs are never cached; static ones are", async () => {
   // A 24 h default TTL on /cart would serve one visitor's page to the next.
-  const { DYNAMIC_ROUTE_EXCLUSIONS, MANAGED_CACHING_DISABLED_ID, MANAGED_ALL_VIEWER_ORIGIN_REQUEST_ID, MCP_PATH_PATTERNS } =
+  const { DYNAMIC_ROUTE_EXCLUSIONS, MANAGED_CACHING_DISABLED_ID, MANAGED_ALL_VIEWER_EXCEPT_HOST_ORIGIN_REQUEST_ID, MCP_PATH_PATTERNS } =
     await import("../../core/exclusions.mjs");
   const template = readFileSync(join(cfnDir, "new-distribution.yaml"), "utf8");
   const dynamic = new Set(DYNAMIC_ROUTE_EXCLUSIONS);
@@ -244,7 +244,7 @@ test("dynamic carve-outs are never cached; static ones are", async () => {
   for (const { pattern, body } of generatedBehaviours(template)) {
     if (dynamic.has(pattern)) {
       assert.match(body, new RegExp(`CachePolicyId: ${MANAGED_CACHING_DISABLED_ID}`), pattern);
-      assert.match(body, new RegExp(`OriginRequestPolicyId: ${MANAGED_ALL_VIEWER_ORIGIN_REQUEST_ID}`), pattern);
+      assert.match(body, new RegExp(`OriginRequestPolicyId: ${MANAGED_ALL_VIEWER_EXCEPT_HOST_ORIGIN_REQUEST_ID}`), pattern);
       assert.match(body, /AllowedMethods: \[GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE\]/, `${pattern} takes POSTs`);
     } else if (!MCP_PATH_PATTERNS.includes(pattern)) {
       assert.match(body, /CachePolicyId: !Ref StaticCachePolicy/, pattern);
