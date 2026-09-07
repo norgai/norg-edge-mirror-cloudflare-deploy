@@ -25,6 +25,7 @@ __export(edge_router_lambda_exports, {
   __test_WATCHDOG_MS: () => WATCHDOG_MS,
   __test_isHealthProbe: () => isHealthProbe,
   __test_isPassthrough: () => isPassthrough,
+  __test_primeSecretCache: () => __primeSecretCache,
   __test_serveStrippedOrigin: () => serveStrippedOrigin,
   default: () => edge_router_lambda_default,
   handleRequest: () => handleRequest,
@@ -242,10 +243,15 @@ var STATIC_ASSET_SUFFIXES = /* @__PURE__ */ new Set([
 ]);
 
 // aws/lambda/lib/config.js
-var EDGE_SCRIPT_VERSION = "0.3.0";
+var EDGE_SCRIPT_VERSION = "0.4.0";
 var CONFIG_HEADERS = {
   "x-norg-site-id": "SITE_ID",
-  "x-norg-site-key": "NORG_SITE_KEY",
+  "x-norg-secret-arn": "NORG_SECRET_ARN",
+  // Authorises the health probe and nothing else. Deliberately NOT the site
+  // key: operators are told to send this over the wire, and the old header
+  // compared against the key itself, which put a NORG credential into curl
+  // history, proxy logs, and — on a failing probe — the customer's origin.
+  "x-norg-probe-token": "PROBE_TOKEN",
   "x-norg-api-url": "NORG_API_URL",
   "x-norg-content-base": "NORG_CONTENT_BASE",
   "x-norg-strip-fallback": "STRIP_FALLBACK_ENABLED",
@@ -257,16 +263,72 @@ var CONFIG_HEADERS = {
   // it is off unless an install explicitly asks for it. See telemetry.js.
   "x-norg-events-verbose": "EDGE_EVENTS_VERBOSE"
 };
+function scrubConfigHeaders(cfRequest) {
+  const customHeaders = cfRequest?.origin?.custom?.customHeaders;
+  if (customHeaders) {
+    for (const header of Object.keys(CONFIG_HEADERS)) delete customHeaders[header];
+  }
+  if (cfRequest?.headers) delete cfRequest.headers[HEALTH_CHECK_HEADER];
+  return cfRequest;
+}
 function readConfig(cfRequest) {
   const customHeaders = cfRequest.origin?.custom?.customHeaders;
+  const probeHeader = cfRequest.headers?.[HEALTH_CHECK_HEADER]?.[0]?.value;
   const env = { EDGE_SCRIPT_VERSION, EDGE_PLATFORM: "cloudfront" };
-  if (!customHeaders) return env;
+  if (probeHeader !== void 0) env.PROBE_HEADER = probeHeader;
+  if (!customHeaders) {
+    scrubConfigHeaders(cfRequest);
+    return env;
+  }
   for (const [header, name] of Object.entries(CONFIG_HEADERS)) {
     const value = customHeaders[header]?.[0]?.value;
     if (value !== void 0) env[name] = value;
-    delete customHeaders[header];
   }
+  scrubConfigHeaders(cfRequest);
   return env;
+}
+
+// aws/lambda/lib/secret.js
+var CACHE_TTL_MS = 15 * 60 * 1e3;
+var SECRET_TIMEOUT_MS = 1500;
+var SECRET_REGION = "us-east-1";
+var cached = { value: null, fetchedAt: 0 };
+function __primeSecretCache(value) {
+  cached = { value, fetchedAt: Date.now() };
+}
+function loadClient() {
+  return require("@aws-sdk/client-secrets-manager");
+}
+function parseSecret(secretString) {
+  if (!secretString) return null;
+  const trimmed = secretString.trim();
+  if (!trimmed.startsWith("{")) return trimmed || null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed?.NORG_SITE_KEY || parsed?.site_key || null;
+  } catch (e) {
+    return null;
+  }
+}
+async function getSiteKey(env) {
+  const arn = env?.NORG_SECRET_ARN;
+  if (!arn) return null;
+  const age = Date.now() - cached.fetchedAt;
+  if (cached.value && age < CACHE_TTL_MS) return cached.value;
+  try {
+    const { SecretsManagerClient, GetSecretValueCommand } = loadClient();
+    const client = new SecretsManagerClient({ region: SECRET_REGION });
+    const result = await client.send(new GetSecretValueCommand({ SecretId: arn }), {
+      abortSignal: AbortSignal.timeout(SECRET_TIMEOUT_MS)
+    });
+    const value = parseSecret(result?.SecretString);
+    if (!value) return null;
+    cached = { value, fetchedAt: Date.now() };
+    return value;
+  } catch (e) {
+    console.error("norg site key fetch failed", e);
+    return null;
+  }
 }
 
 // core/config.js
@@ -288,9 +350,6 @@ function controlHeaders(env) {
 function contentStem(env) {
   const base = binding(env, "NORG_CONTENT_BASE").replace(/\/+$/, "");
   return `${base}/${env.SITE_ID || ""}`;
-}
-function isConfigured(env) {
-  return Boolean(env.SITE_ID && env.NORG_SITE_KEY);
 }
 
 // workers/lib/classify.mjs
@@ -1136,8 +1195,8 @@ function requestRender(env, url) {
 var WATCHDOG_MS = 2e4;
 var MAX_INLINE_MIRROR_BYTES = 850 * 1024;
 function isHealthProbe(request, env) {
-  const probeKey = request.headers.get(HEALTH_CHECK_HEADER);
-  return Boolean(probeKey && env.NORG_SITE_KEY && probeKey === env.NORG_SITE_KEY);
+  const probeKey = env.PROBE_HEADER;
+  return Boolean(probeKey && env.PROBE_TOKEN && probeKey === env.PROBE_TOKEN);
 }
 function isPassthrough(request, env) {
   if (binding(env, "EDGE_DISABLED") === "true") return true;
@@ -1277,6 +1336,8 @@ async function handleRequest(cfRequest, env) {
   if (isPassthrough(request, env)) return PASSTHROUGH;
   const url = new URL(request.url);
   const userAgent = request.headers.get("user-agent") || "";
+  env.NORG_SITE_KEY = await getSiteKey(env);
+  if (!env.NORG_SITE_KEY) return PASSTHROUGH;
   const feed = await getBotFeed(env);
   if (!feed.entitled) return PASSTHROUGH;
   const owned = await serveNorgOwnedSurface(cfRequest, request, env, url);
@@ -1309,10 +1370,10 @@ async function handler(event) {
   const cfRequest = event.Records[0].cf.request;
   let pristine = cfRequest;
   try {
-    pristine = structuredClone(cfRequest);
+    scrubConfigHeaders(pristine = structuredClone(cfRequest));
     const flushed = flushDeferred();
     const env = readConfig(cfRequest);
-    if (!isConfigured(env)) return cfRequest;
+    if (!env.SITE_ID || !env.NORG_SECRET_ARN) return cfRequest;
     let watchdog;
     const result = await Promise.race([
       handleRequest(cfRequest, env),
@@ -1324,10 +1385,10 @@ async function handler(event) {
     await flushDeferred();
     if (result === PASSTHROUGH) return passthrough(alignHostToOrigin(cfRequest));
     const response = await toCloudFrontResponse(result);
-    return response || passthrough(alignHostToOrigin(pristine));
+    return response || passthrough(alignHostToOrigin(scrubConfigHeaders(pristine)));
   } catch (e) {
     console.error("norg edge router error", e);
-    return pristine;
+    return scrubConfigHeaders(pristine);
   }
 }
 var edge_router_lambda_default = handler;
@@ -1337,6 +1398,7 @@ var edge_router_lambda_default = handler;
   __test_WATCHDOG_MS,
   __test_isHealthProbe,
   __test_isPassthrough,
+  __test_primeSecretCache,
   __test_serveStrippedOrigin,
   handleRequest,
   handler

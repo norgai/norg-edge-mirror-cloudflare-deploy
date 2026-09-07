@@ -22,6 +22,8 @@ import {
   GOOGLEBOT_UA,
   GPTBOT_UA,
   SITE_KEY,
+  PROBE_TOKEN,
+  SECRET_ARN,
   UNVERIFIED_IP,
   UNVERIFIED_IPV6,
   VERIFIED_IPV6,
@@ -139,7 +141,7 @@ test("an unentitled install ignores the ?agent=true override", async () => {
 test("an install missing its credentials makes no NORG call whatsoever", async () => {
   const { result, calls } = await run({
     headers: { "user-agent": GPTBOT_UA },
-    config: { "x-norg-site-key": undefined },
+    config: { "x-norg-secret-arn": undefined },
   });
 
   assert.ok(isPassthroughResult(result));
@@ -491,7 +493,7 @@ test("HEAD is answered for a NORG-owned path but passed through for a customer p
 // --- Health probe and the ?agent=true override -----------------------------
 
 test("an authenticated health probe reports the install's state", async () => {
-  const { result } = await run({ headers: { "x-norg-edge-check": SITE_KEY } });
+  const { result } = await run({ headers: { "x-norg-edge-check": PROBE_TOKEN } });
   const body = JSON.parse(result.body);
 
   assert.equal(body.site_id, "site-1");
@@ -499,6 +501,16 @@ test("an authenticated health probe reports the install's state", async () => {
   assert.equal(body.platform, "cloudfront");
   assert.equal(body.disabled, false);
   assert.equal(typeof body.entitled, "boolean");
+});
+
+test("the site key is NOT accepted as a probe token", async () => {
+  // Operators are told to send the probe token over the wire. It used to be the
+  // site key itself, which put a NORG credential into curl history, any proxy
+  // in the path, and — on a failing probe — the customer's own access logs.
+  const { result } = await run({
+    headers: { "x-norg-edge-check": SITE_KEY, "user-agent": CHROME_UA },
+  });
+  assert.ok(isPassthroughResult(result), "a site key must not authenticate a probe");
 });
 
 test("a wrong probe key never shadows a real customer URL", async () => {
@@ -628,6 +640,66 @@ test("the site key never survives into the origin request", async () => {
       `the site key leaked for ${JSON.stringify(options)}`,
     );
   }
+});
+
+test("NO config header survives into the origin request, on any path", async () => {
+  // Broader than the key alone, because the ARN and the probe token are just as
+  // much ours to keep off the customer's web server.
+  for (const options of [
+    { headers: { "user-agent": CHROME_UA } },
+    { headers: { "user-agent": GPTBOT_UA } },
+    { uri: "/assets/app.css" },
+    { config: { "x-norg-disabled": "true" } },
+  ]) {
+    const { result } = await run(options, { mirror: () => mirrorHit() });
+    const serialised = JSON.stringify(result);
+    for (const marker of [SECRET_ARN, PROBE_TOKEN, "x-norg-secret-arn", "x-norg-probe-token"]) {
+      assert.equal(
+        serialised.includes(marker),
+        false,
+        `${marker} leaked for ${JSON.stringify(options)}`,
+      );
+    }
+  }
+});
+
+test("a thrown error returns the origin WITHOUT the config headers", async () => {
+  // The regression this whole change exists for. `pristine` used to be cloned
+  // before readConfig redacted anything, so the catch inside handler() — the
+  // rule-1 safety net, and therefore the path most likely to run when something
+  // is wrong — handed the customer's own web server the full config header set.
+  //
+  // An unparseable Host makes toRequest's URL construction throw, which is
+  // outside every inner try in the pipeline and so reaches that catch.
+  const event = cloudFrontEvent({ headers: { "user-agent": GPTBOT_UA } });
+  event.Records[0].cf.request.headers.host = [{ key: "Host", value: "not a host" }];
+  stubNetwork({ mirror: () => mirrorHit() });
+
+  const result = await handler(event);
+
+  assert.equal(typeof result.status, "undefined", "an error must still serve the origin");
+  assert.deepEqual(
+    result.origin.custom.customHeaders,
+    {},
+    "no config header may survive onto the origin request",
+  );
+  const serialised = JSON.stringify(result);
+  for (const marker of [SITE_KEY, SECRET_ARN, PROBE_TOKEN, "x-norg-"]) {
+    assert.equal(serialised.includes(marker), false, `${marker} leaked on the error path`);
+  }
+});
+
+test("the health-probe header never reaches the origin, even when it is wrong", async () => {
+  const { result } = await run({
+    headers: { "x-norg-edge-check": "not-the-token", "user-agent": CHROME_UA },
+  });
+
+  assert.ok(isPassthroughResult(result));
+  assert.equal(
+    JSON.stringify(result).includes("not-the-token"),
+    false,
+    "a failed probe must not carry its header into the customer's access logs",
+  );
 });
 
 // --- IPv6 source verification (workers/lib/cidr.mjs) -----------------------

@@ -33,7 +33,8 @@ function requestWithCustomHeaders(headers) {
 test("reads every binding from custom origin headers", () => {
   const request = requestWithCustomHeaders({
     "x-norg-site-id": "site-1",
-    "x-norg-site-key": "nek_live_secret",
+    "x-norg-secret-arn": "arn:aws:secretsmanager:us-east-1:1:secret:k",
+    "x-norg-probe-token": "nprobe_tok",
     "x-norg-api-url": "https://api.test.norg.ai",
     "x-norg-content-base": "https://edge-content.test.norg.ai",
     "x-norg-strip-fallback": "false",
@@ -47,14 +48,15 @@ test("reads every binding from custom origin headers", () => {
   // The adapter stamps its own identity onto the config object; core reads the
   // version and platform from there rather than importing a constant, so one
   // core serves every provider.
-  assert.equal(env.EDGE_SCRIPT_VERSION, "0.3.0");
+  assert.equal(env.EDGE_SCRIPT_VERSION, "0.4.0");
   assert.equal(env.EDGE_PLATFORM, "cloudfront");
   delete env.EDGE_SCRIPT_VERSION;
   delete env.EDGE_PLATFORM;
 
   assert.deepEqual(env, {
     SITE_ID: "site-1",
-    NORG_SITE_KEY: "nek_live_secret",
+    NORG_SECRET_ARN: "arn:aws:secretsmanager:us-east-1:1:secret:k",
+    PROBE_TOKEN: "nprobe_tok",
     NORG_API_URL: "https://api.test.norg.ai",
     NORG_CONTENT_BASE: "https://edge-content.test.norg.ai",
     STRIP_FALLBACK_ENABLED: "false",
@@ -68,7 +70,8 @@ test("reads every binding from custom origin headers", () => {
 test("deletes NORG config headers so they never reach the customer origin", () => {
   const request = requestWithCustomHeaders({
     "x-norg-site-id": "site-1",
-    "x-norg-site-key": "nek_live_secret",
+    "x-norg-secret-arn": "arn:aws:secretsmanager:us-east-1:1:secret:k",
+    "x-norg-probe-token": "nprobe_tok",
     "x-custom-unrelated": "keep-me",
   });
 
@@ -77,10 +80,24 @@ test("deletes NORG config headers so they never reach the customer origin", () =
 
   assert.deepEqual(Object.keys(remaining), ["x-custom-unrelated"]);
   assert.equal(
-    JSON.stringify(remaining).includes("nek_live_secret"),
+    JSON.stringify(remaining).includes("nprobe_tok"),
     false,
-    "the site key must not survive anywhere in the origin request",
+    "the probe token must not survive anywhere in the origin request",
   );
+});
+
+test("strips the health-probe header from the request itself", () => {
+  // Not a custom origin header — it arrives on the viewer request, and a
+  // FAILING probe used to ride all the way through to the customer's origin
+  // and into their access logs.
+  const request = requestWithCustomHeaders({ "x-norg-site-id": "site-1" });
+  request.headers["x-norg-edge-check"] = [{ key: "x-norg-edge-check", value: "nprobe_tok" }];
+  request.headers["user-agent"] = [{ key: "user-agent", value: "curl/8" }];
+
+  readConfig(request);
+
+  assert.equal(request.headers["x-norg-edge-check"], undefined);
+  assert.ok(request.headers["user-agent"], "unrelated request headers are untouched");
 });
 
 test("deletes config headers even when unset, and leaves the customer's own alone", () => {
@@ -94,7 +111,7 @@ test("survives an origin with no custom headers at all", () => {
   // but it still knows which artifact it is.
   for (const request of [{ uri: "/", origin: { custom: { domainName: "e.com" } } }, { uri: "/" }]) {
     assert.deepEqual(readConfig(request), {
-      EDGE_SCRIPT_VERSION: "0.3.0",
+      EDGE_SCRIPT_VERSION: "0.4.0",
       EDGE_PLATFORM: "cloudfront",
     });
   }

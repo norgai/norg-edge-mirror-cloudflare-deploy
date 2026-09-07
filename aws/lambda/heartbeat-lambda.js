@@ -21,12 +21,16 @@
  * that. NORG distinguishes the two.
  *
  * Unlike the router, this is not an edge function, so it MAY use environment
- * variables — which is the whole reason the site key can live in configuration
- * here rather than being threaded through a request.
+ * variables. It deliberately does not use one for the key. The key used to sit
+ * here as plaintext `NORG_SITE_KEY`, readable with lambda:GetFunctionConfiguration
+ * and giving the install two places to rotate; both functions now read the one
+ * Secrets Manager entry instead. This one runs on a schedule, so the lookup
+ * costs nothing a visitor can feel.
  */
 
 import { CONTROL_CALL_TIMEOUT_MS } from "../../core/constants.mjs";
 import { EDGE_SCRIPT_VERSION } from "./lib/config.js";
+import { getSiteKey } from "./lib/secret.js";
 
 /**
  * Send one heartbeat to NORG.
@@ -40,13 +44,21 @@ import { EDGE_SCRIPT_VERSION } from "./lib/config.js";
 export async function handler() {
   const {
     SITE_ID,
-    NORG_SITE_KEY,
+    NORG_SECRET_ARN,
     NORG_API_URL = "https://content-craft-api.norg.ai",
     EDGE_ENV = "unknown",
   } = process.env;
 
-  if (!SITE_ID || !NORG_SITE_KEY) {
-    throw new Error("norg edge heartbeat: SITE_ID and NORG_SITE_KEY are required");
+  if (!SITE_ID || !NORG_SECRET_ARN) {
+    throw new Error("norg edge heartbeat: SITE_ID and NORG_SECRET_ARN are required");
+  }
+
+  // Throwing here is correct, unlike at the edge: a heartbeat that cannot
+  // authenticate must fail loudly into the customer's CloudWatch metrics, since
+  // a silently failing beat looks exactly like a healthy quiet site.
+  const NORG_SITE_KEY = await getSiteKey({ NORG_SECRET_ARN });
+  if (!NORG_SITE_KEY) {
+    throw new Error(`norg edge heartbeat: could not read the site key from ${NORG_SECRET_ARN}`);
   }
 
   const response = await fetch(`${NORG_API_URL}/api/v1/edge/heartbeat`, {

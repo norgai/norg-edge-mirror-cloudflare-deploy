@@ -82,19 +82,21 @@ aws cloudformation deploy \
   --stack-name norg-edge \
   --template-file aws/cloudformation/attach-existing.yaml \
   --capabilities CAPABILITY_IAM \
-  --parameter-overrides SiteId=<your-site-id> SiteKey=<your-site-key>
+  --parameter-overrides SiteId=<your-site-id> SiteKey=<your-site-key> \
+                        ProbeToken=<your-probe-token>
+# The stack puts SiteKey into a Secrets Manager secret and passes only its ARN
+# to the functions. To keep the key out of CloudFormation entirely, create the
+# secret yourself and pass SecretArn=<arn> instead of SiteKey.
 
 # 2. See exactly what would change on your live distribution. This is a DRY RUN.
 node aws/install/attach.mjs \
   --distribution-id EXXXXXXXXXXXX \
-  --stack norg-edge \
-  --site-key <your-site-key>
+  --stack norg-edge
 
 # 3. Apply it, after choosing what happens to your cache key (see below).
 node aws/install/attach.mjs \
   --distribution-id EXXXXXXXXXXXX \
   --stack norg-edge \
-  --site-key <your-site-key> \
   --cache-policy=replace \
   --apply
 ```
@@ -168,12 +170,18 @@ certificate once the checks below pass.
 Config reaches the router as **CloudFront origin custom headers**, because
 Lambda@Edge supports no environment variables at all. The router deletes them
 from the request as it reads them, so they never reach your own web server or
-its access logs.
+its access logs — on every path, including the failure ones.
+
+**The site key is not among them.** It lives in Secrets Manager and the router
+fetches it at the edge, so it is not readable from your distribution's
+configuration, and rotating it is one operation rather than two. What the
+distribution carries is the secret's ARN, which is an address, not a credential.
 
 | Header | Default | Meaning |
 |---|---|---|
 | `x-norg-site-id` | *(required)* | `edge_sites.id` — identifies this install to NORG |
-| `x-norg-site-key` | *(required)* | Per-site key authenticating this install |
+| `x-norg-secret-arn` | *(required)* | ARN of the Secrets Manager secret holding the site key |
+| `x-norg-probe-token` | *(optional)* | Authorises the health probe and nothing else |
 | `x-norg-api-url` | NORG's production API | Point at a different NORG environment |
 | `x-norg-content-base` | NORG's edge-content service | Point at a different render source |
 | `x-norg-env` | `unknown` | `production` or `test` — a test-bound install serves TEST content |
@@ -255,11 +263,17 @@ the CloudFront domain entirely. If that affects you, the fix is at the origin �
 have it serve the CloudFront-facing hostname directly, or stop emitting
 host-absolute redirects.
 
-> **Where the site key is visible.** It sits in your distribution's
-> configuration and in the heartbeat function's environment variables. Anyone
-> who can read those in your AWS account can read it. It is scoped to this one
-> site, and revoking it degrades the install to "always serve origin" — a safe
-> stop, not an outage.
+> **Where the site key is visible.** In Secrets Manager, and nowhere else in
+> your account. Reading it needs `secretsmanager:GetSecretValue` on that one
+> secret, and every read is recorded in CloudTrail. The router's and the
+> heartbeat's execution roles are scoped to that ARN alone. It is a credential
+> for this one site, and revoking it degrades the install to "always serve
+> origin" — a safe stop, not an outage.
+>
+> Before 0.4.0 it sat in the distribution's configuration and again in the
+> heartbeat's environment, readable to anyone with `cloudfront:GetDistributionConfig`
+> or `lambda:GetFunctionConfiguration`. If you are upgrading, rotate the key:
+> the old value was visible to a much wider set of principals.
 
 ---
 
@@ -298,7 +312,7 @@ right.
 ### 3. The router is alive and entitled
 
 ```bash
-curl -s -H "x-norg-edge-check: <your-site-key>" https://your-domain.com/ | jq
+curl -s -H "x-norg-edge-check: <your-probe-token>" https://your-domain.com/ | jq
 ```
 
 ```json
@@ -392,16 +406,23 @@ hop, not correctness.
   **5–15 minutes** to propagate. So does detaching. The remote lever is NORG
   revoking your site key, which the router notices on its next feed refresh —
   up to an hour on a warm container, one minute on a cold one.
-- **Where your site key is readable.** It is stored in two places in your
-  account, both in plaintext to anyone with the right IAM permission: the
-  distribution's origin custom header (`cloudfront:GetDistributionConfig`) and
-  the heartbeat function's environment (`lambda:GetFunctionConfiguration`).
-  CloudTrail records the header *name* on an `UpdateDistribution` but redacts
-  the value, so your audit log does not leak it. Rotating the key means
-  updating **both** places — re-run the stack (or `attach.mjs`) with the new
-  value. Pass the key as the `NORG_SITE_KEY` environment variable rather than
-  `--site-key`; a flag value lands in shell history and in `ps` for every user
-  on the machine, and the flag now warns.
+- **Where your site key is readable.** One place: the Secrets Manager secret
+  the stack creates (or the one you pass as `SecretArn`). Reading it needs
+  `secretsmanager:GetSecretValue` on that ARN, and CloudTrail records every
+  read. **Rotating is a single call** and needs no redeploy — the edge picks up
+  a new value within fifteen minutes, and the heartbeat within its next run:
+
+  ```bash
+  aws secretsmanager put-secret-value --secret-id <SecretArn> \
+    --secret-string '<new-key>'
+  ```
+
+  If you would rather the key never entered a CloudFormation parameter at all,
+  create the secret yourself and pass `SecretArn`; leave `SiteKey` blank.
+- **The probe token is not your site key.** `x-norg-edge-check` compares against
+  a token that authorises reading install status and nothing else. It is
+  stripped from the request before the origin sees it, so a mistyped probe
+  cannot land in your access logs either.
 - **Logs are scattered and, by default, kept forever.** Lambda@Edge writes its
   logs to CloudWatch in the **region nearest the edge that ran it**, under
   `/aws/lambda/us-east-1.<function-name>` — a single install accumulates log
@@ -426,9 +447,19 @@ hop, not correctness.
   single per-IP rate-based WAF rule (`RateLimitPerFiveMinutes`, default 2000).
   It costs about $6/month; if you already run WAF, add the rule to your own ACL
   instead.
-- **Verify what you deployed.** Always pin `ArtifactObjectVersion` and
-  `HeartbeatObjectVersion`, and check the zip's digest against the release
-  notes before launching:
+- **Verify what you deployed.** Every deployable artifact is digested in full
+  in [`aws/src/DIGESTS.json`](../aws/src/DIGESTS.json), committed alongside the
+  source it was built from, so you can check what you are about to run against
+  what this repository publishes:
+
+  ```bash
+  sha256sum aws/src/edge-router-lambda.cjs aws/src/heartbeat-lambda.cjs \
+    aws/src/cache-guard-lambda.cjs aws/src/viewer-classifier.js
+  cat aws/src/DIGESTS.json
+  ```
+
+  Always pin `ArtifactObjectVersion` and `HeartbeatObjectVersion`, and check the
+  zip's digest before launching:
 
   ```bash
   aws s3api list-object-versions --bucket <ArtifactBucket> --prefix edge-router-lambda/

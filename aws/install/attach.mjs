@@ -33,7 +33,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -309,7 +309,10 @@ function setOriginHeaders(origin, outputs, options) {
       return [name, rest.join("=")];
     }),
   );
-  declared["x-norg-site-key"] = options.siteKey;
+  // Nothing secret is injected here any more. The site key used to be written
+  // into the distribution at this point, where anyone with
+  // cloudfront:GetDistributionConfig could read it; the stack now publishes
+  // x-norg-secret-arn instead and the key stays in Secrets Manager.
 
   const existing = (origin.CustomHeaders?.Items || []).filter(
     (item) => !item.HeaderName.startsWith("x-norg-"),
@@ -555,20 +558,18 @@ async function confirm(distributionId) {
  */
 async function main() {
   const options = parseArgs(process.argv.slice(2));
-  if (options.siteKey) {
-    // A flag value lands in shell history and in `ps` for every user on the
-    // box; an environment variable does neither.
-    console.error("warning: --site-key is deprecated; set NORG_SITE_KEY in the environment instead");
+  if (options.siteKey || process.env.NORG_SITE_KEY) {
+    // Accepted and ignored, so an operator following an older runbook is told
+    // why rather than silently installing something that cannot authenticate.
+    console.error(
+      "note: the site key is no longer passed to this CLI. It lives in Secrets Manager;\n" +
+        "      the stack's SiteKey or SecretArn parameter puts it there.",
+    );
   }
-  options.siteKey = options.siteKey || process.env.NORG_SITE_KEY;
+  delete options.siteKey;
 
   if (!options.distributionId || !options.stack) {
     throw new Error("--distribution-id and --stack are required");
-  }
-  // describe-stacks masks NoEcho parameters, so the key cannot be read back
-  // from the stack and has to be supplied here.
-  if (!options.detach && !options.siteKey) {
-    throw new Error("--site-key (or NORG_SITE_KEY) is required: the stack masks it as NoEcho");
   }
 
   const outputs = options.detach ? {} : stackOutputs(options.stack);
@@ -602,21 +603,29 @@ async function main() {
     return;
   }
 
-  const file = join(mkdtempSync(join(tmpdir(), "norg-edge-")), "distribution-config.json");
-  writeFileSync(file, JSON.stringify(config));
+  // The CLI has to hand the config to `aws` as a file because it exceeds the
+  // argv limit. It no longer contains a credential, but it is still the
+  // customer's distribution config, so the directory goes away either way.
+  const dir = mkdtempSync(join(tmpdir(), "norg-edge-"));
+  const file = join(dir, "distribution-config.json");
+  try {
+    writeFileSync(file, JSON.stringify(config));
 
-  // --if-match with the config's own ETag: a concurrent change fails loudly
-  // rather than being silently overwritten.
-  aws([
-    "cloudfront",
-    "update-distribution",
-    "--id",
-    options.distributionId,
-    "--if-match",
-    current.ETag,
-    "--distribution-config",
-    `file://${file}`,
-  ]);
+    // --if-match with the config's own ETag: a concurrent change fails loudly
+    // rather than being silently overwritten.
+    aws([
+      "cloudfront",
+      "update-distribution",
+      "--id",
+      options.distributionId,
+      "--if-match",
+      current.ETag,
+      "--distribution-config",
+      `file://${file}`,
+    ]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 
   console.log(`\nApplied. Watch rollout with:\n  aws cloudfront get-distribution --id ${options.distributionId} --query 'Distribution.Status'`);
 }
