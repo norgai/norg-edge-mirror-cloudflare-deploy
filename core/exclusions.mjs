@@ -135,9 +135,17 @@ export const DYNAMIC_ROUTE_EXCLUSIONS = [
 /**
  * CloudFront's managed policies for the dynamic carve-outs. Managed ids are
  * global constants published by AWS, identical in every account.
+ *
+ * AllViewerExceptHostHeader, NOT AllViewer. AllViewer forwards the viewer's
+ * Host header to the origin, and a host-routed origin (Vercel, API Gateway,
+ * an S3 website endpoint, most virtual-hosted servers) answers a foreign Host
+ * with 403. The router path never hits this because alignHostToOrigin rewrites
+ * Host on every passthrough — a carve-out has no router, so the policy has to
+ * do it. Found live: POST /checkout went 404 (origin's own) to 403 the moment
+ * the carve-out landed on AllViewer.
  */
 export const MANAGED_CACHING_DISABLED_ID = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad";
-export const MANAGED_ALL_VIEWER_ORIGIN_REQUEST_ID = "216adef6-5c7f-47e4-b989-5492eafa07d3";
+export const MANAGED_ALL_VIEWER_EXCEPT_HOST_ORIGIN_REQUEST_ID = "b689b0a8-53d0-40ab-baf2-68738e2966ac";
 
 /**
  * The asset suffixes the NEW-distribution template carves out.
