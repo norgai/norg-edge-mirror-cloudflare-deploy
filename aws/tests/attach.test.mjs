@@ -37,7 +37,9 @@ const OUTPUTS = {
   OriginCustomHeaders:
     "x-norg-site-id=site-1, x-norg-api-url=https://api.norg.ai, " +
     "x-norg-content-base=https://edge-content.norg.ai, x-norg-env=production, " +
-    "x-norg-strip-fallback=true, x-norg-lazy-render=true",
+    "x-norg-strip-fallback=true, x-norg-lazy-render=true, " +
+    "x-norg-secret-arn=arn:aws:secretsmanager:us-east-1:111:secret:k, " +
+    "x-norg-probe-token=nprobe_tok",
 };
 
 /**
@@ -222,7 +224,12 @@ test("attaching preserves the customer's own origin headers", () => {
 
   assert.ok(names.includes("x-api-key"), "the customer's own headers must survive");
   assert.ok(names.includes("x-norg-site-id"));
-  assert.ok(names.includes("x-norg-site-key"));
+  assert.ok(names.includes("x-norg-secret-arn"));
+  assert.equal(
+    names.includes("x-norg-site-key"),
+    false,
+    "the key itself must never be written into the distribution",
+  );
 });
 
 test("re-attaching our OWN router is allowed, so upgrades and key rotation work", () => {
@@ -249,14 +256,14 @@ test("re-attaching our OWN router is allowed, so upgrades and key rotation work"
 test("re-attaching replaces the NORG headers instead of duplicating them", () => {
   const config = distributionConfig();
   attach(config, OUTPUTS, OPTIONS);
-  attach(config, OUTPUTS, { ...OPTIONS, siteKey: "nek_live_rotated" });
+  attach(config, OUTPUTS, OPTIONS);
 
   const items = config.Origins.Items[0].CustomHeaders.Items;
   const siteIds = items.filter((item) => item.HeaderName === "x-norg-site-id");
-  const key = items.find((item) => item.HeaderName === "x-norg-site-key");
+  const arns = items.filter((item) => item.HeaderName === "x-norg-secret-arn");
 
-  assert.equal(siteIds.length, 1, "a rotated key must not leave the old one behind");
-  assert.equal(key.HeaderValue, "nek_live_rotated");
+  assert.equal(siteIds.length, 1, "re-attaching must not leave a duplicate behind");
+  assert.equal(arns.length, 1);
   assert.equal(items.length, config.Origins.Items[0].CustomHeaders.Quantity);
 });
 
@@ -313,11 +320,21 @@ test("an unknown argument is rejected rather than ignored", () => {
   assert.throws(() => parseArgs(["--yolo"]), /unknown argument/);
 });
 
-test("setOriginHeaders writes the site key that was passed, not one from config", () => {
+test("setOriginHeaders writes no credential of any kind", () => {
+  // The CLI used to inject the site key here, which put it in reach of anyone
+  // with cloudfront:GetDistributionConfig. It now writes only what the stack
+  // published, and the key stays in Secrets Manager.
   const origin = { Id: "o", CustomHeaders: { Quantity: 0, Items: [] } };
   setOriginHeaders(origin, OUTPUTS, { siteKey: "nek_live_x" });
-  const key = origin.CustomHeaders.Items.find((item) => item.HeaderName === "x-norg-site-key");
-  assert.equal(key.HeaderValue, "nek_live_x");
+
+  const written = origin.CustomHeaders.Items;
+  assert.equal(
+    JSON.stringify(written).includes("nek_live_x"),
+    false,
+    "a key handed to the CLI must not reach the distribution",
+  );
+  const arn = written.find((item) => item.HeaderName === "x-norg-secret-arn");
+  assert.equal(arn.HeaderValue, "arn:aws:secretsmanager:us-east-1:111:secret:k");
 });
 
 test("attaching adds carve-outs ahead of the customer's own, MCP first", () => {

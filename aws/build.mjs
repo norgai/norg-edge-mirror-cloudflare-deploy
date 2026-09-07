@@ -104,6 +104,10 @@ function bundle(name) {
       "--bundle",
       "--format=cjs",
       "--platform=node",
+      // Provided by the Lambda Node runtime, deliberately not vendored: the
+      // deployed artifact stays a readable file an operator can diff against
+      // this repository, rather than tens of thousands of lines of SDK.
+      "--external:@aws-sdk/client-secrets-manager",
       `--target=${NODE_TARGET}`,
       "--legal-comments=inline",
       `--outfile=${outfile}`,
@@ -143,9 +147,26 @@ assertNoForbiddenNames("edge-router-lambda.cjs", router);
 assertNoForbiddenNames("heartbeat-lambda.cjs", heartbeat);
 
 // The router must be self-contained: Lambda@Edge supports no layers, so an
-// unresolved require() would fail at deploy rather than at build.
-if (/\brequire\s*\(\s*["'](?!node:)/.test(router)) {
-  throw new Error("refusing to publish: edge-router-lambda.cjs is not self-contained");
+// unresolved require() fails at RUNTIME, not at deploy — and the router's own
+// error handling would turn that into a silent site-wide passthrough.
+//
+// Exactly one exception, named rather than pattern-matched. The AWS SDK v3 is
+// part of the Node.js managed runtime (nodejs18.x and later, nodejs24.x
+// included), so requiring the Secrets Manager client resolves without vendoring
+// tens of thousands of lines that would destroy the "read the file you are
+// about to run" property. The scheduled heartbeat exercises the same code path
+// and throws on failure, so if a future runtime ever drops the SDK it surfaces
+// in the customer's CloudWatch metrics within the half-hour rather than
+// degrading quietly.
+const ALLOWED_RUNTIME_REQUIRE = "@aws-sdk/client-secrets-manager";
+const externalRequires = [...router.matchAll(/\brequire\s*\(\s*["']((?!node:)[^"']+)["']/g)]
+  .map((m) => m[1])
+  .filter((name) => name !== ALLOWED_RUNTIME_REQUIRE);
+if (externalRequires.length) {
+  throw new Error(
+    `refusing to publish: edge-router-lambda.cjs is not self-contained — ` +
+      `unexpected require(${externalRequires.join(", ")})`,
+  );
 }
 
 const functionSource = join(here, "functions", "viewer-classifier.js");
@@ -213,7 +234,11 @@ if (guardBytes > CFN_ZIPFILE_MAX_BYTES) {
 // inlined ZipFile edit changes the function, not the version — so the guard
 // would deploy to $LATEST while the distribution stayed on the old version,
 // silently. The content hash in the Description is what forces a new one.
-const guardDigest = createHash("sha256").update(guardCode).digest("hex").slice(0, 16);
+const guardSha256 = createHash("sha256").update(guardCode).digest("hex");
+// The Description only has to CHANGE to force a new Version, so a short form is
+// enough there. Verification uses the full digest published in DIGESTS.json —
+// 16 hex characters is not a checksum anyone should be asked to trust.
+const guardDigest = guardSha256.slice(0, 16);
 
 /**
  * Re-embed the cache guard's source into a template's ZipFile block, and stamp
@@ -414,6 +439,29 @@ for (const template of ["new-distribution.yaml", "attach-existing.yaml"]) {
 }
 
 const version = /EDGE_SCRIPT_VERSION\s*=\s*"([^"]+)"/.exec(router)?.[1];
+
+// Every deployable artifact, digested in full and committed. The README tells
+// operators to check what they are about to run against this file, and it is
+// what makes "each file is pinned by digest in the public repository" a claim
+// rather than a hope. Regenerated on every build; CI fails on any diff.
+const DIGEST_FILES = [
+  "edge-router-lambda.cjs",
+  "heartbeat-lambda.cjs",
+  "cache-guard-lambda.cjs",
+  "viewer-classifier.js",
+];
+const digests = {
+  version,
+  algorithm: "sha256",
+  files: Object.fromEntries(
+    DIGEST_FILES.map((name) => [
+      name,
+      createHash("sha256").update(readFileSync(join(srcDir, name))).digest("hex"),
+    ]),
+  ),
+};
+writeFileSync(join(srcDir, "DIGESTS.json"), `${JSON.stringify(digests, null, 2)}\n`);
+
 console.log(`built aws/src/ (EDGE_SCRIPT_VERSION ${version})`);
 console.log(`  cache behaviours       ${behaviourCount} carve-outs (+1 default)`);
 console.log(`  new-distribution.yaml  ${statSync(join(here, "cloudformation", "new-distribution.yaml")).size} bytes (limit ${CFN_TEMPLATE_BODY_MAX_BYTES})`);
@@ -421,3 +469,4 @@ console.log(`  edge-router-lambda.cjs ${statSync(join(srcDir, "edge-router-lambd
 console.log(`  cache-guard-lambda.cjs ${guardBytes} bytes (sha256:${guardDigest})`);
 console.log(`  heartbeat-lambda.cjs   ${statSync(join(srcDir, "heartbeat-lambda.cjs")).size} bytes`);
 console.log(`  viewer-classifier.js   ${functionBytes} bytes`);
+console.log(`  DIGESTS.json           ${DIGEST_FILES.length} artifacts, full sha256`);

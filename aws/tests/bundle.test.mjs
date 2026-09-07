@@ -38,7 +38,8 @@ test("the heartbeat bundle loads and exports a handler", () => {
 });
 
 test("the built router serves a mirror to a verified agent", async () => {
-  const { handler } = require(routerPath);
+  const { handler, __test_primeSecretCache } = require(routerPath);
+  __test_primeSecretCache(SITE_KEY);
   stubNetwork({ mirror: () => mirrorHit("<html><body>MIRROR</body></html>") });
 
   const result = await handler(cloudFrontEvent({ headers: { "user-agent": GPTBOT_UA } }));
@@ -50,7 +51,8 @@ test("the built router serves a mirror to a verified agent", async () => {
 });
 
 test("the built router leaves a human alone and leaks no credential", async () => {
-  const { handler } = require(routerPath);
+  const { handler, __test_primeSecretCache } = require(routerPath);
+  __test_primeSecretCache(SITE_KEY);
   stubNetwork({ mirror: () => mirrorHit() });
 
   const result = await handler(cloudFrontEvent({ headers: { "user-agent": CHROME_UA } }));
@@ -59,11 +61,16 @@ test("the built router leaves a human alone and leaks no credential", async () =
   assert.equal(JSON.stringify(result).includes(SITE_KEY), false);
 });
 
-test("the router bundle is self-contained", () => {
-  // Lambda@Edge supports no layers, so an unresolved bare require() would fail
-  // at deploy time rather than at build time.
+test("the router bundle requires nothing the Lambda runtime does not provide", () => {
+  // Lambda@Edge supports no layers, so an unresolved bare require() fails at
+  // RUNTIME — and the router's own error handling would turn that into a silent
+  // site-wide passthrough. Exactly one module is allowed: the Secrets Manager
+  // client, which ships inside the managed Node.js runtime.
   const source = readFileSync(routerPath, "utf8");
-  assert.equal(/\brequire\s*\(\s*["'](?!node:)/.test(source), false);
+  const required = [...source.matchAll(/\brequire\s*\(\s*["']((?!node:)[^"']+)["']/g)].map(
+    (m) => m[1],
+  );
+  assert.deepEqual([...new Set(required)], ["@aws-sdk/client-secrets-manager"]);
 });
 
 test("no NORG-internal secret name reaches a customer account", () => {

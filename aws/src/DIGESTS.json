@@ -1,0 +1,10 @@
+{
+  "version": "0.4.0",
+  "algorithm": "sha256",
+  "files": {
+    "edge-router-lambda.cjs": "28981d86982630fb1a84e6a9ccc542e9f01ee5ec174c9e99f65f7b1727f8d66b",
+    "heartbeat-lambda.cjs": "a5a24cb2666494fec48a6391ebd7939c5a3eb03f73fed4e9f6200ffb6dfa232d",
+    "cache-guard-lambda.cjs": "30a253fc6650af9ad790f45de42fa7a22b16bd4856526512eb00416d1304fdb9",
+    "viewer-classifier.js": "0543c5d8f07fb9e478efefb08785eefd6e748fe5a64308cadc91ced2fe1afd8f"
+  }
+}
