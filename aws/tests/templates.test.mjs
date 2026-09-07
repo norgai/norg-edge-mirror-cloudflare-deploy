@@ -123,6 +123,31 @@ for (const file of TEMPLATES) {
     }
   });
 
+  test(`${file}: the inlined cache guard matches its source and stamps its digest`, () => {
+    // Same reasoning as the viewer function: a hand-edit here would ship a
+    // different guard than the one cache-guard.test.mjs covers. The digest in
+    // the Version description is what forces a new Lambda version on change.
+    const source = readFileSync(join(cfnDir, "..", "lambda", "cache-guard-lambda.cjs"), "utf8");
+    const embedded = /^ {8}ZipFile: \|\n((?: {10}.*\n| *\n)*)/m.exec(template);
+    assert.ok(embedded, "no inlined ZipFile block");
+    const dedented = embedded[1].split("\n").map((l) => l.replace(/^ {10}/, "")).join("\n").trimEnd();
+    assert.equal(dedented, source.trimEnd(), "run: npm run build:aws");
+    assert.ok(source.length <= 4096, "the guard must stay under CloudFormation's 4 KB ZipFile limit");
+    assert.match(template, /Description: "cache-guard sha256:[0-9a-f]{16}"/);
+  });
+
+  test(`${file}: the kill switch is a parameter wired to the x-norg-disabled header`, () => {
+    assert.match(parameterBlock(template, "EdgeDisabled"), /AllowedValues: \["true", "false"\]/);
+    assert.match(template, /x-norg-disabled/);
+  });
+
+  test(`${file}: router and heartbeat errors have alarms`, () => {
+    assert.match(template, /RouterErrorsAlarm:/);
+    assert.match(template, /HeartbeatErrorsAlarm:/);
+    // Lambda@Edge metrics are published under the replicated name.
+    assert.match(template, /Value: !Sub "us-east-1\.\$\{EdgeRouterFunction\}"/);
+  });
+
   test(`${file}: the embedded CloudFront Function matches its source`, () => {
     // build.mjs regenerates this; a hand-edit here would silently ship a
     // different cache-key stamp than the one the tests cover.
@@ -139,42 +164,109 @@ for (const file of TEMPLATES) {
   });
 }
 
-test("every generated carve-out has NO Lambda and NO CloudFront function", async () => {
-  // A carve-out that kept an association would defeat its entire purpose: the
-  // router would still be invoked, and still billed, for every static asset.
-  const template = readFileSync(join(cfnDir, "new-distribution.yaml"), "utf8");
+/**
+ * Split the generated block into one YAML chunk per behaviour.
+ *
+ * @param {string} template Template text.
+ * @returns {Array<{pattern: string, body: string}>} Behaviours in order.
+ */
+function generatedBehaviours(template) {
   const block = /# BEGIN GENERATED CACHE BEHAVIOURS\n([\s\S]*?)# END GENERATED/.exec(template);
   assert.ok(block, "no generated cache-behaviour block");
+  return block[1]
+    .split(/\n(?= {10}- PathPattern:)/)
+    .filter((chunk) => chunk.trim())
+    .map((body) => ({ pattern: /PathPattern: "([^"]+)"/.exec(body)[1], body }));
+}
 
-  assert.equal(/LambdaFunctionAssociations/.test(block[1]), false);
-  assert.equal(/FunctionAssociations/.test(block[1]), false);
-  assert.match(block[1], /CachePolicyId: !Ref StaticCachePolicy/);
-});
-
-test("the generated carve-outs match the shared suffix list exactly", async () => {
+test("the generated behaviours match the shared lists, in match order", async () => {
   const { STATIC_ASSET_SUFFIXES } = await import("../../core/constants.mjs");
-  const { DEFAULT_ROUTE_EXCLUSIONS } = await import("../../core/exclusions.mjs");
+  const { DEFAULT_ROUTE_EXCLUSIONS, DYNAMIC_ROUTE_EXCLUSIONS, MCP_PATH_PATTERNS, TEMPLATE_ASSET_SUFFIXES } =
+    await import("../../core/exclusions.mjs");
   const template = readFileSync(join(cfnDir, "new-distribution.yaml"), "utf8");
-  const block = /# BEGIN GENERATED CACHE BEHAVIOURS\n([\s\S]*?)# END GENERATED/.exec(template)[1];
-  const patterns = [...block.matchAll(/PathPattern: "([^"]+)"/g)].map((m) => m[1]);
+  const patterns = generatedBehaviours(template).map((b) => b.pattern);
 
+  // First match wins, so each group must be more specific than the next.
   const expected = [
+    ...MCP_PATH_PATTERNS,
+    ...DYNAMIC_ROUTE_EXCLUSIONS,
     ...DEFAULT_ROUTE_EXCLUSIONS,
-    ...[...STATIC_ASSET_SUFFIXES].map((s) => `*${s}`),
+    ...TEMPLATE_ASSET_SUFFIXES.map((s) => `*${s}`),
   ];
   assert.deepEqual(patterns, expected, "run: npm run build:aws");
+  // A suffix the template carves out but the router does not recognise would
+  // be cached by CloudFront and yet mirrored on a miss — never allowed.
+  for (const suffix of TEMPLATE_ASSET_SUFFIXES) {
+    assert.ok(STATIC_ASSET_SUFFIXES.has(suffix), `${suffix} is not in STATIC_ASSET_SUFFIXES`);
+  }
 });
 
-test("framework exclusions are matched before the bare suffix patterns", () => {
+test("the template body stays under CloudFormation's 51,200-byte limit", () => {
+  // validate-template, create-stack and the console all refuse a larger body;
+  // only an S3 template URL goes higher, and the README's install command does
+  // not use one.
+  for (const file of ["new-distribution.yaml", "attach-existing.yaml"]) {
+    const bytes = readFileSync(join(cfnDir, file)).byteLength;
+    assert.ok(bytes <= 51_200, `${file} is ${bytes} bytes; trim TEMPLATE_ASSET_SUFFIXES`);
+  }
+});
+
+test("the MCP behaviours are the ONLY place the request body is included", async () => {
+  // IncludeBody is per association. On the default behaviour it delivered
+  // every cache-miss POST body on the site into the router; only the MCP
+  // JSON-RPC transport actually needs one.
+  const { MCP_PATH_PATTERNS } = await import("../../core/exclusions.mjs");
+  const template = readFileSync(join(cfnDir, "new-distribution.yaml"), "utf8");
+  const mcp = new Set(MCP_PATH_PATTERNS);
+
+  for (const { pattern, body } of generatedBehaviours(template)) {
+    if (mcp.has(pattern)) {
+      assert.match(body, /IncludeBody: true/, `${pattern} must carry the body`);
+      assert.match(body, /LambdaFunctionARN: !Ref EdgeRouterVersion/, `${pattern} must run the router`);
+      assert.match(body, /LambdaFunctionARN: !Ref CacheGuardVersion/, `${pattern} must run the guard`);
+    } else {
+      assert.equal(/LambdaFunctionAssociations/.test(body), false, `${pattern} must have no Lambda`);
+      assert.equal(/FunctionAssociations/.test(body), false, `${pattern} must have no function`);
+    }
+  }
+  // And the default behaviour itself: body off, guard on.
+  assert.match(template, /IncludeBody: false\n {12}- EventType: origin-response\n {14}LambdaFunctionARN: !Ref CacheGuardVersion/);
+  assert.equal((template.match(/IncludeBody: true/g) || []).length, MCP_PATH_PATTERNS.length);
+});
+
+test("dynamic carve-outs are never cached; static ones are", async () => {
+  // A 24 h default TTL on /cart would serve one visitor's page to the next.
+  const { DYNAMIC_ROUTE_EXCLUSIONS, MANAGED_CACHING_DISABLED_ID, MANAGED_ALL_VIEWER_ORIGIN_REQUEST_ID, MCP_PATH_PATTERNS } =
+    await import("../../core/exclusions.mjs");
+  const template = readFileSync(join(cfnDir, "new-distribution.yaml"), "utf8");
+  const dynamic = new Set(DYNAMIC_ROUTE_EXCLUSIONS);
+
+  for (const { pattern, body } of generatedBehaviours(template)) {
+    if (dynamic.has(pattern)) {
+      assert.match(body, new RegExp(`CachePolicyId: ${MANAGED_CACHING_DISABLED_ID}`), pattern);
+      assert.match(body, new RegExp(`OriginRequestPolicyId: ${MANAGED_ALL_VIEWER_ORIGIN_REQUEST_ID}`), pattern);
+      assert.match(body, /AllowedMethods: \[GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE\]/, `${pattern} takes POSTs`);
+    } else if (!MCP_PATH_PATTERNS.includes(pattern)) {
+      assert.match(body, /CachePolicyId: !Ref StaticCachePolicy/, pattern);
+    }
+  }
+});
+
+test("prefix carve-outs are matched before the bare suffix patterns", () => {
   // CloudFront takes the first match; a prefix carve-out must out-rank the
   // suffix ones so /_next/static/x.css lands on the framework behaviour.
   const template = readFileSync(join(cfnDir, "new-distribution.yaml"), "utf8");
-  const block = /# BEGIN GENERATED CACHE BEHAVIOURS\n([\s\S]*?)# END GENERATED/.exec(template)[1];
-  const patterns = [...block.matchAll(/PathPattern: "([^"]+)"/g)].map((m) => m[1]);
+  const patterns = generatedBehaviours(template).map((b) => b.pattern);
 
-  const firstSuffix = patterns.findIndex((p) => p.startsWith("*"));
-  const lastPrefix = patterns.map((p) => !p.startsWith("*")).lastIndexOf(true);
+  const firstSuffix = patterns.findIndex((p) => p.startsWith("*."));
+  const lastPrefix = patterns.map((p) => !p.startsWith("*.")).lastIndexOf(true);
   assert.ok(lastPrefix < firstSuffix, "a prefix carve-out is listed after a suffix one");
+});
+
+test("the behaviour count stays under CloudFront's quota with room for the customer", () => {
+  const template = readFileSync(join(cfnDir, "new-distribution.yaml"), "utf8");
+  const count = generatedBehaviours(template).length + 1;
+  assert.ok(count <= 65, `${count} behaviours leaves fewer than 10 of 75 for the customer`);
 });
 
 test("the carve-out cache policy does not split the cache by agent", () => {
@@ -187,8 +279,18 @@ test("the carve-out cache policy does not split the cache by agent", () => {
   assert.match(policy[0], /HeaderBehavior: none/);
 });
 
-test("the origin-request association includes the request body", () => {
-  // The MCP JSON-RPC transport is a POST the router forwards to NORG.
+test("the default behaviour runs the guard on origin-response with the body OFF", () => {
   const template = readFileSync(join(cfnDir, "new-distribution.yaml"), "utf8");
-  assert.match(template, /IncludeBody: true/);
+  const dflt = /DefaultCacheBehavior:[\s\S]*?HeartbeatRole:/.exec(template)[0];
+  assert.match(dflt, /EventType: origin-request[\s\S]*?IncludeBody: false/);
+  assert.match(dflt, /EventType: origin-response\n\s+LambdaFunctionARN: !Ref CacheGuardVersion/);
+});
+
+test("rate limiting is opt-in and off by default", () => {
+  // It costs money and a customer may already run WAF; enabling it silently
+  // is not the template's call.
+  const template = readFileSync(join(cfnDir, "new-distribution.yaml"), "utf8");
+  assert.match(parameterBlock(template, "EnableRateLimit"), /Default: "false"/);
+  assert.match(template, /RateLimitWebAcl:\n\s+Type: AWS::WAFv2::WebACL\n\s+Condition: RateLimitEnabled/);
+  assert.match(template, /WebACLId: !If \[RateLimitEnabled/);
 });

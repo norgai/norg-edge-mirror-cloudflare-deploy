@@ -316,12 +316,17 @@ async function serveMirror(cfRequest, response, env, url, keySuffix) {
  * address lands in the same `x-norg-agent: 1` bucket as a genuinely verified
  * GPTBot, as do a never_divert crawler and a person on an unusual browser.
  *
- * Today that over-inclusion is harmless — everyone in the bucket still reaches
- * this function, which applies classification, serving_policy and CIDR
- * verification and passes them through. Caching the mirror there would make it
- * harmful: a cache HIT skips this function entirely, so the spoofer would be
- * served a mirror a real crawler had warmed. That is exactly the harvesting
- * verifiedSource exists to prevent, reintroduced through the cache.
+ * That over-inclusion is only harmless while nothing in the bucket is cached.
+ * A cache HIT skips this function entirely — and the bucket is populated by
+ * PASSTHROUGHS: a spoofed UA fails verification here, gets the origin, and
+ * CloudFront would cache that origin page under (url, agent=1) for the
+ * origin's TTL, so every later verified crawler would be served the origin
+ * and the router would never run. That is why the origin-response cache
+ * guard (cache-guard-lambda.js) marks every non-human bucket no-store: it is
+ * the only thing that keeps this function in the loop on a cacheable origin.
+ * Caching the MIRROR in that bucket would be the mirror-image failure — a
+ * spoofer served a mirror a real crawler had warmed — which is exactly the
+ * harvesting verifiedSource exists to prevent, reintroduced through the cache.
  *
  * Caching mirrors safely needs an EXACT stamp — classification plus the CIDR
  * check at viewer-request — which means putting the feed in a CloudFront
