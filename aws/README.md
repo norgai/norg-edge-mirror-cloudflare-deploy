@@ -115,15 +115,39 @@ application — and may be shared with other distributions — the installer wil
 not change it silently. Choose:
 
 - **`--cache-policy=replace`** — use the stack's policy. It has `DefaultTTL 0`,
-  so CloudFront honours the `Cache-Control` your origin already sends, and it
-  forwards no cookies. Read it before choosing this if your app is
-  cookie-sensitive.
+  so CloudFront honours the `Cache-Control` your origin already sends, and its
+  cache key carries **only** `x-norg-agent`, the `agent` query string and the
+  encoding. **The CLI refuses `replace` if your current policy keys on cookies,
+  headers or query strings** — collapsing a session cache or a per-variant
+  cache into one entry would serve one visitor's page to the next, and that is
+  not a warning, it is a stop. Use `keep`.
 - **`--cache-policy=keep`** — keep yours, and add `x-norg-agent` to its cache
   key yourself. A CloudFront **managed** policy cannot be edited, so "keep"
   means copying it to a custom policy first.
 
 This splits your cache into at most two variants per URL. Diverted responses are
 `private, no-store` and are never cached at all.
+
+### The cache guard, and why only humans may cache
+
+The `x-norg-agent` stamp is a deliberate **superset** of the agents the router
+will divert: a spoofed `curl -A GPTBot`, a crawler NORG has marked
+`never_divert`, and a headless browser all land in the `agent=1` bucket. On a
+cache miss they reach the router, fail verification, and are passed through to
+your origin. Without anything else, CloudFront would then cache **your origin
+page** under `(url, agent=1)` for whatever TTL your origin declares — and every
+later, genuinely verified crawler would be a cache *hit* on that entry. The
+router would never run, and the mirror would be suppressed for the TTL by the
+first bot-shaped request to arrive. Anyone could force it.
+
+So the install carries a second, tiny Lambda@Edge function on
+**origin-response**: it marks every response in a non-human bucket
+`private, no-store` unless NORG served it. Only the confidently-human `agent=0`
+bucket may ever cache origin bytes. The router itself cannot do this —
+origin-request functions cannot touch the response — which is why it is a
+separate function. It runs only when the origin is actually fetched for a
+non-human bucket, at 128 MB for a few milliseconds; a mirror served by the
+router never triggers it.
 
 ---
 
@@ -154,11 +178,33 @@ its access logs.
 | `x-norg-content-base` | NORG's edge-content service | Point at a different render source |
 | `x-norg-env` | `unknown` | `production` or `test` — a test-bound install serves TEST content |
 | `x-norg-strip-fallback` | `true` | `false` disables the stripped-origin fallback |
-| `x-norg-disabled` | `false` | `true` switches the router off instantly without removing it |
+| `x-norg-disabled` | `false` | The kill switch (stack parameter `EdgeDisabled`). Every request passes straight through. **Not instant** — see Operational notes |
 | `x-norg-lazy-render` | `true` | `false` serves the strip without asking NORG to render |
 | `x-norg-events-verbose` | *(off)* | `true` also reports plain origin passthroughs |
 
 ### Carve-outs: what the router is never invoked for
+
+There are now three groups of generated behaviours, matched in this order:
+
+1. **MCP paths** (`/.well-known/mcp.json`, `*/mcp`, `*/sse`) — the full router,
+   and the **only** behaviours with `IncludeBody: true`. Everywhere else the
+   router receives no request body at all (see Operational notes).
+2. **Dynamic paths** (`/api/*`, `/wp-json/*`, `/wp-admin/*`, `/wp-login.php`,
+   `/cart`, `/cart/*`, `/checkout`, `/checkout/*`) — no Lambda and **no cache**:
+   CloudFront's managed `CachingDisabled` + `AllViewer`, every method allowed.
+   Your origin sees exactly what it would have without the router. A 24-hour
+   default TTL on `/cart` would serve one visitor's page to the next, which is
+   why these do not share the static policy. `/account*` and `/login*` are
+   deliberately absent — they also match marketing slugs like `/accounting`.
+3. **Static assets** — no Lambda, cached 24 h by default.
+
+**If you already have a behaviour for one of these patterns, yours is kept and
+ours is skipped** — most importantly `/api/*`, which often points at a
+different origin. The one exception is an MCP pattern, where the router *is*
+the point, so a collision is refused. Detaching removes only behaviours that
+match our shape on your default origin; a function-free `*.css` behaviour of
+your own on the same origin is indistinguishable and would be removed with
+ours — copy your patterns out first if that describes you.
 
 The distribution ships with cache behaviours that carry **no Lambda
 association**, so the router is never invoked — and never billed — for paths
@@ -318,28 +364,74 @@ hop, not correctness.
   staging distribution first and shift traffic gradually. "Degrades safely" and
   "reverts quickly" are not the same property, and this install has the first.
 - **Cost.** Every cache miss invokes Lambda@Edge, which has **no free tier**
-  (unlike CloudFront requests and Functions). Measured on a live install — mean
-  273 ms billed, peak 116 MB — at the 192 MB this ships with:
+  (unlike CloudFront requests and Functions). Measured on a live install over a
+  week — mean 126 ms, peak 116 MB — at the 192 MB this ships with:
 
   | | per 1M router invocations |
   |---|---|
-  | Lambda@Edge (192 MB) | ~$3.16 |
+  | Lambda@Edge (192 MB) | ~$1.80 |
   | CloudFront requests | $1.00 (first 10M/month free) |
   | CloudFront Functions | $0.10 (first 2M/month free) |
 
   The install keeps that number small by **not invoking the router for static
   assets at all** — see below.
-- **`IncludeBody` is on** for the origin-request association, because the MCP
-  JSON-RPC transport is a POST whose body the router forwards to NORG. Access is
-  read-only, so your origin still receives the full original body; the cost is
-  that POST bodies on cache-miss requests are base64-encoded into the function
-  event (truncated at 1 MB). If you do not use the MCP surface and your site is
-  POST-heavy, turning it off is a reasonable trade.
-- **The fastest off switch** is setting the `x-norg-disabled` origin header to
-  `true`: the router passes everything through on its very first check, before
-  it fetches anything. It still takes a distribution deploy to propagate. The
-  *instant* remote lever is NORG revoking your site key, which degrades the
-  install to origin-only within a minute.
+- **Request bodies never reach the router except on MCP paths.** `IncludeBody`
+  is set per association, and on the default behaviour it delivered every
+  cache-miss POST body on your site — logins, checkouts, forms — into the
+  router's memory, even though the router discards them. It is now **off** on
+  the default behaviour and on only for the three MCP behaviours, the one
+  surface that forwards a body. Access there is read-only; your origin still
+  receives the full original body.
+- **There is no instant off switch on CloudFront, and this README used to say
+  there was.** Set the `EdgeDisabled` stack parameter to `"true"` (or the
+  `x-norg-disabled` origin header) and the router passes everything through on
+  its very first check — but that is a distribution update, and it takes
+  **5–15 minutes** to propagate. So does detaching. The remote lever is NORG
+  revoking your site key, which the router notices on its next feed refresh —
+  up to an hour on a warm container, one minute on a cold one.
+- **Where your site key is readable.** It is stored in two places in your
+  account, both in plaintext to anyone with the right IAM permission: the
+  distribution's origin custom header (`cloudfront:GetDistributionConfig`) and
+  the heartbeat function's environment (`lambda:GetFunctionConfiguration`).
+  CloudTrail records the header *name* on an `UpdateDistribution` but redacts
+  the value, so your audit log does not leak it. Rotating the key means
+  updating **both** places — re-run the stack (or `attach.mjs`) with the new
+  value. Pass the key as the `NORG_SITE_KEY` environment variable rather than
+  `--site-key`; a flag value lands in shell history and in `ps` for every user
+  on the machine, and the flag now warns.
+- **Logs are scattered and, by default, kept forever.** Lambda@Edge writes its
+  logs to CloudWatch in the **region nearest the edge that ran it**, under
+  `/aws/lambda/us-east-1.<function-name>` — a single install accumulates log
+  groups in several regions with no retention set. Set one:
+
+  ```bash
+  for r in us-east-1 us-west-2 eu-west-1 ap-southeast-2; do
+    aws logs put-retention-policy --region $r --retention-in-days 30 \
+      --log-group-name /aws/lambda/us-east-1.<EdgeRouterFunction name>
+  done
+  ```
+
+  Distribution access logging is **off** by default; if you need a record of
+  what was served to whom, enable standard logging to S3 on the distribution.
+  The stack creates two alarms — router errors (a 502 to a visitor) and
+  heartbeat failures (NORG rejected the install) — give them somewhere to go
+  with the `AlarmTopicArn` parameter.
+- **Rate limiting is available and off by default.** Every cache miss on the
+  default behaviour is a Lambda invocation on your bill, and unique paths never
+  hit the cache, so a scraper can run the meter: roughly $1.80 per million
+  invocations plus CloudFront's own fees. Set `EnableRateLimit=true` for a
+  single per-IP rate-based WAF rule (`RateLimitPerFiveMinutes`, default 2000).
+  It costs about $6/month; if you already run WAF, add the rule to your own ACL
+  instead.
+- **Verify what you deployed.** Always pin `ArtifactObjectVersion` and
+  `HeartbeatObjectVersion`, and check the zip's digest against the release
+  notes before launching:
+
+  ```bash
+  aws s3api list-object-versions --bucket <ArtifactBucket> --prefix edge-router-lambda/
+  aws s3api get-object --bucket <ArtifactBucket> --key <ArtifactKey> \
+    --version-id <ArtifactObjectVersion> router.zip && sha256sum router.zip
+  ```
 
 ---
 

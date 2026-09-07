@@ -242,7 +242,7 @@ var STATIC_ASSET_SUFFIXES = /* @__PURE__ */ new Set([
 ]);
 
 // aws/lambda/lib/config.js
-var EDGE_SCRIPT_VERSION = "0.2.1";
+var EDGE_SCRIPT_VERSION = "0.3.0";
 var CONFIG_HEADERS = {
   "x-norg-site-id": "SITE_ID",
   "x-norg-site-key": "NORG_SITE_KEY",

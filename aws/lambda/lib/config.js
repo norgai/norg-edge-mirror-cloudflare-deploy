@@ -32,8 +32,16 @@
  * 0.2.0 — carve-out cache behaviours and a 192 MB router. No request-handling
  * change; the version moves because the deployed artifact and the distribution
  * shape it expects both did.
+ *
+ * 0.3.0 — the distribution shape changes again, this time because a red-team
+ * review found the agent cache bucket could be poisoned with origin bytes: a
+ * new origin-response cache-guard function, MCP paths on their own behaviours
+ * so the default one runs with IncludeBody off, dynamic carve-outs with no
+ * cache, an EdgeDisabled kill switch, and opt-in rate limiting. The router
+ * itself is unchanged; content-craft compares this against
+ * EDGE_WORKER_VERSION_CLOUDFRONT.
  */
-export const EDGE_SCRIPT_VERSION = "0.2.1";
+export const EDGE_SCRIPT_VERSION = "0.3.0";
 
 // Custom origin header -> binding name. Mirrors build_worker_bindings() in
 // content-craft's install_service.py; adding a binding there means adding it

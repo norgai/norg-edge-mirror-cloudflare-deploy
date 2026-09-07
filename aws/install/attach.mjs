@@ -43,6 +43,10 @@ import {
   CLOUDFRONT_BEHAVIOUR_QUOTA,
   CURATED_ASSET_SUFFIXES,
   DEFAULT_ROUTE_EXCLUSIONS,
+  DYNAMIC_ROUTE_EXCLUSIONS,
+  MANAGED_ALL_VIEWER_ORIGIN_REQUEST_ID,
+  MANAGED_CACHING_DISABLED_ID,
+  MCP_PATH_PATTERNS,
   PROTECTED_PATH_PREFIXES,
 } from "../../core/exclusions.mjs";
 
@@ -140,6 +144,20 @@ function assertNoConflict(behaviour, outputs) {
     );
   }
 
+  const foreignGuard = lambdas.find(
+    (item) =>
+      item.EventType === "origin-response" &&
+      !sameFunction(item.LambdaFunctionARN, outputs.CacheGuardVersionArn),
+  );
+  if (foreignGuard) {
+    throw new Error(
+      "this distribution already has an origin-response Lambda@Edge function " +
+        `(${foreignGuard.LambdaFunctionARN}).\n` +
+        "The cache guard needs that slot. Merge the two functions by hand, or " +
+        "attach to a staging distribution instead.",
+    );
+  }
+
   const functions = behaviour.FunctionAssociations?.Items || [];
   const conflictingFunction = functions.find(
     (item) =>
@@ -153,6 +171,35 @@ function assertNoConflict(behaviour, outputs) {
         "functions by hand, or attach to a staging distribution instead.",
     );
   }
+}
+
+/**
+ * Refuse to replace a cache policy whose key carries more than ours does.
+ *
+ * The stack's policy keys on x-norg-agent, the `agent` query string and the
+ * encoding — nothing else. A customer policy that keys on cookies is a session
+ * cache; one that keys on other query strings or headers is a per-variant
+ * cache. Replacing either collapses those variants into one entry, and
+ * CloudFront would then serve one visitor's page to the next. That is not a
+ * risk to warn about; it is one to refuse.
+ *
+ * @param {Object} config The customer's CachePolicyConfig (from get-cache-policy).
+ * @returns {void}
+ */
+function assertReplaceIsSafe(config) {
+  const key = config?.ParametersInCacheKeyAndForwardedToOrigin || {};
+  const carried = [];
+  if ((key.CookiesConfig?.CookieBehavior || "none") !== "none") carried.push("cookies");
+  if ((key.HeadersConfig?.HeaderBehavior || "none") !== "none") carried.push("headers");
+  if ((key.QueryStringsConfig?.QueryStringBehavior || "none") !== "none") carried.push("query strings");
+  if (carried.length === 0) return;
+  throw new Error(
+    `refusing --cache-policy=replace: your current cache policy keys on ${carried.join(", ")}, ` +
+      "and the stack's policy does not. Replacing it would collapse those cache " +
+      "variants into one entry and serve one visitor's page to the next.\n\n" +
+      "Use --cache-policy=keep and add the `x-norg-agent` header to your own " +
+      "policy's cache key instead (copy it first if it is a managed policy).",
+  );
 }
 
 /**
@@ -194,21 +241,28 @@ function attach(config, outputs, options) {
   assertNoConflict(behaviour, outputs);
 
   const changes = [];
-  // IncludeBody is required, not optional: the MCP JSON-RPC transport is a POST
-  // whose body the router forwards to NORG, and without this CloudFront hands
-  // the function an empty body. Read-only access, so CloudFront still sends the
-  // full original body to your origin.
+  // IncludeBody is OFF on the default behaviour on purpose: it is set per
+  // association, not per path, and on here it delivers every cache-miss POST
+  // body on the site into the router's memory. The MCP transport is the one
+  // surface that needs a body, and it gets its own behaviours (below) — the
+  // only place IncludeBody is true.
   behaviour.LambdaFunctionAssociations = {
-    Quantity: 1,
+    Quantity: 2,
     Items: [
       {
         EventType: "origin-request",
         LambdaFunctionARN: outputs.EdgeRouterVersionArn,
-        IncludeBody: true,
+        IncludeBody: false,
+      },
+      {
+        EventType: "origin-response",
+        LambdaFunctionARN: outputs.CacheGuardVersionArn,
+        IncludeBody: false,
       },
     ],
   };
-  changes.push(`origin-request  -> ${outputs.EdgeRouterVersionArn}`);
+  changes.push(`origin-request  -> ${outputs.EdgeRouterVersionArn} (IncludeBody off)`);
+  changes.push(`origin-response -> ${outputs.CacheGuardVersionArn} (cache guard)`);
 
   behaviour.FunctionAssociations = {
     Quantity: 1,
@@ -278,12 +332,7 @@ function detach(config) {
   behaviour.LambdaFunctionAssociations = { Quantity: 0, Items: [] };
   behaviour.FunctionAssociations = { Quantity: 0, Items: [] };
 
-  const ourPatterns = new Set(
-    carveOutBehaviours("", "").map((b) => b.PathPattern),
-  );
-  const keptBehaviours = (config.CacheBehaviors?.Items || []).filter(
-    (b) => !ourPatterns.has(b.PathPattern),
-  );
+  const keptBehaviours = (config.CacheBehaviors?.Items || []).filter((b) => !isOurs(b, config));
   config.CacheBehaviors = { Quantity: keptBehaviours.length, Items: keptBehaviours };
 
   for (const origin of config.Origins.Items) {
@@ -295,6 +344,7 @@ function detach(config) {
 
   return [
     "origin-request  -> removed",
+    "origin-response -> removed",
     "viewer-request  -> removed",
     "origin headers  -> x-norg-* removed",
     "carve-outs      -> removed (yours kept)",
@@ -302,47 +352,130 @@ function detach(config) {
   ];
 }
 
+const READ_METHODS = { Quantity: 3, Items: ["GET", "HEAD", "OPTIONS"],
+  CachedMethods: { Quantity: 3, Items: ["GET", "HEAD", "OPTIONS"] } };
+const ALL_METHODS = { Quantity: 7, Items: ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"],
+  CachedMethods: { Quantity: 3, Items: ["GET", "HEAD", "OPTIONS"] } };
+
 /**
- * Carve-out behaviours: paths the router must never be invoked for.
+ * Refuse a carve-out that would shadow a path NORG serves itself.
  *
- * The CloudFront equivalent of the no-worker routes Cloudflare binds — a
- * behaviour with no Lambda association means the router is never invoked and
- * never billed. Framework exclusions first, since prefix patterns are more
- * specific than the bare suffix patterns after them.
+ * @param {string} pattern CloudFront path pattern.
+ * @returns {void}
+ */
+function assertDoesNotShadowNorg(pattern) {
+  if (pattern.startsWith("*")) return;
+  const prefix = pattern.replace(/\*+$/, "");
+  const clash = PROTECTED_PATH_PREFIXES.find(
+    (p) => p.startsWith(prefix) || prefix.startsWith(p),
+  );
+  if (clash) {
+    throw new Error(
+      `carve-out "${pattern}" shadows NORG-served path "${clash}" — ` +
+        "CloudFront would stop invoking the router for it",
+    );
+  }
+}
+
+/**
+ * The behaviours the router adds, in match order (first match wins).
  *
- * @param {string} staticCachePolicyId Cache policy for these behaviours.
+ *  1. MCP paths — the full router, and the ONLY place IncludeBody is on.
+ *  2. Dynamic paths — no Lambda, NO cache (managed CachingDisabled), every
+ *     method allowed. A 24 h TTL on /cart would serve one visitor's page to
+ *     the next, so these must not share the static policy.
+ *  3. Static assets — no Lambda, cached. Framework prefixes before bare
+ *     suffixes, since prefix patterns are the more specific.
+ *
+ * @param {Object} outputs Stack outputs (policy ids and function ARNs).
  * @param {string} targetOriginId Origin the default behaviour points at.
  * @returns {Array<Object>} Behaviour items in match order.
  */
-function carveOutBehaviours(staticCachePolicyId, targetOriginId) {
-  const patterns = [
-    ...DEFAULT_ROUTE_EXCLUSIONS,
-    ...CURATED_ASSET_SUFFIXES.map((suffix) => `*${suffix}`),
-  ];
-  for (const pattern of patterns) {
-    if (pattern.startsWith("*")) continue;
-    const prefix = pattern.replace(/\*+$/, "");
-    const clash = PROTECTED_PATH_PREFIXES.find(
-      (p) => p.startsWith(prefix) || prefix.startsWith(p),
-    );
-    if (clash) {
-      throw new Error(
-        `carve-out "${pattern}" shadows NORG-served path "${clash}" — ` +
-          "CloudFront would stop invoking the router for it",
-      );
-    }
-  }
-  return patterns.map((PathPattern) => ({
+function carveOutBehaviours(outputs, targetOriginId) {
+  const base = (PathPattern) => ({
     PathPattern,
     TargetOriginId: targetOriginId,
     ViewerProtocolPolicy: "redirect-to-https",
     Compress: true,
-    AllowedMethods: { Quantity: 3, Items: ["GET", "HEAD", "OPTIONS"],
-      CachedMethods: { Quantity: 3, Items: ["GET", "HEAD", "OPTIONS"] } },
-    CachePolicyId: staticCachePolicyId,
-    LambdaFunctionAssociations: { Quantity: 0, Items: [] },
-    FunctionAssociations: { Quantity: 0, Items: [] },
+  });
+  const mcp = MCP_PATH_PATTERNS.map((pattern) => ({
+    ...base(pattern),
+    AllowedMethods: ALL_METHODS,
+    CachePolicyId: outputs.CachePolicyId,
+    OriginRequestPolicyId: outputs.OriginRequestPolicyId,
+    FunctionAssociations: {
+      Quantity: 1,
+      Items: [{ EventType: "viewer-request", FunctionARN: outputs.ViewerClassifierArn }],
+    },
+    LambdaFunctionAssociations: {
+      Quantity: 2,
+      Items: [
+        { EventType: "origin-request", LambdaFunctionARN: outputs.EdgeRouterVersionArn, IncludeBody: true },
+        { EventType: "origin-response", LambdaFunctionARN: outputs.CacheGuardVersionArn, IncludeBody: false },
+      ],
+    },
   }));
+  const dynamic = DYNAMIC_ROUTE_EXCLUSIONS.map((pattern) => {
+    assertDoesNotShadowNorg(pattern);
+    return {
+      ...base(pattern),
+      AllowedMethods: ALL_METHODS,
+      CachePolicyId: MANAGED_CACHING_DISABLED_ID,
+      OriginRequestPolicyId: MANAGED_ALL_VIEWER_ORIGIN_REQUEST_ID,
+      LambdaFunctionAssociations: { Quantity: 0, Items: [] },
+      FunctionAssociations: { Quantity: 0, Items: [] },
+    };
+  });
+  const statics = [
+    ...DEFAULT_ROUTE_EXCLUSIONS,
+    ...CURATED_ASSET_SUFFIXES.map((suffix) => `*${suffix}`),
+  ].map((pattern) => {
+    assertDoesNotShadowNorg(pattern);
+    return {
+      ...base(pattern),
+      AllowedMethods: READ_METHODS,
+      CachePolicyId: outputs.StaticCachePolicyId,
+      LambdaFunctionAssociations: { Quantity: 0, Items: [] },
+      FunctionAssociations: { Quantity: 0, Items: [] },
+    };
+  });
+  return [...mcp, ...dynamic, ...statics];
+}
+
+/**
+ * Is this behaviour one attach() wrote, as opposed to the customer's own?
+ *
+ * There is no tag field on a cache behaviour, so ours are recognised by shape.
+ * Every one of ours points at the default behaviour's origin; a behaviour on a
+ * different origin is never ours, which is the case that matters (their API
+ * lives there). Beyond that: an MCP behaviour is ours if it runs our router; a
+ * dynamic one if it carries the managed CachingDisabled + AllViewer pair with
+ * no Lambda; a static one if it has no functions at all. A customer's own
+ * function-free `*.css` behaviour on the same origin is indistinguishable and
+ * would be treated as ours — a known limit, stated in the README.
+ *
+ * @param {Object} behaviour A CacheBehaviors item.
+ * @param {Object} config Distribution config (for the default origin).
+ * @returns {boolean} True when attach() would have written this.
+ */
+function isOurs(behaviour, config) {
+  if (!behaviour) return false;
+  const patterns = new Set(carveOutBehaviours({}, "").map((b) => b.PathPattern));
+  if (!patterns.has(behaviour.PathPattern)) return false;
+  if (behaviour.TargetOriginId !== config.DefaultCacheBehavior.TargetOriginId) return false;
+
+  const lambdas = behaviour.LambdaFunctionAssociations?.Items || [];
+  if (MCP_PATH_PATTERNS.includes(behaviour.PathPattern)) {
+    return lambdas.some((l) => /EdgeRouter|norg-router/.test(String(l.LambdaFunctionARN)));
+  }
+  if (lambdas.length || behaviour.FunctionAssociations?.Items?.length) return false;
+  if (DYNAMIC_ROUTE_EXCLUSIONS.includes(behaviour.PathPattern)) {
+    return (
+      behaviour.CachePolicyId === MANAGED_CACHING_DISABLED_ID &&
+      behaviour.OriginRequestPolicyId === MANAGED_ALL_VIEWER_ORIGIN_REQUEST_ID
+    );
+  }
+  return true;
 }
 
 /**
@@ -358,9 +491,26 @@ function carveOutBehaviours(staticCachePolicyId, targetOriginId) {
 function addCarveOuts(config, outputs) {
   const behaviour = config.DefaultCacheBehavior;
   const existing = config.CacheBehaviors?.Items || [];
-  const ours = carveOutBehaviours(outputs.StaticCachePolicyId, behaviour.TargetOriginId);
-  const mine = new Set(ours.map((b) => b.PathPattern));
-  const theirs = existing.filter((b) => !mine.has(b.PathPattern));
+  const wanted = carveOutBehaviours(outputs, behaviour.TargetOriginId);
+
+  // A behaviour the customer already has for one of our patterns is THEIRS,
+  // and it stays exactly as it is. This matters most for /api/*, which very
+  // often points at a different origin: replacing it with ours would repoint
+  // their API at their web server. Their behaviour already carries no router,
+  // which is all a carve-out is for — except the MCP paths, where the router
+  // is the point, so a collision there is refused rather than skipped.
+  const theirPatterns = new Set(existing.map((b) => b.PathPattern));
+  const mcp = new Set(MCP_PATH_PATTERNS);
+  const collidingMcp = wanted.find((b) => mcp.has(b.PathPattern) && theirPatterns.has(b.PathPattern) && !isOurs(existing.find((e) => e.PathPattern === b.PathPattern), config));
+  if (collidingMcp) {
+    throw new Error(
+      `this distribution already has a cache behaviour for "${collidingMcp.PathPattern}", ` +
+        "which the MCP transport needs the router on. Remove or rename yours first.",
+    );
+  }
+  const ours = wanted.filter((b) => !theirPatterns.has(b.PathPattern) || isOurs(existing.find((e) => e.PathPattern === b.PathPattern), config));
+  const theirs = existing.filter((b) => !isOurs(b, config));
+  const skipped = wanted.length - ours.length;
 
   const total = theirs.length + ours.length + 1; // +1 for the default behaviour
   if (total > CLOUDFRONT_BEHAVIOUR_QUOTA) {
@@ -378,8 +528,10 @@ function addCarveOuts(config, outputs) {
   const items = [...ours, ...theirs];
   config.CacheBehaviors = { Quantity: items.length, Items: items };
   return [
-    `carve-outs      +${ours.length} behaviours with no Lambda ` +
-      `(${theirs.length} of yours kept, ${total}/${CLOUDFRONT_BEHAVIOUR_QUOTA} used)`,
+    `behaviours      +${ours.length} (${MCP_PATH_PATTERNS.length} MCP with the router, ` +
+      `${DYNAMIC_ROUTE_EXCLUSIONS.length} dynamic no-cache, the rest static)` +
+      (skipped ? `, ${skipped} skipped because you already have them` : "") +
+      ` — ${theirs.length} of yours kept, ${total}/${CLOUDFRONT_BEHAVIOUR_QUOTA} used`,
   ];
 }
 
@@ -403,6 +555,11 @@ async function confirm(distributionId) {
  */
 async function main() {
   const options = parseArgs(process.argv.slice(2));
+  if (options.siteKey) {
+    // A flag value lands in shell history and in `ps` for every user on the
+    // box; an environment variable does neither.
+    console.error("warning: --site-key is deprecated; set NORG_SITE_KEY in the environment instead");
+  }
   options.siteKey = options.siteKey || process.env.NORG_SITE_KEY;
 
   if (!options.distributionId || !options.stack) {
@@ -417,6 +574,13 @@ async function main() {
   const outputs = options.detach ? {} : stackOutputs(options.stack);
   const current = aws(["cloudfront", "get-distribution-config", "--id", options.distributionId]);
   const config = current.DistributionConfig;
+
+  if (!options.detach && options.cachePolicy === "replace") {
+    const { CachePolicy } = aws([
+      "cloudfront", "get-cache-policy", "--id", config.DefaultCacheBehavior.CachePolicyId,
+    ]);
+    assertReplaceIsSafe(CachePolicy?.CachePolicyConfig);
+  }
 
   const changes = options.detach ? detach(config) : attach(config, outputs, options);
 
@@ -465,4 +629,14 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   });
 }
 
-export { addCarveOuts, attach, carveOutBehaviours, detach, parseArgs, resolveCachePolicy, setOriginHeaders };
+export {
+  addCarveOuts,
+  assertReplaceIsSafe,
+  isOurs,
+  attach,
+  carveOutBehaviours,
+  detach,
+  parseArgs,
+  resolveCachePolicy,
+  setOriginHeaders,
+};
