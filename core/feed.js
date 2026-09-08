@@ -36,6 +36,7 @@ import {
   UNENTITLED_TTL_MS,
 } from "./constants.mjs";
 import { binding, controlHeaders } from "./config.js";
+import { edgeFetch, timeoutSignal } from "./http.js";
 
 // How long an inline refresh of a stale feed may hold an agent's request
 // before the stale entry answers instead.
@@ -123,10 +124,10 @@ export async function refreshFeed(env) {
     // entry we no longer hold would leave us with nothing to serve.
     if (previous.entitled && previous.etag) headers["If-None-Match"] = previous.etag;
 
-    response = await fetch(`${binding(env, "NORG_API_URL")}/api/v1/edge/bot-patterns`, {
+    response = await edgeFetch(env, `${binding(env, "NORG_API_URL")}/api/v1/edge/bot-patterns`, {
       method: "GET",
       headers,
-      signal: AbortSignal.timeout(PATTERN_FETCH_TIMEOUT_MS),
+      signal: timeoutSignal(PATTERN_FETCH_TIMEOUT_MS),
     });
   } catch (e) {
     console.error("norg edge feed refresh failed", e);
