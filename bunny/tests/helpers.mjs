@@ -67,7 +67,7 @@ export const ENV = {
   NORG_CONTENT_BASE: CONTENT_BASE,
   EDGE_ENV: "test",
   EDGE_PLATFORM: "bunny",
-  EDGE_SCRIPT_VERSION: "0.1.1",
+  EDGE_SCRIPT_VERSION: "0.1.2",
 };
 
 /**
