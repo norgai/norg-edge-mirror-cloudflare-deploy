@@ -18,28 +18,38 @@
  *     as an environment SECRET. Bunny will not read a secret back out.
  *  3. Creates (or reuses) a pull zone pointed at the customer's origin, with
  *     the origin's own Host header, and links the script to it.
- *  4. Checks whether the origin's HTML is cacheable, because Bunny runs
- *     `onOriginRequest` on a cache MISS only. A cacheable origin means the
- *     router is skipped on every cache HIT. See the README, "The cache is the
- *     hazard", and CACHE_BYPASS below.
+ *  4. Keeps the customer's HTML out of the pull zone's cache, because Bunny
+ *     runs `onOriginRequest` on a cache MISS only: a cached page is served
+ *     without the router. The default is ONE edge rule that sets the cache
+ *     time to 0 for responses whose Content-Type is HTML, leaving every asset
+ *     cached and the client-facing Cache-Control untouched. It then probes the
+ *     origin and reports its Cache-Control so the operator sees what the rule
+ *     has to override. See the README, "The cache is the hazard".
  *  5. Attaches the customer-facing hostname and turns on AutoSSL.
  *
- * CACHE_BYPASS=true is the opt-in blunt instrument for step 4. It is NOT the
- * default, and the reason is rule 1. Forcing the cache off is a pull-zone
- * setting (`CacheControlMaxAgeOverride: 0`), and Bunny then rewrites the
- * CLIENT-facing `Cache-Control` on every response to `public, max-age=0` —
- * measured on a live zone, where an asset served `public, max-age=31536000,
- * immutable` came back as `public, max-age=0`. That is a real performance
- * regression on the customer's own site, so it is offered rather than applied.
- * When it is used, an edge rule restores `private, no-store` on NORG-generated
- * responses, which the override would otherwise have weakened.
+ * NOT VERIFIED LIVE. The HTML-only rule is written from Bunny's edge-rule
+ * API; whether `OverrideCacheTime` 0 on a response-header trigger disables
+ * caching without rewriting the client-facing Cache-Control has not been
+ * exercised on a live zone from this repository. The installer says so and
+ * tells the operator how to check (two `curl -sI`, both `cdn-cache: MISS`).
  *
- * Two narrower shapes were tried and do not work on Bunny today, so do not
+ * CACHE_BYPASS=true is the fallback if the rule does not take: a pull-zone
+ * setting (`CacheControlMaxAgeOverride: 0`) that forces the cache off for
+ * EVERYTHING, and Bunny then rewrites the client-facing `Cache-Control` on
+ * every response to `public, max-age=0` — measured on a live zone, where an
+ * asset served `public, max-age=31536000, immutable` came back as
+ * `public, max-age=0`. That is a real regression on the customer's own site,
+ * which is why it is the fallback and not the default. Either way an edge rule
+ * keeps `private, no-store` on NORG-generated responses.
+ *
+ * Two other shapes were tried and do not work on Bunny today, so do not
  * re-derive them: `CDN-Cache-Control: private, no-store` stamped by the script
  * in `onOriginResponse` is ignored (the response was cached anyway, verified
  * with cdn-cache: HIT), and an edge rule excluding asset extensions is refused
  * because a trigger accepts at most 5 patterns.
  */
+
+import { pathToFileURL } from "node:url";
 
 const API = "https://api.bunny.net";
 
@@ -169,50 +179,52 @@ async function ensurePullZone(name, originUrl) {
 }
 
 /**
- * Apply the settings the router depends on.
+ * The edge rule that keeps the customer's HTML out of the pull zone's cache.
  *
- * CacheControlMaxAgeOverride = 0 is the load-bearing one: `onOriginRequest`
- * runs on a cache MISS only, so any cached response is served without the
- * router. Everything else here is ordinary origin configuration.
+ * One rule, one trigger: a response whose Content-Type is HTML gets a cache
+ * time of 0, so every page request is a MISS and reaches the router, while
+ * assets keep whatever the origin said. It is a response-header trigger
+ * because that is the only thing that separates a page from an asset on
+ * every site — the alternative, listing asset extensions, is refused by Bunny
+ * at five patterns per trigger.
  *
- * @param {Object} zone Pull zone record.
- * @param {number} scriptId Middleware script id.
- * @param {string} originUrl The customer's origin.
- * @returns {Promise<void>} Resolves once applied.
+ * A pure builder, exported so the payload can be tested without a network.
+ *
+ * @returns {Object} Body for POST /pullzone/{id}/edgerules/addOrUpdate.
  */
-async function configurePullZone(zone, scriptId, originUrl) {
-  const bypass = process.env.CACHE_BYPASS === "true";
-  await api("POST", `/pullzone/${zone.Id}`, {
-    OriginUrl: originUrl,
-    OriginHostHeader: new URL(originUrl).host,
-    AddHostHeader: false,
-    MiddlewareScriptId: scriptId,
-    // -1 means "respect the origin", which leaves the customer's own cache
-    // headers byte-for-byte unchanged. 0 forces every request to reach the
-    // router and rewrites those headers — see the module header.
-    CacheControlMaxAgeOverride: bypass ? 0 : -1,
-    CacheControlPublicMaxAgeOverride: bypass ? 0 : -1,
-    CacheErrorResponses: false,
-    EnableSmartCache: false,
-    EnableAutoSSL: true,
-  });
-  if (bypass) await restoreNoStoreOnNorgResponses(zone);
+export function htmlNoCacheRule() {
+  return {
+    ActionType: "OverrideCacheTime",
+    ActionParameter1: "0",
+    Description: "NORG: HTML is never cached at the edge, so every page reaches the router",
+    Enabled: true,
+    TriggerMatchingType: 0,
+    Triggers: [
+      {
+        Type: "ResponseHeader",
+        PatternMatches: ["*text/html*"],
+        PatternMatchingType: 0,
+        Parameter1: "Content-Type",
+      },
+    ],
+  };
 }
 
 /**
- * Put `private, no-store` back on NORG-generated responses.
+ * The edge rule that keeps `private, no-store` on NORG-generated responses.
  *
- * Only needed alongside CACHE_BYPASS: the pull-zone override replaces the
- * client-facing Cache-Control on EVERY response, including the mirror's own
+ * Under the zone-wide bypass the pull-zone override replaces the client-facing
+ * Cache-Control on EVERY response, including the mirror's own
  * `private, no-store`, which would leave tenant content marked publicly
- * cacheable. The trigger is the response header the router stamps, so the
- * customer's own responses are not touched by this rule.
+ * cacheable. Harmless under the HTML-only rule, and kept there too so a
+ * switch between the two modes never leaves a mirror weakened. The trigger is
+ * the response header the router stamps, so the customer's own responses are
+ * never touched by this rule.
  *
- * @param {Object} zone Pull zone record.
- * @returns {Promise<void>} Resolves once the rule exists.
+ * @returns {Object} Body for POST /pullzone/{id}/edgerules/addOrUpdate.
  */
-async function restoreNoStoreOnNorgResponses(zone) {
-  await api("POST", `/pullzone/${zone.Id}/edgerules/addOrUpdate`, {
+export function norgNoStoreRule() {
+  return {
     ActionType: "OverrideBrowserCacheResponseHeader",
     ActionParameter1: "private, no-store",
     Description: "NORG: tenant content is never cacheable",
@@ -226,7 +238,45 @@ async function restoreNoStoreOnNorgResponses(zone) {
         Parameter1: "X-Norg-Edge",
       },
     ],
+  };
+}
+
+/**
+ * Apply the settings the router depends on.
+ *
+ * The cache is the load-bearing part: `onOriginRequest` runs on a cache MISS
+ * only, so any cached page is served without the router. By default the pull
+ * zone respects the origin's headers (-1) and the HTML-only edge rule keeps
+ * pages out of the cache; CACHE_BYPASS=true is the zone-wide fallback (0),
+ * which also un-caches every asset — see the module header.
+ *
+ * @param {Object} zone Pull zone record.
+ * @param {number} scriptId Middleware script id.
+ * @param {string} originUrl The customer's origin.
+ * @returns {Promise<void>} Resolves once applied.
+ */
+async function configurePullZone(zone, scriptId, originUrl) {
+  const bypass = process.env.CACHE_BYPASS === "true";
+  await api("POST", `/pullzone/${zone.Id}`, {
+    OriginUrl: originUrl,
+    OriginHostHeader: new URL(originUrl).host,
+    AddHostHeader: false,
+    MiddlewareScriptId: scriptId,
+    CacheControlMaxAgeOverride: bypass ? 0 : -1,
+    CacheControlPublicMaxAgeOverride: bypass ? 0 : -1,
+    CacheErrorResponses: false,
+    EnableSmartCache: false,
+    EnableAutoSSL: true,
   });
+  if (!bypass) {
+    await api("POST", `/pullzone/${zone.Id}/edgerules/addOrUpdate`, htmlNoCacheRule());
+    console.log("  edge rule: HTML responses are never cached (OverrideCacheTime 0 on Content-Type text/html)");
+    console.log("  NOT YET VERIFIED LIVE from this repository: after DNS points here, run");
+    console.log("    curl -sI https://<hostname>/ twice and confirm cdn-cache: MISS on both,");
+    console.log("    and that your own Cache-Control header is unchanged. If a page comes");
+    console.log("    back cdn-cache: HIT, re-run with CACHE_BYPASS=true (zone-wide, see README).");
+  }
+  await api("POST", `/pullzone/${zone.Id}/edgerules/addOrUpdate`, norgNoStoreRule());
   console.log("  edge rule: NORG responses keep private, no-store");
 }
 
@@ -253,13 +303,13 @@ async function warnIfOriginIsCacheable(originUrl) {
   const uncacheable = /no-store|no-cache|private|max-age=0/i.test(cacheControl);
   console.log(`  origin Cache-Control: ${cacheControl || "(none)"}`);
   if (uncacheable) {
-    console.log("  origin HTML is not cacheable, so the router runs on every request.");
+    console.log("  origin HTML is not cacheable on its own, so the router runs on every request.");
     return;
   }
-  console.log("  WARNING: this origin's HTML IS cacheable. Bunny runs the router on a");
-  console.log("  cache MISS only, so agents will be served cached origin pages and the");
-  console.log("  mirror will never appear. Re-run with CACHE_BYPASS=true, and read the");
-  console.log("  README section \"The cache is the hazard\" before you do.");
+  console.log("  NOTE: this origin's HTML IS cacheable on its own. The HTML-only edge rule");
+  console.log("  is what keeps it out of Bunny's cache; verify it took (two curl -sI, both");
+  console.log("  cdn-cache: MISS). If not, re-run with CACHE_BYPASS=true and read the README");
+  console.log("  section \"The cache is the hazard\" first.");
 }
 
 /**
@@ -336,7 +386,11 @@ async function main() {
   console.log("  CNAME must be DNS-only — a proxying DNS provider hides Bunny's AutoSSL check.");
 }
 
-main().catch((error) => {
-  console.error(error.message);
-  process.exit(1);
-});
+// Only run when invoked directly, so the pure rule builders above can be
+// imported by the tests without the install starting.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error(error.message);
+    process.exit(1);
+  });
+}
