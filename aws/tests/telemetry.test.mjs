@@ -117,7 +117,10 @@ test("CloudFront viewer headers populate the geo fields", async () => {
       "cloudfront-viewer-city": "Melbourne",
       "cloudfront-viewer-asn": "13335",
       "cloudfront-viewer-http-version": "2.0",
-      "cloudfront-viewer-tls": "TLSv1.3",
+      // The REAL header value. This test used to assert a hand-shortened
+      // "TLSv1.3", which is what let the overflow below ship: CloudFront sends
+      // the whole negotiated suite, and NORG stores it in 20 characters.
+      "cloudfront-viewer-tls": "TLSv1.3:TLS_AES_128_GCM_SHA256:fullHandshake",
     }),
     BOT,
     "mirror",
@@ -128,7 +131,41 @@ test("CloudFront viewer headers populate the geo fields", async () => {
   assert.equal(posts[0].body.ip_city, "Melbourne");
   assert.equal(posts[0].body.asn, "13335");
   assert.equal(posts[0].body.http_protocol, "2.0");
-  assert.equal(posts[0].body.tls_version, "TLSv1.3");
+  assert.equal(
+    posts[0].body.tls_version,
+    "TLSv1.3",
+    "the protocol alone, matching what Cloudflare sends for the same field",
+  );
+});
+
+test("every reported viewer field fits the column NORG stores it in", async () => {
+  // Widths from ai_crawler_visits. An overflow here is not a dropped field, it
+  // is a 500 that discards the whole event — which is exactly how CloudFront
+  // came to record nothing at all while looking healthy.
+  const WIDTHS = { ip_country: 2, ip_city: 255, as_organization: 255, colo: 10, http_protocol: 20, tls_version: 20 };
+  captureFetch();
+  logEdgeEvent(
+    ENV,
+    requestWith({
+      "cloudfront-viewer-country": "AU",
+      "cloudfront-viewer-city": "Melbourne",
+      "cloudfront-viewer-asn": "13335",
+      "cloudfront-viewer-http-version": "HTTP/2.0",
+      "cloudfront-viewer-tls": "TLSv1.3:TLS_AES_128_GCM_SHA256:fullHandshake",
+    }),
+    BOT,
+    "mirror",
+  );
+  await settle();
+
+  for (const [field, width] of Object.entries(WIDTHS)) {
+    const sent = posts[0].body[field];
+    if (sent === null || sent === undefined) continue;
+    assert.ok(
+      String(sent).length <= width,
+      `${field} is ${String(sent).length} chars, column holds ${width}: "${sent}"`,
+    );
+  }
 });
 
 for (const served of ["origin", "origin_thin"]) {

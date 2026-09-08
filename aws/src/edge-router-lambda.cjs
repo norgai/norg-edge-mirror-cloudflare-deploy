@@ -245,7 +245,7 @@ var STATIC_ASSET_SUFFIXES = /* @__PURE__ */ new Set([
 ]);
 
 // aws/lambda/lib/config.js
-var EDGE_SCRIPT_VERSION = "0.5.1";
+var EDGE_SCRIPT_VERSION = "0.5.2";
 var CONFIG_HEADERS = {
   "x-norg-site-id": "SITE_ID",
   "x-norg-secret-arn": "NORG_SECRET_ARN",
@@ -1172,12 +1172,16 @@ var lastHeartbeatAt = 0;
 var renderDedup = /* @__PURE__ */ new Map();
 async function postControl(env, path, body) {
   try {
-    return await edgeFetch(env, `${binding(env, "NORG_API_URL")}${path}`, {
+    const response = await edgeFetch(env, `${binding(env, "NORG_API_URL")}${path}`, {
       method: "POST",
       headers: controlHeaders(env),
       body: JSON.stringify(body),
       signal: timeoutSignal(DEFERRED_CALL_TIMEOUT_MS)
     });
+    if (!response.ok) {
+      console.error("norg edge control call refused", path, response.status);
+    }
+    return response;
   } catch (e) {
     console.error("norg edge control call failed", path, e);
     return null;
@@ -1195,8 +1199,17 @@ function viewerAttributes(headers) {
     as_organization: null,
     colo: null,
     http_protocol: value("cloudfront-viewer-http-version"),
-    tls_version: value("cloudfront-viewer-tls")
+    // CloudFront publishes the whole negotiated suite here —
+    // `TLSv1.3:TLS_AES_128_GCM_SHA256:fullHandshake` — where Cloudflare's
+    // `request.cf.tlsVersion` is just `TLSv1.3`. Sending it whole is what made
+    // every CloudFront visit event fail: 44 characters into the 20-character
+    // column NORG stores it in, so the endpoint answered 500 and the event was
+    // discarded. Take the protocol and match the shape the other providers send.
+    tls_version: firstField(value("cloudfront-viewer-tls"))
   };
+}
+function firstField(raw) {
+  return raw ? raw.split(":")[0] : null;
 }
 function logEdgeEvent(env, request, classification, served, rawWordCount = null, responseStatus = null) {
   if (PASSTHROUGH_SERVED.has(served) && env.EDGE_EVENTS_VERBOSE !== "true") return;

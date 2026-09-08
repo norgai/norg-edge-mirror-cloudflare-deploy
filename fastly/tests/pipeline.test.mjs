@@ -60,7 +60,7 @@ function makeEnv(overrides = {}, { mirror, origin } = {}) {
     NORG_API_URL: API,
     NORG_CONTENT_BASE: CONTENT,
     EDGE_ENV: "test",
-    EDGE_SCRIPT_VERSION: "0.1.2",
+    EDGE_SCRIPT_VERSION: "0.1.3",
     EDGE_PLATFORM: "fastly",
     ...overrides,
   };
