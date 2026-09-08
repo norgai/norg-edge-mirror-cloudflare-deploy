@@ -27,7 +27,7 @@ import * as BunnySDK from "@bunny.net/edgescript-sdk@0.12.1";
 import process from "node:process";
 
 import { isConfigured } from "../../core/config.js";
-import { flushDeferred } from "../../core/deferred.js";
+import { flushDeferred, sweepDeferred } from "../../core/deferred.js";
 
 import { readConfig } from "./lib/config.js";
 import { PASSTHROUGH } from "./lib/origin.js";
@@ -96,19 +96,26 @@ export async function onOriginRequest(ctx) {
     // correct behaviour is to do nothing rather than fail slowly on each one.
     if (!isConfigured(env)) return request;
 
-    // Gives work suspended when this isolate last went idle an event-loop turn
-    // while the pipeline does its own awaits.
-    const flushed = flushDeferred();
+    // Clears anything a previous request on this isolate left outstanding,
+    // overlapped with the pipeline's own network calls so it normally costs
+    // this request nothing.
+    const swept = sweepDeferred();
     const result = await raceWatchdog(request, env);
-    await flushed;
+    await swept;
 
-    // Starts whatever this invocation queued, and asks Bunny to hold the
-    // isolate open until it settles.
+    // Asks Bunny to hold the isolate open until this request's own deferred
+    // work settles. The promise MUST track settlement, not merely the start of
+    // the work — one that resolves early tells the platform there is nothing
+    // left to wait for, and the isolate is torn down with the visit event
+    // still in flight. That is what this handed Bunny before 0.5.1.
     keepAlive(flushDeferred());
 
     return result === PASSTHROUGH ? request : result;
   } catch (e) {
     console.error("norg edge router error", e);
+    // The pipeline may have deferred a visit event before throwing. Handing it
+    // to the platform costs the visitor nothing and saves the event.
+    keepAlive(flushDeferred());
     return request;
   }
 }
