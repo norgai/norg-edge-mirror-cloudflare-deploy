@@ -157,15 +157,25 @@ export async function refreshFeed(env) {
  * STALE negative one deliberately does not, so re-entitlement lands within a
  * minute of NORG allowing it again.
  *
+ * `awaitStaleRefresh` is for a runtime with no deferred-work primitive, where
+ * a deferred refresh is lost the moment the handler returns: the refresh is
+ * awaited inline within `budgetMs`, and the stale entry still answers if the
+ * budget runs out. Only a caller that has already decided the visitor may pay
+ * (an agent, never a human) should set it.
+ *
  * @param {Object} env Install config.
+ * @param {Object} [options] Refresh options.
+ * @param {boolean} [options.awaitStaleRefresh] Refresh a stale entry inline.
+ * @param {number} [options.budgetMs] How long an inline refresh may take.
  * @returns {Promise<Object>} Feed with entitled, patterns and cidrRanges.
  */
-export async function getBotFeed(env) {
+export async function getBotFeed(env, { awaitStaleRefresh = false, budgetMs = 2000 } = {}) {
   const now = Date.now();
   if (feedCache.fetchedAt && now - feedCache.fetchedAt < feedCache.ttl) return feedCache;
 
   if (feedCache.entitled) {
-    defer(() => refreshFeed(env));
+    if (awaitStaleRefresh) await refreshWithin(env, budgetMs);
+    else defer(() => refreshFeed(env));
     return feedCache;
   }
 
@@ -176,6 +186,52 @@ export async function getBotFeed(env) {
   // request skips the blocking fetch for the window.
   if (outcome === "unreachable") stampNegativeFeed();
   return feedCache;
+}
+
+/**
+ * Refresh a stale entry inline, giving up (but not cancelling) at the budget.
+ *
+ * @param {Object} env Install config.
+ * @param {number} budgetMs Milliseconds to wait before serving stale.
+ * @returns {Promise<void>} Settles when the refresh lands or the budget ends.
+ */
+async function refreshWithin(env, budgetMs) {
+  let timer;
+  await Promise.race([
+    refreshFeed(env),
+    new Promise((resolve) => {
+      timer = setTimeout(resolve, budgetMs);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Record a refusal seen on a call other than the feed itself.
+ *
+ * The receptionist authenticates every mirror read with the same credentials
+ * as the feed, so a 401/403 from it is NORG saying this install may not serve.
+ * Stamping the negative verdict here means a revoked key stops diverting on
+ * the next request rather than at the next feed refresh, up to an hour away.
+ *
+ * @returns {void}
+ */
+export function stampRefusal() {
+  stampNegativeFeed();
+}
+
+/**
+ * The agentic subtree prefix this container last learned from the feed.
+ *
+ * For a fast path that runs BEFORE the feed is consulted: a human on the
+ * agentic subtree must still reach the router, so the path test needs the
+ * prefix without paying for a fetch. A cold container answers the default,
+ * which is rule-1 safe — a custom-prefix path on a cold container gets the
+ * origin, not an error.
+ *
+ * @returns {string} The prefix, or the default when none has been learned.
+ */
+export function knownAgenticPathPrefix() {
+  return feedCache.agenticPathPrefix || DEFAULT_AGENTIC_PATH_PREFIX;
 }
 
 /**

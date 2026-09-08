@@ -41,13 +41,29 @@ var UNENTITLED = Object.freeze({
 });
 
 // aws/lambda/lib/config.js
-var EDGE_SCRIPT_VERSION = "0.5.2";
+var EDGE_SCRIPT_VERSION = "0.6.0";
 
 // aws/lambda/lib/secret.js
 var CACHE_TTL_MS = 15 * 60 * 1e3;
 var SECRET_TIMEOUT_MS = 1500;
 var SECRET_REGION = "us-east-1";
+var EDGE_REGIONS = /* @__PURE__ */ new Set([
+  "us-east-1",
+  "us-east-2",
+  "us-west-1",
+  "us-west-2",
+  "ap-south-1",
+  "ap-northeast-1",
+  "ap-northeast-2",
+  "ap-southeast-1",
+  "ap-southeast-2",
+  "eu-central-1",
+  "eu-west-1",
+  "eu-west-2",
+  "sa-east-1"
+]);
 var cached = { value: null, fetchedAt: 0 };
+var replicaMissing = false;
 function loadClient() {
   return require("@aws-sdk/client-secrets-manager");
 }
@@ -62,18 +78,46 @@ function parseSecret(secretString) {
     return null;
   }
 }
+function regionalArn(arn, region) {
+  const parts = String(arn).split(":");
+  if (parts.length < 7 || parts[2] !== "secretsmanager") return null;
+  parts[3] = region;
+  return parts.join(":");
+}
+function localReadRegion(arn) {
+  const region = typeof process !== "undefined" ? process.env.AWS_REGION : void 0;
+  if (!region || !EDGE_REGIONS.has(region) || replicaMissing) return null;
+  const primary = String(arn).split(":")[3];
+  return region === primary ? null : region;
+}
+async function readSecret(arn, region) {
+  const { SecretsManagerClient, GetSecretValueCommand } = loadClient();
+  const client = new SecretsManagerClient({ region });
+  const result = await client.send(new GetSecretValueCommand({ SecretId: arn }), {
+    abortSignal: AbortSignal.timeout(SECRET_TIMEOUT_MS)
+  });
+  return parseSecret(result?.SecretString);
+}
+async function readNearest(arn) {
+  const region = localReadRegion(arn);
+  if (region) {
+    try {
+      const value = await readSecret(regionalArn(arn, region), region);
+      if (value) return value;
+    } catch (e) {
+      replicaMissing = true;
+      console.error("norg site key replica read failed, using primary", region, e?.name || e);
+    }
+  }
+  return readSecret(arn, SECRET_REGION);
+}
 async function getSiteKey(env) {
   const arn = env?.NORG_SECRET_ARN;
   if (!arn) return null;
   const age = Date.now() - cached.fetchedAt;
   if (cached.value && age < CACHE_TTL_MS) return cached.value;
   try {
-    const { SecretsManagerClient, GetSecretValueCommand } = loadClient();
-    const client = new SecretsManagerClient({ region: SECRET_REGION });
-    const result = await client.send(new GetSecretValueCommand({ SecretId: arn }), {
-      abortSignal: AbortSignal.timeout(SECRET_TIMEOUT_MS)
-    });
-    const value = parseSecret(result?.SecretString);
+    const value = await readNearest(arn);
     if (!value) return null;
     cached = { value, fetchedAt: Date.now() };
     return value;

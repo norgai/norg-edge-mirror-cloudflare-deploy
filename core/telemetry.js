@@ -26,6 +26,7 @@ import {
 } from "./constants.mjs";
 import { binding, controlHeaders, edgeEnv } from "./config.js";
 import { defer } from "./deferred.js";
+import { viewerAttributes } from "./visit.js";
 
 // Served values that describe an untouched origin response. Reported only when
 // the install opts into verbose events.
@@ -69,49 +70,6 @@ async function postControl(env, path, body) {
 }
 
 /**
- * Geo and connection attributes CloudFront exposes as request headers.
- *
- * Cloudflare hands these over as `request.cf`; CloudFront adds them as
- * `CloudFront-Viewer-*` headers, but ONLY when the distribution's origin
- * request policy asks for them, so every field is independently optional and a
- * missing one must read as null rather than break the event.
- *
- * @param {Headers} headers Request headers.
- * @returns {Object} Event fields describing where the request came from.
- */
-function viewerAttributes(headers) {
-  const value = (name) => headers.get(name) || null;
-  return {
-    ip_country: value("cloudfront-viewer-country"),
-    ip_city: value("cloudfront-viewer-city"),
-    asn: value("cloudfront-viewer-asn"),
-    // CloudFront publishes no AS organisation name and no edge-location id in
-    // request headers; both are Cloudflare-only. Null keeps the event shape
-    // identical across providers rather than inventing a value.
-    as_organization: null,
-    colo: null,
-    http_protocol: value("cloudfront-viewer-http-version"),
-    // CloudFront publishes the whole negotiated suite here —
-    // `TLSv1.3:TLS_AES_128_GCM_SHA256:fullHandshake` — where Cloudflare's
-    // `request.cf.tlsVersion` is just `TLSv1.3`. Sending it whole is what made
-    // every CloudFront visit event fail: 44 characters into the 20-character
-    // column NORG stores it in, so the endpoint answered 500 and the event was
-    // discarded. Take the protocol and match the shape the other providers send.
-    tls_version: firstField(value("cloudfront-viewer-tls")),
-  };
-}
-
-/**
- * The first colon-separated field of a header value.
- *
- * @param {?string} raw Header value, or null.
- * @returns {?string} Text before the first colon, or null.
- */
-function firstField(raw) {
-  return raw ? raw.split(":")[0] : null;
-}
-
-/**
  * Report a classified visit to NORG.
  *
  * @param {Object} env Install config.
@@ -131,23 +89,56 @@ export function logEdgeEvent(
   responseStatus = null,
 ) {
   if (PASSTHROUGH_SERVED.has(served) && env.EDGE_EVENTS_VERBOSE !== "true") return;
+  const body = eventBody(request, classification, served, rawWordCount, responseStatus);
+  defer(() => postControl(env, "/api/v1/edge/events", body));
+}
 
+/**
+ * Report a visit with an un-awaited call: started now, never waited for.
+ *
+ * For a runtime with no deferred-work primitive and no flush. The call may be
+ * lost when the runtime freezes before it lands, which is the accepted cost:
+ * the only caller is the opt-in human passthrough event on CloudFront, where a
+ * human must never wait on NORG. Agent visits are recorded by the receptionist
+ * (core/visit.js) and never take this path.
+ *
+ * @param {Object} env Install config.
+ * @param {Request} request Incoming request.
+ * @param {Object} classification Bot classification.
+ * @param {string} served How the request was answered.
+ * @returns {void}
+ */
+export function fireEdgeEvent(env, request, classification, served) {
+  if (PASSTHROUGH_SERVED.has(served) && env.EDGE_EVENTS_VERBOSE !== "true") return;
+  const body = eventBody(request, classification, served, null, null);
+  postControl(env, "/api/v1/edge/events", body).catch(() => {});
+}
+
+/**
+ * The event document NORG's /edge/events endpoint stores.
+ *
+ * @param {Request} request Incoming request.
+ * @param {Object} classification Bot classification.
+ * @param {string} served How the request was answered.
+ * @param {?number} rawWordCount Visible words in the raw origin, or null.
+ * @param {?number} responseStatus Status actually returned, or null.
+ * @returns {Object} JSON body.
+ */
+function eventBody(request, classification, served, rawWordCount, responseStatus) {
   const url = new URL(request.url);
-  defer(() =>
-    postControl(env, "/api/v1/edge/events", {
-      domain: url.hostname,
-      path: url.pathname,
-      user_agent: request.headers.get("user-agent") || null,
-      is_ai_bot: classification.is_ai_bot,
-      bot_name: classification.bot_name,
-      company: classification.company,
-      purpose: classification.purpose,
-      served,
-      raw_word_count: rawWordCount,
-      response_status: responseStatus,
-      ...viewerAttributes(request.headers),
-    }),
-  );
+  return {
+    domain: url.hostname,
+    path: url.pathname,
+    user_agent: request.headers.get("user-agent") || null,
+    is_ai_bot: classification.is_ai_bot,
+    bot_name: classification.bot_name,
+    company: classification.company,
+    purpose: classification.purpose,
+    served,
+    raw_word_count: rawWordCount,
+    response_status: responseStatus,
+    ...viewerAttributes(request.headers),
+  };
 }
 
 /**
