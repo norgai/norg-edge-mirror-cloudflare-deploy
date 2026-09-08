@@ -54,6 +54,24 @@ export const HEALTH_CHECK_HEADER = "x-norg-edge-check";
 export const MIRROR_FETCH_TIMEOUT_MS = 4000;
 export const PATTERN_FETCH_TIMEOUT_MS = 5000;
 export const CONTROL_CALL_TIMEOUT_MS = 3000;
+
+// Deferred control calls get a TIGHTER timeout than a foreground one, because
+// their bound is not the call, it is the flush budget below. A call allowed to
+// run longer than the flush that is waiting for it would be abandoned in flight
+// on every runtime that has no keep-alive, which is exactly the failure this
+// pair of numbers exists to prevent. Keep it strictly under the flush budget.
+export const DEFERRED_CALL_TIMEOUT_MS = 1200;
+
+// How long a flush may wait for the work it just started. On Fastly and Bunny
+// this is spent after the response has been sent, so a visitor never feels it;
+// on Lambda@Edge, which has no keep-alive at all, it is spent inside the
+// invocation that queued the work — an agent request, never a human one.
+export const DEFERRED_FLUSH_BUDGET_MS = 1500;
+
+// The budget for mopping up a PREVIOUS invocation's leftovers. Much smaller,
+// because that flush lands on whichever request arrives next, which may well be
+// a human, and no human should wait on a crawler's telemetry.
+export const DEFERRED_SWEEP_BUDGET_MS = 200;
 export const MCP_FORWARD_TIMEOUT_MS = 3000;
 
 // Fallback response-cache TTL (seconds) if the feed omits one.

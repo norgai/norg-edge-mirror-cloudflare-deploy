@@ -41,18 +41,62 @@ var UNENTITLED = Object.freeze({
 });
 
 // aws/lambda/lib/config.js
-var EDGE_SCRIPT_VERSION = "0.2.1";
+var EDGE_SCRIPT_VERSION = "0.5.1";
+
+// aws/lambda/lib/secret.js
+var CACHE_TTL_MS = 15 * 60 * 1e3;
+var SECRET_TIMEOUT_MS = 1500;
+var SECRET_REGION = "us-east-1";
+var cached = { value: null, fetchedAt: 0 };
+function loadClient() {
+  return require("@aws-sdk/client-secrets-manager");
+}
+function parseSecret(secretString) {
+  if (!secretString) return null;
+  const trimmed = secretString.trim();
+  if (!trimmed.startsWith("{")) return trimmed || null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed?.NORG_SITE_KEY || parsed?.site_key || null;
+  } catch (e) {
+    return null;
+  }
+}
+async function getSiteKey(env) {
+  const arn = env?.NORG_SECRET_ARN;
+  if (!arn) return null;
+  const age = Date.now() - cached.fetchedAt;
+  if (cached.value && age < CACHE_TTL_MS) return cached.value;
+  try {
+    const { SecretsManagerClient, GetSecretValueCommand } = loadClient();
+    const client = new SecretsManagerClient({ region: SECRET_REGION });
+    const result = await client.send(new GetSecretValueCommand({ SecretId: arn }), {
+      abortSignal: AbortSignal.timeout(SECRET_TIMEOUT_MS)
+    });
+    const value = parseSecret(result?.SecretString);
+    if (!value) return null;
+    cached = { value, fetchedAt: Date.now() };
+    return value;
+  } catch (e) {
+    console.error("norg site key fetch failed", e);
+    return null;
+  }
+}
 
 // aws/lambda/heartbeat-lambda.js
 async function handler() {
   const {
     SITE_ID,
-    NORG_SITE_KEY,
+    NORG_SECRET_ARN,
     NORG_API_URL = "https://content-craft-api.norg.ai",
     EDGE_ENV = "unknown"
   } = process.env;
-  if (!SITE_ID || !NORG_SITE_KEY) {
-    throw new Error("norg edge heartbeat: SITE_ID and NORG_SITE_KEY are required");
+  if (!SITE_ID || !NORG_SECRET_ARN) {
+    throw new Error("norg edge heartbeat: SITE_ID and NORG_SECRET_ARN are required");
+  }
+  const NORG_SITE_KEY = await getSiteKey({ NORG_SECRET_ARN });
+  if (!NORG_SITE_KEY) {
+    throw new Error(`norg edge heartbeat: could not read the site key from ${NORG_SECRET_ARN}`);
   }
   const response = await fetch(`${NORG_API_URL}/api/v1/edge/heartbeat`, {
     method: "POST",
