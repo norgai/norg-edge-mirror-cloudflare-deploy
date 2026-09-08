@@ -608,6 +608,15 @@ function anonymousClassification() {
   return { is_ai_bot: false, bot_name: null, company: null, purpose: null };
 }
 
+// core/http.js
+function edgeFetch(env, url, init) {
+  const impl = env && env.EDGE_FETCH;
+  return impl ? impl(url, init) : fetch(url, init);
+}
+function timeoutSignal(ms) {
+  return typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(ms) : void 0;
+}
+
 // core/feed.js
 var STALE_REFRESH_BUDGET_MS = 2e3;
 var feedCache = {
@@ -658,10 +667,10 @@ async function refreshFeed(env) {
   try {
     const headers = controlHeaders(env);
     if (previous.entitled && previous.etag) headers["If-None-Match"] = previous.etag;
-    response = await fetch(`${binding(env, "NORG_API_URL")}/api/v1/edge/bot-patterns`, {
+    response = await edgeFetch(env, `${binding(env, "NORG_API_URL")}/api/v1/edge/bot-patterns`, {
       method: "GET",
       headers,
-      signal: AbortSignal.timeout(PATTERN_FETCH_TIMEOUT_MS)
+      signal: timeoutSignal(PATTERN_FETCH_TIMEOUT_MS)
     });
   } catch (e) {
     console.error("norg edge feed refresh failed", e);
@@ -924,9 +933,9 @@ function switchOriginToNorg(cfRequest, contentStemUrl, keySuffix, authHeaders) {
 async function fetchFromNorg(env, keySuffix, extraHeaders = {}) {
   const target = `${contentStem(env)}${keySuffix}`;
   try {
-    const response = await fetch(target, {
+    const response = await edgeFetch(env, target, {
       headers: { ...controlHeaders(env), [LOOP_GUARD_HEADER]: "1", ...extraHeaders },
-      signal: AbortSignal.timeout(MIRROR_FETCH_TIMEOUT_MS)
+      signal: timeoutSignal(MIRROR_FETCH_TIMEOUT_MS)
     });
     if (response.status === 404) return { response: null, missing: true, refused: false };
     if (REFUSAL_STATUSES.has(response.status)) {
@@ -1249,11 +1258,11 @@ function visitHeader(request, classification, served, servedOnMiss) {
 var PASSTHROUGH_SERVED = /* @__PURE__ */ new Set(["origin", "origin_thin"]);
 async function postControl(env, path, body) {
   try {
-    const response = await fetch(`${binding(env, "NORG_API_URL")}${path}`, {
+    const response = await edgeFetch(env, `${binding(env, "NORG_API_URL")}${path}`, {
       method: "POST",
       headers: controlHeaders(env),
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(DEFERRED_CALL_TIMEOUT_MS)
+      signal: timeoutSignal(DEFERRED_CALL_TIMEOUT_MS)
     });
     if (!response.ok) {
       console.error("norg edge control call refused", path, response.status);
