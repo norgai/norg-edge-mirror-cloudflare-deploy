@@ -243,7 +243,7 @@ var STATIC_ASSET_SUFFIXES = /* @__PURE__ */ new Set([
 ]);
 
 // aws/lambda/lib/config.js
-var EDGE_SCRIPT_VERSION = "0.4.0";
+var EDGE_SCRIPT_VERSION = "0.5.0";
 var CONFIG_HEADERS = {
   "x-norg-site-id": "SITE_ID",
   "x-norg-secret-arn": "NORG_SECRET_ARN",
@@ -328,6 +328,67 @@ async function getSiteKey(env) {
   } catch (e) {
     console.error("norg site key fetch failed", e);
     return null;
+  }
+}
+
+// aws/lambda/lib/response-cache.js
+var MAX_ENTRY_BYTES = 256 * 1024;
+var MAX_TOTAL_BYTES = 16 * 1024 * 1024;
+var DEFAULT_TTL_SECONDS = 300;
+var store = /* @__PURE__ */ new Map();
+var totalBytes = 0;
+function cacheContext(env, feed, keySuffix) {
+  const rc = feed && feed.responseCache;
+  if (!rc || !rc.enabled) return null;
+  const version = feed.contentVersion;
+  if (!version || !env || !env.SITE_ID) return null;
+  return {
+    key: `${env.SITE_ID}/${version}${keySuffix}`,
+    ttl: rc.ttl ?? DEFAULT_TTL_SECONDS
+  };
+}
+function readCached(ctx) {
+  if (!ctx) return null;
+  try {
+    const hit = store.get(ctx.key);
+    if (!hit) return null;
+    if (Date.now() >= hit.expiresAt) {
+      store.delete(ctx.key);
+      totalBytes -= hit.body.byteLength;
+      return null;
+    }
+    store.delete(ctx.key);
+    store.set(ctx.key, hit);
+    const headers = hit.contentType ? { "content-type": hit.contentType } : void 0;
+    return new Response(hit.body, { status: 200, headers });
+  } catch (e) {
+    console.error("norg mirror cache read failed", e);
+    return null;
+  }
+}
+function writeCached(ctx, body, contentType) {
+  if (!ctx || !body) return;
+  try {
+    if (body.byteLength > MAX_ENTRY_BYTES) return;
+    const existing = store.get(ctx.key);
+    if (existing) {
+      store.delete(ctx.key);
+      totalBytes -= existing.body.byteLength;
+    }
+    store.set(ctx.key, {
+      body,
+      contentType: contentType || null,
+      expiresAt: Date.now() + ctx.ttl * 1e3
+    });
+    totalBytes += body.byteLength;
+    for (const [key, entry] of store) {
+      if (totalBytes <= MAX_TOTAL_BYTES) break;
+      if (key === ctx.key) continue;
+      store.delete(key);
+      totalBytes -= entry.body.byteLength;
+    }
+  } catch (e) {
+    console.error("norg mirror cache write failed", e);
   }
 }
 
@@ -1246,7 +1307,7 @@ async function forwardMcpToNorg(request, env, url) {
     return null;
   }
 }
-async function serveMirror(cfRequest, response, env, url, keySuffix) {
+async function serveMirror(cfRequest, response, env, url, keySuffix, ctx = null) {
   const switchOrigin = () => switchOriginToNorg(cfRequest, contentStem(env), keySuffix, receptionistHeaders(env));
   const declaredLength = response.headers.get("content-length");
   if (declaredLength !== null) {
@@ -1255,15 +1316,18 @@ async function serveMirror(cfRequest, response, env, url, keySuffix) {
   }
   const buffered = Buffer.from(await response.arrayBuffer());
   if (buffered.byteLength > MAX_INLINE_MIRROR_BYTES) return switchOrigin();
+  writeCached(ctx, buffered, response.headers.get("content-type"));
   const inlined = new Response(buffered, { status: 200, headers: response.headers });
   return withAlternateFormatHeaders(mirrorResponse(inlined, env), url, url.pathname);
 }
-async function serveAgent(cfRequest, request, env, url, classification) {
+async function serveAgent(cfRequest, request, env, url, classification, feed) {
   const keySuffix = pathToKeySuffix(url.pathname);
-  const { response, missing } = await fetchFromNorg(env, keySuffix);
+  const ctx = cacheContext(env, feed, keySuffix);
+  const cached2 = readCached(ctx);
+  const { response, missing } = cached2 ? { response: cached2, missing: false } : await fetchFromNorg(env, keySuffix);
   if (response) {
     logEdgeEvent(env, request, classification, "mirror", null, response.status);
-    return await serveMirror(cfRequest, response, env, url, keySuffix);
+    return await serveMirror(cfRequest, response, env, url, keySuffix, cached2 ? null : ctx);
   }
   if (missing && binding(env, "LAZY_RENDER_ENABLED") !== "false") {
     requestRender(env, url);
@@ -1289,25 +1353,29 @@ async function serveStrippedOrigin(cfRequest, request, env, classification) {
   logEdgeEvent(env, request, classification, "stripped", rawWordCount, origin.status);
   return strippedResponse(stripped, origin.status, env);
 }
-async function serveAgenticPath(cfRequest, request, env, url, prefix) {
+async function serveAgenticPath(cfRequest, request, env, url, prefix, feed) {
   const innerPath = url.pathname.slice(prefix.length) || "/";
   const keySuffix = pathToKeySuffix(innerPath);
-  const { response } = await fetchFromNorg(env, keySuffix);
+  const ctx = cacheContext(env, feed, keySuffix);
+  const cached2 = readCached(ctx);
+  const { response } = cached2 ? { response: cached2 } : await fetchFromNorg(env, keySuffix);
   const classification = anonymousClassification();
   if (!response) {
     logEdgeEvent(env, request, classification, "agentic_path_miss", null, null);
     return PASSTHROUGH;
   }
   logEdgeEvent(env, request, classification, "agentic_path", null, response.status);
-  return await serveMirror(cfRequest, response, env, url, keySuffix);
+  return await serveMirror(cfRequest, response, env, url, keySuffix, cached2 ? null : ctx);
 }
-async function serveAgentOverride(cfRequest, request, env, url) {
+async function serveAgentOverride(cfRequest, request, env, url, feed) {
   const classification = agentOverrideClassification();
   const keySuffix = pathToKeySuffix(url.pathname);
-  const { response } = await fetchFromNorg(env, keySuffix);
+  const ctx = cacheContext(env, feed, keySuffix);
+  const cached2 = readCached(ctx);
+  const { response } = cached2 ? { response: cached2 } : await fetchFromNorg(env, keySuffix);
   if (response) {
     logEdgeEvent(env, request, classification, "agent_param_override", null, response.status);
-    return await serveMirror(cfRequest, response, env, url, keySuffix);
+    return await serveMirror(cfRequest, response, env, url, keySuffix, cached2 ? null : ctx);
   }
   logEdgeEvent(env, request, classification, "agent_param_override_miss", null, null);
   return PASSTHROUGH;
@@ -1344,7 +1412,7 @@ async function handleRequest(cfRequest, env) {
   if (owned) return owned;
   if (isAgenticPath(url.pathname, feed.agenticPathPrefix)) {
     maybeHeartbeat(env, "traffic");
-    return serveAgenticPath(cfRequest, request, env, url, feed.agenticPathPrefix);
+    return serveAgenticPath(cfRequest, request, env, url, feed.agenticPathPrefix, feed);
   }
   if (isSiblingArtifactPath(url.pathname)) {
     if (isSkippedPath(feed, siblingPageOf(url.pathname))) return PASSTHROUGH;
@@ -1355,7 +1423,7 @@ async function handleRequest(cfRequest, env) {
   if (isTraditionalSearchBot(userAgent)) return PASSTHROUGH;
   if (hasAgentOverride(url)) {
     maybeHeartbeat(env, "traffic");
-    return serveAgentOverride(cfRequest, request, env, url);
+    return serveAgentOverride(cfRequest, request, env, url, feed);
   }
   const classification = classifyAgent(userAgent, feed.patterns);
   if (!classification.is_ai_bot) return PASSTHROUGH;
@@ -1364,7 +1432,7 @@ async function handleRequest(cfRequest, env) {
     return PASSTHROUGH;
   }
   maybeHeartbeat(env, "traffic");
-  return serveAgent(cfRequest, request, env, url, classification);
+  return serveAgent(cfRequest, request, env, url, classification, feed);
 }
 async function handler(event) {
   const cfRequest = event.Records[0].cf.request;

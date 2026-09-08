@@ -15,10 +15,13 @@ import { afterEach, test } from "node:test";
 
 import { handler } from "../lambda/edge-router-lambda.js";
 import { __test_setFeed } from "../../core/feed.js";
+import { __resetResponseCache } from "../lambda/lib/response-cache.js";
 import { __test_reset as resetDeferred } from "../../core/deferred.js";
 import { __test_reset as resetTelemetry } from "../../core/telemetry.js";
 import {
   CHROME_UA,
+  CONTENT_BASE,
+  FEED,
   GOOGLEBOT_UA,
   GPTBOT_UA,
   SITE_KEY,
@@ -760,4 +763,64 @@ test("MCP POST forwards JSON-RPC headers and NORG identity, never cookies or aut
   assert.ok(forwarded.get("x-norg-site-id"), "site id must still be attached");
   assert.ok(forwarded.get("x-norg-site-key"), "site key must still be attached");
   assert.ok(forwarded.get("x-norg-edge-version"), "version must still be attached");
+});
+
+// --- The in-function mirror cache -----------------------------------------
+//
+// The point of caching INSIDE the function rather than in CloudFront: a hit
+// still classifies and still records the visit. A CloudFront hit would do
+// neither, which is why every mirror stays no-store at the CDN layer.
+
+test("a cached mirror is served without refetching, and STILL records the visit", async () => {
+  __resetResponseCache();
+  const cachingFeed = () =>
+    new Response(
+      JSON.stringify({
+        ...FEED,
+        response_cache: { enabled: true, ttl: 300 },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    );
+
+  const first = await run(
+    { headers: { "user-agent": GPTBOT_UA } },
+    { feed: cachingFeed, mirror: () => mirrorHit("<html><body>CACHED</body></html>") }
+  );
+  assert.equal(first.result.headers["x-norg-edge"][0].value, "mirror");
+
+  const second = await run(
+    { headers: { "user-agent": GPTBOT_UA } },
+    { feed: cachingFeed, mirror: () => mirrorHit("<html><body>SHOULD NOT BE FETCHED</body></html>") }
+  );
+
+  // Served from the container copy, not the receptionist.
+  assert.equal(second.result.headers["x-norg-edge"][0].value, "mirror");
+  assert.match(second.result.body, /CACHED/);
+  assert.doesNotMatch(second.result.body, /SHOULD NOT BE FETCHED/);
+
+  const mirrorFetches = second.calls.filter(c => c.url.startsWith(CONTENT_BASE));
+  assert.equal(mirrorFetches.length, 0, "a hit must not touch the receptionist");
+
+  // The whole reason this cache is not the CDN's: the visit is still reported.
+  const events = second.calls.filter(c => c.url.includes("/api/v1/edge/events"));
+  assert.equal(events.length, 1, "a cache hit must still record the agent visit");
+  assert.match(String(events[0].body), /"served":"mirror"/);
+
+  __resetResponseCache();
+});
+
+test("a cached mirror is still marked unstorable by any shared cache", async () => {
+  __resetResponseCache();
+  const cachingFeed = () =>
+    new Response(
+      JSON.stringify({ ...FEED, response_cache: { enabled: true, ttl: 300 } }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    );
+  const opts = { headers: { "user-agent": GPTBOT_UA } };
+  await run(opts, { feed: cachingFeed, mirror: () => mirrorHit() });
+  const { result } = await run(opts, { feed: cachingFeed, mirror: () => mirrorHit() });
+
+  assert.equal(result.headers["cache-control"][0].value, "private, no-store");
+  assert.equal(result.headers["cdn-cache-control"][0].value, "private, no-store");
+  __resetResponseCache();
 });

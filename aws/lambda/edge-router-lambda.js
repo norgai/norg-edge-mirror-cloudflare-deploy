@@ -77,6 +77,11 @@ import {
 } from "../../core/constants.mjs";
 import { EDGE_SCRIPT_VERSION, readConfig, scrubConfigHeaders } from "./lib/config.js";
 import { __primeSecretCache, getSiteKey } from "./lib/secret.js";
+import {
+  cacheContext,
+  readCached,
+  writeCached,
+} from "./lib/response-cache.js";
 import { binding, contentStem } from "../../core/config.js";
 import {
   agentOverrideClassification,
@@ -285,7 +290,7 @@ async function forwardMcpToNorg(request, env, url) {
  * @param {string} keySuffix Mirror key suffix.
  * @returns {Response|Object} Response, or PASSTHROUGH after an origin switch.
  */
-async function serveMirror(cfRequest, response, env, url, keySuffix) {
+async function serveMirror(cfRequest, response, env, url, keySuffix, ctx = null) {
   const switchOrigin = () =>
     switchOriginToNorg(cfRequest, contentStem(env), keySuffix, receptionistHeaders(env));
 
@@ -308,6 +313,10 @@ async function serveMirror(cfRequest, response, env, url, keySuffix) {
   // So buffer instead, and only fall back when the bytes actually overflow.
   const buffered = Buffer.from(await response.arrayBuffer());
   if (buffered.byteLength > MAX_INLINE_MIRROR_BYTES) return switchOrigin();
+
+  // Stored here because this is where the bytes already exist; buffering
+  // happens either way, so the cache costs one Map write.
+  writeCached(ctx, buffered, response.headers.get("content-type"));
 
   const inlined = new Response(buffered, { status: 200, headers: response.headers });
   return withAlternateFormatHeaders(mirrorResponse(inlined, env), url, url.pathname);
@@ -356,13 +365,20 @@ async function serveMirror(cfRequest, response, env, url, keySuffix) {
  * @param {Object} classification Bot classification.
  * @returns {Promise<Response|Object>} Response, or PASSTHROUGH.
  */
-async function serveAgent(cfRequest, request, env, url, classification) {
+async function serveAgent(cfRequest, request, env, url, classification, feed) {
   const keySuffix = pathToKeySuffix(url.pathname);
-  const { response, missing } = await fetchFromNorg(env, keySuffix);
+  const ctx = cacheContext(env, feed, keySuffix);
+  // A hit skips the receptionist, NOT the event: the visit is logged below on
+  // both paths, which is the whole reason this cache lives inside the function
+  // rather than in CloudFront.
+  const cached = readCached(ctx);
+  const { response, missing } = cached
+    ? { response: cached, missing: false }
+    : await fetchFromNorg(env, keySuffix);
 
   if (response) {
     logEdgeEvent(env, request, classification, "mirror", null, response.status);
-    return await serveMirror(cfRequest, response, env, url, keySuffix);
+    return await serveMirror(cfRequest, response, env, url, keySuffix, cached ? null : ctx);
   }
 
   // Only a definite 404 means "NORG has not rendered this yet".
@@ -428,10 +444,14 @@ async function serveStrippedOrigin(cfRequest, request, env, classification) {
  * @param {string} prefix Configured agentic prefix.
  * @returns {Promise<Response|Object>} Response, or PASSTHROUGH.
  */
-async function serveAgenticPath(cfRequest, request, env, url, prefix) {
+async function serveAgenticPath(cfRequest, request, env, url, prefix, feed) {
   const innerPath = url.pathname.slice(prefix.length) || "/";
   const keySuffix = pathToKeySuffix(innerPath);
-  const { response } = await fetchFromNorg(env, keySuffix);
+  const ctx = cacheContext(env, feed, keySuffix);
+  const cached = readCached(ctx);
+  const { response } = cached
+    ? { response: cached }
+    : await fetchFromNorg(env, keySuffix);
   const classification = anonymousClassification();
 
   if (!response) {
@@ -439,7 +459,7 @@ async function serveAgenticPath(cfRequest, request, env, url, prefix) {
     return PASSTHROUGH;
   }
   logEdgeEvent(env, request, classification, "agentic_path", null, response.status);
-  return await serveMirror(cfRequest, response, env, url, keySuffix);
+  return await serveMirror(cfRequest, response, env, url, keySuffix, cached ? null : ctx);
 }
 
 /**
@@ -455,14 +475,18 @@ async function serveAgenticPath(cfRequest, request, env, url, prefix) {
  * @param {URL} url Parsed request URL.
  * @returns {Promise<Response|Object>} Response, or PASSTHROUGH.
  */
-async function serveAgentOverride(cfRequest, request, env, url) {
+async function serveAgentOverride(cfRequest, request, env, url, feed) {
   const classification = agentOverrideClassification();
   const keySuffix = pathToKeySuffix(url.pathname);
-  const { response } = await fetchFromNorg(env, keySuffix);
+  const ctx = cacheContext(env, feed, keySuffix);
+  const cached = readCached(ctx);
+  const { response } = cached
+    ? { response: cached }
+    : await fetchFromNorg(env, keySuffix);
 
   if (response) {
     logEdgeEvent(env, request, classification, "agent_param_override", null, response.status);
-    return await serveMirror(cfRequest, response, env, url, keySuffix);
+    return await serveMirror(cfRequest, response, env, url, keySuffix, cached ? null : ctx);
   }
   logEdgeEvent(env, request, classification, "agent_param_override_miss", null, null);
   return PASSTHROUGH;
@@ -541,7 +565,7 @@ export async function handleRequest(cfRequest, env) {
   // search-engine floor and all classification.
   if (isAgenticPath(url.pathname, feed.agenticPathPrefix)) {
     maybeHeartbeat(env, "traffic");
-    return serveAgenticPath(cfRequest, request, env, url, feed.agenticPathPrefix);
+    return serveAgenticPath(cfRequest, request, env, url, feed.agenticPathPrefix, feed);
   }
 
   // Per-page sibling artifacts are advertised as absolute URLs in the page's
@@ -571,7 +595,7 @@ export async function handleRequest(cfRequest, env) {
 
   if (hasAgentOverride(url)) {
     maybeHeartbeat(env, "traffic");
-    return serveAgentOverride(cfRequest, request, env, url);
+    return serveAgentOverride(cfRequest, request, env, url, feed);
   }
 
   const classification = classifyAgent(userAgent, feed.patterns);
@@ -587,7 +611,7 @@ export async function handleRequest(cfRequest, env) {
   }
 
   maybeHeartbeat(env, "traffic");
-  return serveAgent(cfRequest, request, env, url, classification);
+  return serveAgent(cfRequest, request, env, url, classification, feed);
 }
 
 /**

@@ -41,7 +41,7 @@ var UNENTITLED = Object.freeze({
 });
 
 // aws/lambda/lib/config.js
-var EDGE_SCRIPT_VERSION = "0.4.0";
+var EDGE_SCRIPT_VERSION = "0.5.0";
 
 // aws/lambda/lib/secret.js
 var CACHE_TTL_MS = 15 * 60 * 1e3;

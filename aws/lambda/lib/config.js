@@ -43,6 +43,13 @@ import { HEALTH_CHECK_HEADER } from "../../../core/constants.mjs";
  * itself is unchanged; content-craft compares this against
  * EDGE_WORKER_VERSION_CLOUDFRONT.
  *
+ * 0.5.0 — a per-container mirror cache (lib/response-cache.js), standing in
+ * for the Cache API Lambda@Edge does not have. A repeat crawl of the same page
+ * is answered from memory instead of refetching from the receptionist. It sits
+ * INSIDE the function on purpose: the router still classifies and still records
+ * the visit on a hit, which a CloudFront cache hit could not do. Mirrors stay
+ * no-store at the CDN layer, unchanged.
+ *
  * 0.4.0 — the site key stops travelling as an origin custom header. It now
  * lives in Secrets Manager and is fetched at the edge (lib/secret.js), so it is
  * no longer readable with cloudfront:GetDistributionConfig and rotation is one
@@ -51,7 +58,7 @@ import { HEALTH_CHECK_HEADER } from "../../../core/constants.mjs";
  * to the customer origin on any thrown exception or oversized response, and the
  * health-probe header, which carried the site key in a plain viewer request.
  */
-export const EDGE_SCRIPT_VERSION = "0.4.0";
+export const EDGE_SCRIPT_VERSION = "0.5.0";
 
 // Custom origin header -> binding name. Mirrors build_worker_bindings() in
 // content-craft's install_service.py; adding a binding there means adding it

@@ -45,6 +45,8 @@ export const FEED = {
   agentic_path_prefix: "/ai",
   skip_paths: ["/checkout"],
   content_version: "1730000000",
+  // Off by default so existing assertions still count receptionist fetches.
+  // A test that wants the cache passes feedOverrides to turn it on.
   response_cache: { enabled: false, ttl: 300 },
   cache_ttl: 3600,
 };
