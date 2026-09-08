@@ -46,10 +46,25 @@ Parameters:
   SiteKey:
     Type: String
     NoEcho: true
+    Default: ""
     Description: >-
-      The NORG_SITE_KEY NORG showed you once. The attach CLI writes it to your
-      distribution as an origin custom header; anyone who can read the
-      distribution's configuration in your account can read it.
+      The NORG_SITE_KEY NORG showed you once. Leave blank if you set SecretArn.
+      Given here, this stack creates a Secrets Manager secret to hold it; the
+      key is no longer written into your distribution's configuration.
+  SecretArn:
+    Type: String
+    Default: ""
+    Description: >-
+      ARN of an existing Secrets Manager secret holding the site key, if you
+      would rather create it yourself than pass SiteKey to CloudFormation. The
+      tighter option: the key never enters a stack parameter.
+  ProbeToken:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: >-
+      Authorises the x-norg-edge-check health probe and nothing else. Blank
+      disables the probe.
   NorgEnvironment:
     Type: String
     Default: production
@@ -121,11 +136,19 @@ Parameters:
     Description: Optional. S3 object version of the heartbeat zip.
 
 Conditions:
+  CreateSiteKeySecret: !Equals [!Ref SecretArn, ""]
   HasAlarmTopic: !Not [!Equals [!Ref AlarmTopicArn, ""]]
   HasArtifactObjectVersion: !Not [!Equals [!Ref ArtifactObjectVersion, ""]]
   HasHeartbeatObjectVersion: !Not [!Equals [!Ref HeartbeatObjectVersion, ""]]
 
 Resources:
+  SiteKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: CreateSiteKeySecret
+    Properties:
+      Description: !Sub "NORG edge router site key for ${SiteId}"
+      SecretString: !Ref SiteKey
+
   EdgeFunctionRole:
     Type: AWS::IAM::Role
     Properties:
@@ -138,6 +161,14 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ReadSiteKey
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !If [CreateSiteKeySecret, !Ref SiteKeySecret, !Ref SecretArn]
 
   EdgeRouterFunction:
     Type: AWS::Lambda::Function
@@ -471,6 +502,14 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ReadSiteKey
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !If [CreateSiteKeySecret, !Ref SiteKeySecret, !Ref SecretArn]
 
   HeartbeatFunction:
     Type: AWS::Lambda::Function
@@ -484,7 +523,7 @@ Resources:
       Environment:
         Variables:
           SITE_ID: !Ref SiteId
-          NORG_SITE_KEY: !Ref SiteKey
+          NORG_SECRET_ARN: !If [CreateSiteKeySecret, !Ref SiteKeySecret, !Ref SecretArn]
           NORG_API_URL: !Ref NorgApiUrl
           EDGE_ENV: !Ref NorgEnvironment
       Code:

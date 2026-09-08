@@ -125,8 +125,7 @@ test("a refusal arriving on the DEFERRED refresh revokes the next request", asyn
   const served = await getBotFeed(ENV);
   assert.equal(served.entitled, true, "this request still serves from the stale entry");
 
-  // The flush is non-blocking for a queue this small (that is the point of
-  // deferring), so give the background refresh an event-loop turn to land.
+  // The refresh is already in flight; the flush is the bounded wait for it.
   await flushDeferred();
   await new Promise((resolve) => setTimeout(resolve, 20));
 
@@ -192,8 +191,12 @@ test("a stale entitled feed is served now and refreshed behind the response", as
   const feed = await getBotFeed(ENV);
 
   assert.equal(feed.patterns[0].pattern, "old", "the stale entry answers immediately");
-  assert.equal(calls.length, 0, "the refresh must not block the visitor");
   assert.equal(deferredState().pending, 1, "the refresh is deferred, not dropped");
+  // Deferred work STARTS at the point of deferral rather than at the flush, so
+  // the refresh is already in flight here, overlapping the rest of the
+  // pipeline. What matters is that the visitor was answered from the stale
+  // entry above without waiting for it — issued is not the same as awaited.
+  assert.equal(calls.length, 1, "the refresh is already on its way");
 });
 
 test("a stale NEGATIVE feed re-probes rather than serving stale", async () => {

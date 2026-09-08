@@ -25,6 +25,7 @@ __export(edge_router_lambda_exports, {
   __test_WATCHDOG_MS: () => WATCHDOG_MS,
   __test_isHealthProbe: () => isHealthProbe,
   __test_isPassthrough: () => isPassthrough,
+  __test_primeSecretCache: () => __primeSecretCache,
   __test_serveStrippedOrigin: () => serveStrippedOrigin,
   default: () => edge_router_lambda_default,
   handleRequest: () => handleRequest,
@@ -115,7 +116,9 @@ var LOOP_GUARD_HEADER = "x-norg-edge";
 var HEALTH_CHECK_HEADER = "x-norg-edge-check";
 var MIRROR_FETCH_TIMEOUT_MS = 4e3;
 var PATTERN_FETCH_TIMEOUT_MS = 5e3;
-var CONTROL_CALL_TIMEOUT_MS = 3e3;
+var DEFERRED_CALL_TIMEOUT_MS = 1200;
+var DEFERRED_FLUSH_BUDGET_MS = 1500;
+var DEFERRED_SWEEP_BUDGET_MS = 200;
 var MCP_FORWARD_TIMEOUT_MS = 3e3;
 var RESPONSE_CACHE_DEFAULT_TTL_SECONDS = 300;
 var PATTERN_DEFAULT_TTL_MS = 3600 * 1e3;
@@ -242,10 +245,15 @@ var STATIC_ASSET_SUFFIXES = /* @__PURE__ */ new Set([
 ]);
 
 // aws/lambda/lib/config.js
-var EDGE_SCRIPT_VERSION = "0.3.0";
+var EDGE_SCRIPT_VERSION = "0.5.1";
 var CONFIG_HEADERS = {
   "x-norg-site-id": "SITE_ID",
-  "x-norg-site-key": "NORG_SITE_KEY",
+  "x-norg-secret-arn": "NORG_SECRET_ARN",
+  // Authorises the health probe and nothing else. Deliberately NOT the site
+  // key: operators are told to send this over the wire, and the old header
+  // compared against the key itself, which put a NORG credential into curl
+  // history, proxy logs, and — on a failing probe — the customer's origin.
+  "x-norg-probe-token": "PROBE_TOKEN",
   "x-norg-api-url": "NORG_API_URL",
   "x-norg-content-base": "NORG_CONTENT_BASE",
   "x-norg-strip-fallback": "STRIP_FALLBACK_ENABLED",
@@ -257,16 +265,133 @@ var CONFIG_HEADERS = {
   // it is off unless an install explicitly asks for it. See telemetry.js.
   "x-norg-events-verbose": "EDGE_EVENTS_VERBOSE"
 };
+function scrubConfigHeaders(cfRequest) {
+  const customHeaders = cfRequest?.origin?.custom?.customHeaders;
+  if (customHeaders) {
+    for (const header of Object.keys(CONFIG_HEADERS)) delete customHeaders[header];
+  }
+  if (cfRequest?.headers) delete cfRequest.headers[HEALTH_CHECK_HEADER];
+  return cfRequest;
+}
 function readConfig(cfRequest) {
   const customHeaders = cfRequest.origin?.custom?.customHeaders;
+  const probeHeader = cfRequest.headers?.[HEALTH_CHECK_HEADER]?.[0]?.value;
   const env = { EDGE_SCRIPT_VERSION, EDGE_PLATFORM: "cloudfront" };
-  if (!customHeaders) return env;
+  if (probeHeader !== void 0) env.PROBE_HEADER = probeHeader;
+  if (!customHeaders) {
+    scrubConfigHeaders(cfRequest);
+    return env;
+  }
   for (const [header, name] of Object.entries(CONFIG_HEADERS)) {
     const value = customHeaders[header]?.[0]?.value;
     if (value !== void 0) env[name] = value;
-    delete customHeaders[header];
   }
+  scrubConfigHeaders(cfRequest);
   return env;
+}
+
+// aws/lambda/lib/secret.js
+var CACHE_TTL_MS = 15 * 60 * 1e3;
+var SECRET_TIMEOUT_MS = 1500;
+var SECRET_REGION = "us-east-1";
+var cached = { value: null, fetchedAt: 0 };
+function __primeSecretCache(value) {
+  cached = { value, fetchedAt: Date.now() };
+}
+function loadClient() {
+  return require("@aws-sdk/client-secrets-manager");
+}
+function parseSecret(secretString) {
+  if (!secretString) return null;
+  const trimmed = secretString.trim();
+  if (!trimmed.startsWith("{")) return trimmed || null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed?.NORG_SITE_KEY || parsed?.site_key || null;
+  } catch (e) {
+    return null;
+  }
+}
+async function getSiteKey(env) {
+  const arn = env?.NORG_SECRET_ARN;
+  if (!arn) return null;
+  const age = Date.now() - cached.fetchedAt;
+  if (cached.value && age < CACHE_TTL_MS) return cached.value;
+  try {
+    const { SecretsManagerClient, GetSecretValueCommand } = loadClient();
+    const client = new SecretsManagerClient({ region: SECRET_REGION });
+    const result = await client.send(new GetSecretValueCommand({ SecretId: arn }), {
+      abortSignal: AbortSignal.timeout(SECRET_TIMEOUT_MS)
+    });
+    const value = parseSecret(result?.SecretString);
+    if (!value) return null;
+    cached = { value, fetchedAt: Date.now() };
+    return value;
+  } catch (e) {
+    console.error("norg site key fetch failed", e);
+    return null;
+  }
+}
+
+// aws/lambda/lib/response-cache.js
+var MAX_ENTRY_BYTES = 256 * 1024;
+var MAX_TOTAL_BYTES = 16 * 1024 * 1024;
+var DEFAULT_TTL_SECONDS = 300;
+var store = /* @__PURE__ */ new Map();
+var totalBytes = 0;
+function cacheContext(env, feed, keySuffix) {
+  const rc = feed && feed.responseCache;
+  if (!rc || !rc.enabled) return null;
+  const version = feed.contentVersion;
+  if (!version || !env || !env.SITE_ID) return null;
+  return {
+    key: `${env.SITE_ID}/${version}${keySuffix}`,
+    ttl: rc.ttl ?? DEFAULT_TTL_SECONDS
+  };
+}
+function readCached(ctx) {
+  if (!ctx) return null;
+  try {
+    const hit = store.get(ctx.key);
+    if (!hit) return null;
+    if (Date.now() >= hit.expiresAt) {
+      store.delete(ctx.key);
+      totalBytes -= hit.body.byteLength;
+      return null;
+    }
+    store.delete(ctx.key);
+    store.set(ctx.key, hit);
+    const headers = hit.contentType ? { "content-type": hit.contentType } : void 0;
+    return new Response(hit.body, { status: 200, headers });
+  } catch (e) {
+    console.error("norg mirror cache read failed", e);
+    return null;
+  }
+}
+function writeCached(ctx, body, contentType) {
+  if (!ctx || !body) return;
+  try {
+    if (body.byteLength > MAX_ENTRY_BYTES) return;
+    const existing = store.get(ctx.key);
+    if (existing) {
+      store.delete(ctx.key);
+      totalBytes -= existing.body.byteLength;
+    }
+    store.set(ctx.key, {
+      body,
+      contentType: contentType || null,
+      expiresAt: Date.now() + ctx.ttl * 1e3
+    });
+    totalBytes += body.byteLength;
+    for (const [key, entry] of store) {
+      if (totalBytes <= MAX_TOTAL_BYTES) break;
+      if (key === ctx.key) continue;
+      store.delete(key);
+      totalBytes -= entry.body.byteLength;
+    }
+  } catch (e) {
+    console.error("norg mirror cache write failed", e);
+  }
 }
 
 // core/config.js
@@ -288,9 +413,6 @@ function controlHeaders(env) {
 function contentStem(env) {
   const base = binding(env, "NORG_CONTENT_BASE").replace(/\/+$/, "");
   return `${base}/${env.SITE_ID || ""}`;
-}
-function isConfigured(env) {
-  return Boolean(env.SITE_ID && env.NORG_SITE_KEY);
 }
 
 // workers/lib/classify.mjs
@@ -475,40 +597,29 @@ function anonymousClassification() {
 }
 
 // core/deferred.js
-var MAX_PENDING = 25;
-var MAX_PENDING_AGE_MS = 30 * 1e3;
-var FLUSH_AWAIT_TIMEOUT_MS = 1500;
-var pending = [];
 var inFlight = [];
 function defer(task) {
-  pending.push({ task, queuedAt: Date.now() });
-}
-function mustAwaitFlush() {
-  if (pending.length >= MAX_PENDING) return true;
-  const oldest = pending[0];
-  return Boolean(oldest && Date.now() - oldest.queuedAt > MAX_PENDING_AGE_MS);
-}
-async function flushDeferred() {
-  inFlight = inFlight.filter((entry) => entry.settled !== true);
-  if (pending.length === 0) return;
-  const blocking = mustAwaitFlush();
-  const batch = pending;
-  pending = [];
-  const started = batch.map(({ task }) => {
-    const entry = { settled: false };
-    entry.promise = Promise.resolve().then(task).catch((error) => {
-      console.error("norg edge deferred task failed", error);
-    }).finally(() => {
-      entry.settled = true;
-    });
-    inFlight.push(entry);
-    return entry.promise;
+  const entry = { settled: false };
+  entry.promise = Promise.resolve().then(task).catch((error) => {
+    console.error("norg edge deferred task failed", error);
+  }).finally(() => {
+    entry.settled = true;
   });
-  if (!blocking) return;
+  inFlight.push(entry);
+}
+async function flushDeferred({
+  budgetMs = DEFERRED_FLUSH_BUDGET_MS
+} = {}) {
+  const outstanding = inFlight.filter((entry) => entry.settled !== true);
+  inFlight = outstanding;
+  if (outstanding.length === 0) return;
   await Promise.race([
-    Promise.allSettled(started),
-    new Promise((resolve) => setTimeout(resolve, FLUSH_AWAIT_TIMEOUT_MS))
+    Promise.allSettled(outstanding.map((entry) => entry.promise)),
+    new Promise((resolve) => setTimeout(resolve, budgetMs))
   ]);
+}
+async function sweepDeferred() {
+  return flushDeferred({ budgetMs: DEFERRED_SWEEP_BUDGET_MS });
 }
 
 // core/feed.js
@@ -1056,7 +1167,7 @@ async function postControl(env, path, body) {
       method: "POST",
       headers: controlHeaders(env),
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(CONTROL_CALL_TIMEOUT_MS)
+      signal: AbortSignal.timeout(DEFERRED_CALL_TIMEOUT_MS)
     });
   } catch (e) {
     console.error("norg edge control call failed", path, e);
@@ -1136,8 +1247,8 @@ function requestRender(env, url) {
 var WATCHDOG_MS = 2e4;
 var MAX_INLINE_MIRROR_BYTES = 850 * 1024;
 function isHealthProbe(request, env) {
-  const probeKey = request.headers.get(HEALTH_CHECK_HEADER);
-  return Boolean(probeKey && env.NORG_SITE_KEY && probeKey === env.NORG_SITE_KEY);
+  const probeKey = env.PROBE_HEADER;
+  return Boolean(probeKey && env.PROBE_TOKEN && probeKey === env.PROBE_TOKEN);
 }
 function isPassthrough(request, env) {
   if (binding(env, "EDGE_DISABLED") === "true") return true;
@@ -1187,7 +1298,7 @@ async function forwardMcpToNorg(request, env, url) {
     return null;
   }
 }
-async function serveMirror(cfRequest, response, env, url, keySuffix) {
+async function serveMirror(cfRequest, response, env, url, keySuffix, ctx = null) {
   const switchOrigin = () => switchOriginToNorg(cfRequest, contentStem(env), keySuffix, receptionistHeaders(env));
   const declaredLength = response.headers.get("content-length");
   if (declaredLength !== null) {
@@ -1196,15 +1307,18 @@ async function serveMirror(cfRequest, response, env, url, keySuffix) {
   }
   const buffered = Buffer.from(await response.arrayBuffer());
   if (buffered.byteLength > MAX_INLINE_MIRROR_BYTES) return switchOrigin();
+  writeCached(ctx, buffered, response.headers.get("content-type"));
   const inlined = new Response(buffered, { status: 200, headers: response.headers });
   return withAlternateFormatHeaders(mirrorResponse(inlined, env), url, url.pathname);
 }
-async function serveAgent(cfRequest, request, env, url, classification) {
+async function serveAgent(cfRequest, request, env, url, classification, feed) {
   const keySuffix = pathToKeySuffix(url.pathname);
-  const { response, missing } = await fetchFromNorg(env, keySuffix);
+  const ctx = cacheContext(env, feed, keySuffix);
+  const cached2 = readCached(ctx);
+  const { response, missing } = cached2 ? { response: cached2, missing: false } : await fetchFromNorg(env, keySuffix);
   if (response) {
     logEdgeEvent(env, request, classification, "mirror", null, response.status);
-    return await serveMirror(cfRequest, response, env, url, keySuffix);
+    return await serveMirror(cfRequest, response, env, url, keySuffix, cached2 ? null : ctx);
   }
   if (missing && binding(env, "LAZY_RENDER_ENABLED") !== "false") {
     requestRender(env, url);
@@ -1230,25 +1344,29 @@ async function serveStrippedOrigin(cfRequest, request, env, classification) {
   logEdgeEvent(env, request, classification, "stripped", rawWordCount, origin.status);
   return strippedResponse(stripped, origin.status, env);
 }
-async function serveAgenticPath(cfRequest, request, env, url, prefix) {
+async function serveAgenticPath(cfRequest, request, env, url, prefix, feed) {
   const innerPath = url.pathname.slice(prefix.length) || "/";
   const keySuffix = pathToKeySuffix(innerPath);
-  const { response } = await fetchFromNorg(env, keySuffix);
+  const ctx = cacheContext(env, feed, keySuffix);
+  const cached2 = readCached(ctx);
+  const { response } = cached2 ? { response: cached2 } : await fetchFromNorg(env, keySuffix);
   const classification = anonymousClassification();
   if (!response) {
     logEdgeEvent(env, request, classification, "agentic_path_miss", null, null);
     return PASSTHROUGH;
   }
   logEdgeEvent(env, request, classification, "agentic_path", null, response.status);
-  return await serveMirror(cfRequest, response, env, url, keySuffix);
+  return await serveMirror(cfRequest, response, env, url, keySuffix, cached2 ? null : ctx);
 }
-async function serveAgentOverride(cfRequest, request, env, url) {
+async function serveAgentOverride(cfRequest, request, env, url, feed) {
   const classification = agentOverrideClassification();
   const keySuffix = pathToKeySuffix(url.pathname);
-  const { response } = await fetchFromNorg(env, keySuffix);
+  const ctx = cacheContext(env, feed, keySuffix);
+  const cached2 = readCached(ctx);
+  const { response } = cached2 ? { response: cached2 } : await fetchFromNorg(env, keySuffix);
   if (response) {
     logEdgeEvent(env, request, classification, "agent_param_override", null, response.status);
-    return await serveMirror(cfRequest, response, env, url, keySuffix);
+    return await serveMirror(cfRequest, response, env, url, keySuffix, cached2 ? null : ctx);
   }
   logEdgeEvent(env, request, classification, "agent_param_override_miss", null, null);
   return PASSTHROUGH;
@@ -1277,13 +1395,15 @@ async function handleRequest(cfRequest, env) {
   if (isPassthrough(request, env)) return PASSTHROUGH;
   const url = new URL(request.url);
   const userAgent = request.headers.get("user-agent") || "";
+  env.NORG_SITE_KEY = await getSiteKey(env);
+  if (!env.NORG_SITE_KEY) return PASSTHROUGH;
   const feed = await getBotFeed(env);
   if (!feed.entitled) return PASSTHROUGH;
   const owned = await serveNorgOwnedSurface(cfRequest, request, env, url);
   if (owned) return owned;
   if (isAgenticPath(url.pathname, feed.agenticPathPrefix)) {
     maybeHeartbeat(env, "traffic");
-    return serveAgenticPath(cfRequest, request, env, url, feed.agenticPathPrefix);
+    return serveAgenticPath(cfRequest, request, env, url, feed.agenticPathPrefix, feed);
   }
   if (isSiblingArtifactPath(url.pathname)) {
     if (isSkippedPath(feed, siblingPageOf(url.pathname))) return PASSTHROUGH;
@@ -1294,7 +1414,7 @@ async function handleRequest(cfRequest, env) {
   if (isTraditionalSearchBot(userAgent)) return PASSTHROUGH;
   if (hasAgentOverride(url)) {
     maybeHeartbeat(env, "traffic");
-    return serveAgentOverride(cfRequest, request, env, url);
+    return serveAgentOverride(cfRequest, request, env, url, feed);
   }
   const classification = classifyAgent(userAgent, feed.patterns);
   if (!classification.is_ai_bot) return PASSTHROUGH;
@@ -1303,16 +1423,16 @@ async function handleRequest(cfRequest, env) {
     return PASSTHROUGH;
   }
   maybeHeartbeat(env, "traffic");
-  return serveAgent(cfRequest, request, env, url, classification);
+  return serveAgent(cfRequest, request, env, url, classification, feed);
 }
 async function handler(event) {
   const cfRequest = event.Records[0].cf.request;
   let pristine = cfRequest;
   try {
-    pristine = structuredClone(cfRequest);
-    const flushed = flushDeferred();
+    scrubConfigHeaders(pristine = structuredClone(cfRequest));
+    const swept = sweepDeferred();
     const env = readConfig(cfRequest);
-    if (!isConfigured(env)) return cfRequest;
+    if (!env.SITE_ID || !env.NORG_SECRET_ARN) return cfRequest;
     let watchdog;
     const result = await Promise.race([
       handleRequest(cfRequest, env),
@@ -1320,14 +1440,16 @@ async function handler(event) {
         watchdog = setTimeout(() => resolve(PASSTHROUGH), WATCHDOG_MS);
       })
     ]).finally(() => clearTimeout(watchdog));
-    await flushed;
+    await swept;
     await flushDeferred();
     if (result === PASSTHROUGH) return passthrough(alignHostToOrigin(cfRequest));
     const response = await toCloudFrontResponse(result);
-    return response || passthrough(alignHostToOrigin(pristine));
+    return response || passthrough(alignHostToOrigin(scrubConfigHeaders(pristine)));
   } catch (e) {
     console.error("norg edge router error", e);
-    return pristine;
+    await flushDeferred().catch(() => {
+    });
+    return scrubConfigHeaders(pristine);
   }
 }
 var edge_router_lambda_default = handler;
@@ -1337,6 +1459,7 @@ var edge_router_lambda_default = handler;
   __test_WATCHDOG_MS,
   __test_isHealthProbe,
   __test_isPassthrough,
+  __test_primeSecretCache,
   __test_serveStrippedOrigin,
   handleRequest,
   handler

@@ -4,7 +4,12 @@
  * @description Builds Lambda@Edge events and routes a stubbed global fetch.
  */
 
+import { __primeSecretCache } from "../lambda/lib/secret.js";
+
 export const SITE_ID = "site-1";
+export const SECRET_ARN =
+  "arn:aws:secretsmanager:us-east-1:123456789012:secret:norg-edge-test-AbCdEf";
+export const PROBE_TOKEN = "nprobe_test_token";
 export const SITE_KEY = "nek_live_testkey";
 export const CONTENT_BASE = "https://edge-content.test.norg.ai";
 export const API_URL = "https://api.test.norg.ai";
@@ -40,6 +45,8 @@ export const FEED = {
   agentic_path_prefix: "/ai",
   skip_paths: ["/checkout"],
   content_version: "1730000000",
+  // Off by default so existing assertions still count receptionist fetches.
+  // A test that wants the cache passes feedOverrides to turn it on.
   response_cache: { enabled: false, ttl: 300 },
   cache_ttl: 3600,
 };
@@ -80,7 +87,10 @@ export function cloudFrontEvent({
 
   const installConfig = {
     "x-norg-site-id": SITE_ID,
-    "x-norg-site-key": SITE_KEY,
+    // The key is no longer a header — it comes from Secrets Manager. Tests
+    // prime the module cache (see primeSiteKey below) rather than reaching AWS.
+    "x-norg-secret-arn": SECRET_ARN,
+    "x-norg-probe-token": PROBE_TOKEN,
     "x-norg-api-url": API_URL,
     "x-norg-content-base": CONTENT_BASE,
     "x-norg-env": "test",
@@ -192,3 +202,19 @@ export const isPassthroughResult = (result) => typeof result.status !== "string"
  * @returns {?string} Header value, or null.
  */
 export const header = (response, name) => response.headers?.[name]?.[0]?.value ?? null;
+
+
+/**
+ * Put a site key in the module cache so a test never reaches Secrets Manager.
+ *
+ * @param {?string} value Key to serve, or null to simulate a failed fetch.
+ * @returns {void}
+ */
+export function primeSiteKey(value = SITE_KEY) {
+  __primeSecretCache(value);
+}
+
+// Primed on import, because almost every test in this suite exercises a path
+// that needs a key and none of them may touch AWS. A test that wants the
+// no-key behaviour calls primeSiteKey(null) itself.
+primeSiteKey();
