@@ -98,7 +98,8 @@ import {
   mayDivert,
   verifiedSource,
 } from "../../core/agent.js";
-import { getBotFeed, isEntitled, knownAgenticPathPrefix } from "../../core/feed.js";
+import { fastPathExit } from "../../core/fastpath.js";
+import { getBotFeed, isEntitled } from "../../core/feed.js";
 import { clientIp, passthrough as toPassthrough, toCloudFrontResponse, toRequest } from "./lib/event.js";
 import {
   PASSTHROUGH,
@@ -118,12 +119,10 @@ import {
 } from "../../core/norg.js";
 import {
   hasAgentOverride,
-  hasSignatureHeaders,
   isDiscoveryPath,
   isMcpPath,
   isNorgOwnedArtifactPath,
   isOpenAiFeedPath,
-  isOrdinaryBrowser,
   isReservedNorgPath,
   isSiblingArtifactPath,
   isSkippedPath,
@@ -132,7 +131,7 @@ import {
   siblingPageOf,
 } from "../../core/paths.js";
 import { countVisibleWords, stripHtml } from "../../core/strip.js";
-import { fireEdgeEvent } from "../../core/telemetry.js";
+import { reportPassthrough } from "../../core/telemetry.js";
 import { visitHeader } from "../../core/visit.js";
 
 // Leaves a margin under Lambda@Edge's 30s origin-request ceiling. Hitting the
@@ -143,10 +142,6 @@ const WATCHDOG_MS = 20_000;
 // generated response, which CloudFront caps at 1 MB.
 const MAX_INLINE_MIRROR_BYTES = 850 * 1024;
 
-// How long an agent request waits for a stale feed to refresh before being
-// answered from the stale entry. A deferred refresh is lost when the container
-// freezes, so on this provider it is awaited — by agents only, never humans.
-const STALE_FEED_REFRESH_BUDGET_MS = 2000;
 
 /**
  * Is this an authenticated health probe rather than a real visit?
@@ -506,40 +501,6 @@ async function serveNorgOwnedSurface(cfRequest, request, env, url) {
 }
 
 /**
- * Is this a path NORG answers by URL, for every caller?
- *
- * These need the feed even for a human, so they never take the fast path.
- * The agentic prefix is the one the container last learned; on a cold
- * container that is the default, which is rule-1 safe.
- *
- * @param {string} pathname Request pathname.
- * @returns {boolean} True when the router, not the origin, may own the path.
- */
-function isNorgSurface(pathname) {
-  return (
-    isNorgOwnedArtifactPath(pathname) ||
-    isSiblingArtifactPath(pathname) ||
-    isAgenticPath(pathname, knownAgenticPathPrefix())
-  );
-}
-
-/**
- * Is this an ordinary person in a browser, asking for an ordinary page?
- *
- * The one test that keeps humans off every lookup. Anything that might be an
- * agent — a bot-shaped user agent, a Web Bot Auth signature, the ?agent=true
- * override — answers false and runs the real sequence.
- *
- * @param {Request} request Incoming request.
- * @param {URL} url Parsed request URL.
- * @param {string} userAgent Raw User-Agent header.
- * @returns {boolean} True for a plain human page view.
- */
-function isPlainHuman(request, url, userAgent) {
-  return isOrdinaryBrowser(userAgent) && !hasAgentOverride(url) && !hasSignatureHeaders(request);
-}
-
-/**
  * Report a human passthrough, entirely off the visitor's path.
  *
  * Opt-in, and best-effort by design: the fast path never fetched the site
@@ -550,12 +511,11 @@ function isPlainHuman(request, url, userAgent) {
  * @param {Request} request Incoming request.
  * @returns {void}
  */
-function reportPassthrough(env, request) {
-  if (binding(env, "EDGE_EVENTS_VERBOSE") !== "true") return;
+function reportHumanPassthrough(env, request) {
+  if (env.EDGE_EVENTS_VERBOSE !== "true") return;
   getSiteKey(env)
     .then((key) => {
-      if (!key) return;
-      fireEdgeEvent({ ...env, NORG_SITE_KEY: key }, request, anonymousClassification(), "origin");
+      if (key) reportPassthrough({ ...env, NORG_SITE_KEY: key }, request, anonymousClassification());
     })
     .catch(() => {});
 }
@@ -582,13 +542,10 @@ export async function handleRequest(cfRequest, env) {
 
   // The human fast path: no secret, no feed, no NORG. A passthrough event is
   // sent only when the install opts in, and even then it is never awaited.
-  if (!isNorgSurface(url.pathname)) {
-    if (isStaticAssetPath(url.pathname)) return PASSTHROUGH;
-    if (isTraditionalSearchBot(userAgent)) return PASSTHROUGH;
-    if (isPlainHuman(request, url, userAgent)) {
-      reportPassthrough(env, request);
-      return PASSTHROUGH;
-    }
+  const exit = fastPathExit(request, url, userAgent);
+  if (exit) {
+    if (exit === "human") reportHumanPassthrough(env, request);
+    return PASSTHROUGH;
   }
 
   // Entitlement gate. Everything below this line serves NORG content or alters
@@ -602,13 +559,10 @@ export async function handleRequest(cfRequest, env) {
   env.NORG_SITE_KEY = await getSiteKey(env);
   if (!env.NORG_SITE_KEY) return PASSTHROUGH;
 
-  // A stale feed is refreshed inline: a deferred refresh would be lost when
-  // the container freezes. Only bot-shaped requests reach this line, so the
-  // wait falls on an agent, never a person.
-  const feed = await getBotFeed(env, {
-    awaitStaleRefresh: true,
-    budgetMs: STALE_FEED_REFRESH_BUDGET_MS,
-  });
+  // A stale feed is refreshed inline here (no keep-alive on this platform, so
+  // a background refresh would be lost when the container freezes). Only
+  // bot-shaped requests reach this line, so the wait falls on an agent.
+  const feed = await getBotFeed(env);
   if (!feed.entitled) return PASSTHROUGH;
 
   const owned = await serveNorgOwnedSurface(cfRequest, request, env, url);

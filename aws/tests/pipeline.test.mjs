@@ -15,7 +15,6 @@ import { afterEach, test } from "node:test";
 
 import { handler } from "../lambda/edge-router-lambda.js";
 import { __test_getFeed, __test_setFeed } from "../../core/feed.js";
-import { __test_reset as resetTelemetry } from "../../core/telemetry.js";
 import {
   CHROME_UA,
   CONTENT_BASE,
@@ -41,7 +40,6 @@ const realFetch = globalThis.fetch;
 afterEach(() => {
   globalThis.fetch = realFetch;
   __test_setFeed(null);
-  resetTelemetry();
 });
 
 /**

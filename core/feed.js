@@ -9,16 +9,17 @@
  * Until one authenticated call succeeds, the router changes nothing at all.
  *
  * The Cloudflare worker caches this at two levels — in-isolate, then in the
- * colo's Cache API. Lambda@Edge has no programmatic cache, so only the
- * in-container level survives. Two things compensate:
+ * colo's Cache API. The other platforms have no programmatic cache, so only
+ * the in-instance level survives. Two things compensate:
  *
  *  1. A conditional request (`If-None-Match`). Lambda containers are more
  *     numerous and shorter-lived than Workers isolates, so the feed would
  *     otherwise be refetched far more often; a 304 costs NORG almost nothing
  *     and refreshes the entry without re-parsing it.
- *  2. The stale-while-revalidate path defers its refresh (see deferred.js)
- *     rather than dropping it, so a stale-but-entitled install still answers
- *     immediately and neither a slow NORG nor a NORG outage adds latency.
+ *  2. A stale-but-entitled entry is refreshed behind the response where the
+ *     platform can keep the instance alive for it (`env.EDGE_KEEPALIVE`), and
+ *     inline within a small budget where it cannot — only ever on a request
+ *     that has already left the human fast path.
  *
  * The distinction the whole module is built around: a REFUSAL (401/403) is NORG
  * saying this install may not serve and is obeyed at once; a timeout or network
@@ -35,7 +36,10 @@ import {
   UNENTITLED_TTL_MS,
 } from "./constants.mjs";
 import { binding, controlHeaders } from "./config.js";
-import { defer } from "./deferred.js";
+
+// How long an inline refresh of a stale feed may hold an agent's request
+// before the stale entry answers instead.
+const STALE_REFRESH_BUDGET_MS = 2000;
 
 // The authenticated feed for this container. Starts unentitled: nothing is
 // served differently until NORG has confirmed this install at least once.
@@ -151,31 +155,29 @@ export async function refreshFeed(env) {
 /**
  * Get the authenticated feed, preferring speed over freshness.
  *
- * A stale-but-entitled entry is served immediately with the refresh deferred,
- * so neither a slow NORG nor a NORG outage adds latency or withdraws a working
- * install. A fresh negative verdict short-circuits with no network call; a
- * STALE negative one deliberately does not, so re-entitlement lands within a
- * minute of NORG allowing it again.
+ * A fresh negative verdict short-circuits with no network call; a STALE
+ * negative one deliberately does not, so re-entitlement lands within a minute
+ * of NORG allowing it again. A NORG outage never withdraws a working install.
  *
- * `awaitStaleRefresh` is for a runtime with no deferred-work primitive, where
- * a deferred refresh is lost the moment the handler returns: the refresh is
- * awaited inline within `budgetMs`, and the stale entry still answers if the
- * budget runs out. Only a caller that has already decided the visitor may pay
- * (an agent, never a human) should set it.
+ * A stale entitled entry is refreshed behind the response when the adapter
+ * provides a keep-alive (`env.EDGE_KEEPALIVE`, a function taking a promise),
+ * because a background refresh is only safe where the platform holds the
+ * instance open for it. Without one the refresh is awaited inline within
+ * `budgetMs`, and the stale entry still answers if the budget runs out. Every
+ * caller has already left the human fast path, so the wait is an agent's.
  *
  * @param {Object} env Install config.
  * @param {Object} [options] Refresh options.
- * @param {boolean} [options.awaitStaleRefresh] Refresh a stale entry inline.
  * @param {number} [options.budgetMs] How long an inline refresh may take.
  * @returns {Promise<Object>} Feed with entitled, patterns and cidrRanges.
  */
-export async function getBotFeed(env, { awaitStaleRefresh = false, budgetMs = 2000 } = {}) {
+export async function getBotFeed(env, { budgetMs = STALE_REFRESH_BUDGET_MS } = {}) {
   const now = Date.now();
   if (feedCache.fetchedAt && now - feedCache.fetchedAt < feedCache.ttl) return feedCache;
 
   if (feedCache.entitled) {
-    if (awaitStaleRefresh) await refreshWithin(env, budgetMs);
-    else defer(() => refreshFeed(env));
+    if (typeof env.EDGE_KEEPALIVE === "function") env.EDGE_KEEPALIVE(refreshFeed(env));
+    else await refreshWithin(env, budgetMs);
     return feedCache;
   }
 

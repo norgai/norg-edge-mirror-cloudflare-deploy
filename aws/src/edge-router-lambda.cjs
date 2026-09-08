@@ -608,19 +608,8 @@ function anonymousClassification() {
   return { is_ai_bot: false, bot_name: null, company: null, purpose: null };
 }
 
-// core/deferred.js
-var inFlight = [];
-function defer(task) {
-  const entry = { settled: false };
-  entry.promise = Promise.resolve().then(task).catch((error) => {
-    console.error("norg edge deferred task failed", error);
-  }).finally(() => {
-    entry.settled = true;
-  });
-  inFlight.push(entry);
-}
-
 // core/feed.js
+var STALE_REFRESH_BUDGET_MS = 2e3;
 var feedCache = {
   entitled: false,
   patterns: [],
@@ -692,12 +681,12 @@ async function refreshFeed(env) {
   feedCache = entry;
   return { outcome: "ok", entry };
 }
-async function getBotFeed(env, { awaitStaleRefresh = false, budgetMs = 2e3 } = {}) {
+async function getBotFeed(env, { budgetMs = STALE_REFRESH_BUDGET_MS } = {}) {
   const now = Date.now();
   if (feedCache.fetchedAt && now - feedCache.fetchedAt < feedCache.ttl) return feedCache;
   if (feedCache.entitled) {
-    if (awaitStaleRefresh) await refreshWithin(env, budgetMs);
-    else defer(() => refreshFeed(env));
+    if (typeof env.EDGE_KEEPALIVE === "function") env.EDGE_KEEPALIVE(refreshFeed(env));
+    else await refreshWithin(env, budgetMs);
     return feedCache;
   }
   const { outcome, entry } = await refreshFeed(env);
@@ -722,6 +711,73 @@ function knownAgenticPathPrefix() {
 }
 function isEntitled() {
   return feedCache.entitled;
+}
+
+// core/paths.js
+function isDiscoveryPath(pathname) {
+  return pathname === "/llms.txt" || pathname === "/llms-full.txt" || pathname === "/tree.json" || pathname === "/graph.jsonld" || pathname === "/agents.md";
+}
+function isSiblingArtifactPath(pathname) {
+  return SIBLING_ARTIFACT_FILENAMES.has(pathname.slice(pathname.lastIndexOf("/") + 1));
+}
+function siblingPageOf(pathname) {
+  return pathname.slice(0, pathname.lastIndexOf("/")) || "/";
+}
+function isReservedNorgPath(pathname) {
+  return pathname.startsWith(RESERVED_NORG_PREFIX);
+}
+function isOpenAiFeedPath(pathname) {
+  return OPENAI_FEED_PATHS.has(pathname);
+}
+function isMcpPath(pathname) {
+  return pathname === "/.well-known/mcp.json" || pathname.endsWith("/mcp") || pathname.endsWith("/sse");
+}
+function isNorgOwnedArtifactPath(pathname) {
+  return isMcpPath(pathname) || isDiscoveryPath(pathname) || isReservedNorgPath(pathname) || isOpenAiFeedPath(pathname);
+}
+function isStaticAssetPath(pathname) {
+  const lastSlash = pathname.lastIndexOf("/");
+  const segment = lastSlash === -1 ? pathname : pathname.slice(lastSlash + 1);
+  const dot = segment.lastIndexOf(".");
+  if (dot <= 0 || dot === segment.length - 1) return false;
+  return STATIC_ASSET_SUFFIXES.has(segment.slice(dot).toLowerCase());
+}
+function normaliseSkipPath(pathname) {
+  if (pathname.length <= 1) return pathname;
+  const collapsed = pathname.replace(/\/{2,}/g, "/");
+  return collapsed.replace(/\/+$/, "") || "/";
+}
+function isSkippedPath(feed, pathname) {
+  return Boolean(feed.skipPaths && feed.skipPaths.includes(normaliseSkipPath(pathname)));
+}
+function isTraditionalSearchBot(userAgent) {
+  const ua = (userAgent || "").toLowerCase();
+  return TRADITIONAL_SEARCH_BOTS.some((bot) => ua.includes(bot));
+}
+function hasAgentOverride(url) {
+  return url.searchParams.get("agent") === "true";
+}
+function isOrdinaryBrowser(userAgent) {
+  if (!userAgent) return false;
+  const ua = userAgent.toLowerCase();
+  if (!ua.startsWith("mozilla/5.0")) return false;
+  if (BOT_MARKERS.some((marker) => ua.includes(marker))) return false;
+  return BROWSER_MARKERS.some((marker) => ua.includes(marker));
+}
+function hasSignatureHeaders(request) {
+  return Boolean(request.headers.get("signature-agent") || request.headers.get("signature-input"));
+}
+
+// core/fastpath.js
+function isNorgSurface(pathname) {
+  return isNorgOwnedArtifactPath(pathname) || isSiblingArtifactPath(pathname) || isAgenticPath(pathname, knownAgenticPathPrefix());
+}
+function fastPathExit(request, url, userAgent) {
+  if (isNorgSurface(url.pathname)) return null;
+  if (isStaticAssetPath(url.pathname)) return "static";
+  if (isTraditionalSearchBot(userAgent)) return "search";
+  const plainHuman = isOrdinaryBrowser(userAgent) && !hasAgentOverride(url) && !hasSignatureHeaders(request);
+  return plainHuman ? "human" : null;
 }
 
 // aws/lambda/lib/event.js
@@ -970,61 +1026,6 @@ function healthResponse(env, entitled) {
   );
 }
 
-// core/paths.js
-function isDiscoveryPath(pathname) {
-  return pathname === "/llms.txt" || pathname === "/llms-full.txt" || pathname === "/tree.json" || pathname === "/graph.jsonld" || pathname === "/agents.md";
-}
-function isSiblingArtifactPath(pathname) {
-  return SIBLING_ARTIFACT_FILENAMES.has(pathname.slice(pathname.lastIndexOf("/") + 1));
-}
-function siblingPageOf(pathname) {
-  return pathname.slice(0, pathname.lastIndexOf("/")) || "/";
-}
-function isReservedNorgPath(pathname) {
-  return pathname.startsWith(RESERVED_NORG_PREFIX);
-}
-function isOpenAiFeedPath(pathname) {
-  return OPENAI_FEED_PATHS.has(pathname);
-}
-function isMcpPath(pathname) {
-  return pathname === "/.well-known/mcp.json" || pathname.endsWith("/mcp") || pathname.endsWith("/sse");
-}
-function isNorgOwnedArtifactPath(pathname) {
-  return isMcpPath(pathname) || isDiscoveryPath(pathname) || isReservedNorgPath(pathname) || isOpenAiFeedPath(pathname);
-}
-function isStaticAssetPath(pathname) {
-  const lastSlash = pathname.lastIndexOf("/");
-  const segment = lastSlash === -1 ? pathname : pathname.slice(lastSlash + 1);
-  const dot = segment.lastIndexOf(".");
-  if (dot <= 0 || dot === segment.length - 1) return false;
-  return STATIC_ASSET_SUFFIXES.has(segment.slice(dot).toLowerCase());
-}
-function normaliseSkipPath(pathname) {
-  if (pathname.length <= 1) return pathname;
-  const collapsed = pathname.replace(/\/{2,}/g, "/");
-  return collapsed.replace(/\/+$/, "") || "/";
-}
-function isSkippedPath(feed, pathname) {
-  return Boolean(feed.skipPaths && feed.skipPaths.includes(normaliseSkipPath(pathname)));
-}
-function isTraditionalSearchBot(userAgent) {
-  const ua = (userAgent || "").toLowerCase();
-  return TRADITIONAL_SEARCH_BOTS.some((bot) => ua.includes(bot));
-}
-function hasAgentOverride(url) {
-  return url.searchParams.get("agent") === "true";
-}
-function isOrdinaryBrowser(userAgent) {
-  if (!userAgent) return false;
-  const ua = userAgent.toLowerCase();
-  if (!ua.startsWith("mozilla/5.0")) return false;
-  if (BOT_MARKERS.some((marker) => ua.includes(marker))) return false;
-  return BROWSER_MARKERS.some((marker) => ua.includes(marker));
-}
-function hasSignatureHeaders(request) {
-  return Boolean(request.headers.get("signature-agent") || request.headers.get("signature-input"));
-}
-
 // core/strip.js
 var VOID_ELEMENTS = /* @__PURE__ */ new Set([
   "area",
@@ -1263,13 +1264,7 @@ async function postControl(env, path, body) {
     return null;
   }
 }
-function fireEdgeEvent(env, request, classification, served) {
-  if (PASSTHROUGH_SERVED.has(served) && env.EDGE_EVENTS_VERBOSE !== "true") return;
-  const body = eventBody(request, classification, served, null, null);
-  postControl(env, "/api/v1/edge/events", body).catch(() => {
-  });
-}
-function eventBody(request, classification, served, rawWordCount, responseStatus) {
+function eventBody(request, classification, served) {
   const url = new URL(request.url);
   return {
     domain: url.hostname,
@@ -1280,16 +1275,26 @@ function eventBody(request, classification, served, rawWordCount, responseStatus
     company: classification.company,
     purpose: classification.purpose,
     served,
-    raw_word_count: rawWordCount,
-    response_status: responseStatus,
+    raw_word_count: null,
+    response_status: null,
     ...viewerAttributes(request.headers)
   };
+}
+function fireEdgeEvent(env, request, classification, served) {
+  if (PASSTHROUGH_SERVED.has(served) && env.EDGE_EVENTS_VERBOSE !== "true") {
+    return Promise.resolve();
+  }
+  return postControl(env, "/api/v1/edge/events", eventBody(request, classification, served)).then(() => void 0).catch(() => void 0);
+}
+function reportPassthrough(env, request, classification) {
+  if (env.EDGE_EVENTS_VERBOSE !== "true") return;
+  const done = fireEdgeEvent(env, request, classification, "origin");
+  if (typeof env.EDGE_KEEPALIVE === "function") env.EDGE_KEEPALIVE(done);
 }
 
 // aws/lambda/edge-router-lambda.js
 var WATCHDOG_MS = 2e4;
 var MAX_INLINE_MIRROR_BYTES = 850 * 1024;
-var STALE_FEED_REFRESH_BUDGET_MS = 2e3;
 function isHealthProbe(request, env) {
   const probeKey = env.PROBE_HEADER;
   return Boolean(probeKey && env.PROBE_TOKEN && probeKey === env.PROBE_TOKEN);
@@ -1430,17 +1435,10 @@ async function serveNorgOwnedSurface(cfRequest, request, env, url) {
   }
   return null;
 }
-function isNorgSurface(pathname) {
-  return isNorgOwnedArtifactPath(pathname) || isSiblingArtifactPath(pathname) || isAgenticPath(pathname, knownAgenticPathPrefix());
-}
-function isPlainHuman(request, url, userAgent) {
-  return isOrdinaryBrowser(userAgent) && !hasAgentOverride(url) && !hasSignatureHeaders(request);
-}
-function reportPassthrough(env, request) {
-  if (binding(env, "EDGE_EVENTS_VERBOSE") !== "true") return;
+function reportHumanPassthrough(env, request) {
+  if (env.EDGE_EVENTS_VERBOSE !== "true") return;
   getSiteKey(env).then((key) => {
-    if (!key) return;
-    fireEdgeEvent({ ...env, NORG_SITE_KEY: key }, request, anonymousClassification(), "origin");
+    if (key) reportPassthrough({ ...env, NORG_SITE_KEY: key }, request, anonymousClassification());
   }).catch(() => {
   });
 }
@@ -1450,20 +1448,14 @@ async function handleRequest(cfRequest, env) {
   if (isPassthrough(request, env)) return PASSTHROUGH;
   const url = new URL(request.url);
   const userAgent = request.headers.get("user-agent") || "";
-  if (!isNorgSurface(url.pathname)) {
-    if (isStaticAssetPath(url.pathname)) return PASSTHROUGH;
-    if (isTraditionalSearchBot(userAgent)) return PASSTHROUGH;
-    if (isPlainHuman(request, url, userAgent)) {
-      reportPassthrough(env, request);
-      return PASSTHROUGH;
-    }
+  const exit = fastPathExit(request, url, userAgent);
+  if (exit) {
+    if (exit === "human") reportHumanPassthrough(env, request);
+    return PASSTHROUGH;
   }
   env.NORG_SITE_KEY = await getSiteKey(env);
   if (!env.NORG_SITE_KEY) return PASSTHROUGH;
-  const feed = await getBotFeed(env, {
-    awaitStaleRefresh: true,
-    budgetMs: STALE_FEED_REFRESH_BUDGET_MS
-  });
+  const feed = await getBotFeed(env);
   if (!feed.entitled) return PASSTHROUGH;
   const owned = await serveNorgOwnedSurface(cfRequest, request, env, url);
   if (owned) return owned;
