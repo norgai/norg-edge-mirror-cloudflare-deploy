@@ -30,8 +30,17 @@ import { SecretStore } from "fastly:secret-store";
  * Versioned independently of the other providers because it is a separate
  * deployable with its own pin; content-craft compares it against
  * EDGE_WORKER_VERSION_FASTLY.
+ *
+ * 0.2.0 — the same three moves as CloudFront 0.6.0. The page is never cached
+ * at the edge: every page passthrough carries a pass override, only static
+ * assets keep Fastly's cache. The router makes no call of its own to report a
+ * visit: the details ride as a header on the mirror fetch and the receptionist
+ * records the event and enqueues a missing render. Humans never wait on NORG:
+ * an ordinary browser, a search crawler and a static asset are passed through
+ * before the feed is touched. Background work that remains — the stale-feed
+ * refresh and the opt-in passthrough event — goes to event.waitUntil.
  */
-export const EDGE_SCRIPT_VERSION = "0.1.3";
+export const EDGE_SCRIPT_VERSION = "0.2.0";
 
 /** Names of the two stores this install expects. */
 export const CONFIG_STORE_NAME = "norg_edge_config";
