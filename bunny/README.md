@@ -13,8 +13,8 @@ One structural difference dominates everything else, and it is not a detail:
 **a Bunny middleware script runs on a cache MISS only.** The install keeps
 your HTML out of the pull zone's cache so every page request reaches the
 router; read ["The cache is the hazard"](#the-cache-is-the-hazard) before you
-install, because that part has not yet been verified on a live zone from this
-repository.
+install. It was verified on a live zone on 2026-09-08, and the one visible
+change to your site is stated there.
 
 Three things hold here exactly as on every other provider since 0.6.0: an
 ordinary browser, a search crawler and a static asset are answered before the
@@ -155,29 +155,33 @@ bundle. When before-cache execution becomes generally available, moving to
 
 ### The default: one edge rule for HTML
 
-The installer adds an edge rule — `OverrideCacheTime` with a value of `0`,
-triggered by a `Content-Type` response header matching `*text/html*` — so an
-HTML response is never stored at the edge while every asset keeps whatever
-cache time your origin gave it, and your own client-facing `Cache-Control`
-is left alone. The pull zone itself stays at "respect the origin" (`-1`). A
-second rule keeps `private, no-store` on NORG-generated responses.
+The installer adds two edge rules, both triggered by a `Content-Type`
+response header matching `*text/html*`: `OverrideCacheTime` `0`, so an HTML
+response is never stored at the edge, and `OverrideBrowserCacheResponseHeader`
+`private, no-store`, so the browser-facing header on that page is never
+weakened. Every asset keeps whatever cache time and headers your origin gave
+it. The pull zone itself stays at "respect the origin" (`-1`). A third rule
+keeps `private, no-store` on NORG-generated responses.
 
-**Not yet verified on a live zone from this repository.** The rule is written
-from Bunny's edge-rule API. Whether `OverrideCacheTime` `0` on a
-response-header trigger disables caching without rewriting the client-facing
-`Cache-Control` has not been measured here, so check it once DNS points at
-the zone:
+**Verified on a live zone (bunny.foxx.ai, 2026-09-08).** The cache-time rule
+alone stops the edge storing the matched response but makes Bunny rewrite the
+client-facing `Cache-Control` to `public, max-age=0` — measured on a CSS
+asset used as the probe, since that origin's HTML is already `no-store`. The
+header rule on the same trigger sets it to `private, no-store` instead, and
+assets on the zone stayed `public, max-age=31536000, immutable` with
+`cdn-cache: HIT`. So the one visible change to your site is that HTML
+carries `private, no-store` to the browser, whatever your origin sent. Check
+it once DNS points at the zone:
 
 ```bash
 curl -sI https://agents.example.com/ | grep -i 'cdn-cache\|cache-control'
 curl -sI https://agents.example.com/ | grep -i 'cdn-cache\|cache-control'
 ```
 
-Both answers must read `cdn-cache: MISS` and your `Cache-Control` must be the
-one your origin sent. The installer also probes your origin and prints its
-`Cache-Control`, so you can see what the rule has to override: on a dynamic
-site whose HTML is already `no-store`, `no-cache`, `private` or `max-age=0`
-the rule changes nothing and the router already ran on every request.
+Both answers must read `cdn-cache: MISS` with `cache-control: private,
+no-store`. The installer also probes your origin and prints its
+`Cache-Control`, so you can see what the rules change: on a dynamic site
+whose HTML is already `no-store` the router ran on every request regardless.
 
 ### The fallback: `CACHE_BYPASS=true`
 
@@ -189,7 +193,7 @@ Measured on a live zone:
 
 | | Default (HTML rule) | With `CACHE_BYPASS=true` |
 |---|---|---|
-| Your HTML | not cached at the edge; header unchanged (unverified, see above) | not cached; `public, max-age=0` |
+| Your HTML | not cached at the edge; `private, no-store` to the browser | not cached; `public, max-age=0` |
 | Your assets (`public, max-age=31536000, immutable`) | unchanged, cached (`cdn-cache: HIT`) | `public, max-age=0`, not cached |
 | A NORG mirror response | `private, no-store` | `private, no-store`, via the second edge rule |
 
@@ -262,7 +266,7 @@ operator's range.
 | Runs before cache | ✅ | ✅ | ⚠️ **preview only** — MISS-only, so HTML is kept out of the cache by an edge rule | on every page request; the page is never cached |
 | `waitUntil` | ✅ | ✅ | ✅ `Bunny.v1.waitUntil`, for the opt-in passthrough event and feed refresh | ❌ none; nothing needs one |
 | Who records an agent visit | the worker | NORG's content service, from the visit header | **NORG's content service**, from the visit header | NORG's content service, from the visit header |
-| Human page cached at the edge | no | no | **no** (edge rule, unverified live) | no (`CachingDisabled`) |
+| Human page cached at the edge | no | no | **no** (two edge rules, verified on bunny.foxx.ai) | no (`CachingDisabled`) |
 | Generated-response cap | none | none | **none** | 1 MB |
 | HTML rewriter | HTMLRewriter | same engine | **HTMLRewriter present** (unused — `core/strip.js` is provider-neutral) | hand-rolled |
 | Secret storage | Worker secret | write-only Secret Store | **write-only secret** | ⚠️ origin custom header |

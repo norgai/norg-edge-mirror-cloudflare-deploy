@@ -223,6 +223,36 @@ export function htmlNoCacheRule() {
  *
  * @returns {Object} Body for POST /pullzone/{id}/edgerules/addOrUpdate.
  */
+/**
+ * The edge rule that keeps the browser-facing Cache-Control on HTML honest.
+ *
+ * Measured on bunny.foxx.ai on 2026-09-08: an OverrideCacheTime rule stops the
+ * edge caching the response, but Bunny then rewrites the client-facing
+ * Cache-Control to `public, max-age=0` — a weaker header than most origins
+ * send for a page. This second rule, on the same trigger, sets it to
+ * `private, no-store` instead, so a page that is never cached at the edge is
+ * never marked public for a browser or proxy either. Assets are untouched.
+ *
+ * @returns {Object} Edge rule payload for /pullzone/{id}/edgerules/addOrUpdate.
+ */
+export function htmlNoStoreHeaderRule() {
+  return {
+    ActionType: "OverrideBrowserCacheResponseHeader",
+    ActionParameter1: "private, no-store",
+    Description: "NORG: an uncached page is never marked public for the browser either",
+    Enabled: true,
+    TriggerMatchingType: 0,
+    Triggers: [
+      {
+        Type: "ResponseHeader",
+        PatternMatches: ["*text/html*"],
+        PatternMatchingType: 0,
+        Parameter1: "Content-Type",
+      },
+    ],
+  };
+}
+
 export function norgNoStoreRule() {
   return {
     ActionType: "OverrideBrowserCacheResponseHeader",
@@ -270,11 +300,13 @@ async function configurePullZone(zone, scriptId, originUrl) {
   });
   if (!bypass) {
     await api("POST", `/pullzone/${zone.Id}/edgerules/addOrUpdate`, htmlNoCacheRule());
-    console.log("  edge rule: HTML responses are never cached (OverrideCacheTime 0 on Content-Type text/html)");
-    console.log("  NOT YET VERIFIED LIVE from this repository: after DNS points here, run");
-    console.log("    curl -sI https://<hostname>/ twice and confirm cdn-cache: MISS on both,");
-    console.log("    and that your own Cache-Control header is unchanged. If a page comes");
-    console.log("    back cdn-cache: HIT, re-run with CACHE_BYPASS=true (zone-wide, see README).");
+    await api("POST", `/pullzone/${zone.Id}/edgerules/addOrUpdate`, htmlNoStoreHeaderRule());
+    console.log("  edge rules: HTML is never cached at the edge, and its browser-facing");
+    console.log("  Cache-Control becomes private, no-store (Bunny would otherwise rewrite it");
+    console.log("  to public, max-age=0). Assets keep your own headers and their cache.");
+    console.log("  Check once DNS points here: curl -sI https://<hostname>/ twice, expect");
+    console.log("    cdn-cache: MISS on both. If a page comes back HIT, re-run with");
+    console.log("    CACHE_BYPASS=true (zone-wide, see README).");
   }
   await api("POST", `/pullzone/${zone.Id}/edgerules/addOrUpdate`, norgNoStoreRule());
   console.log("  edge rule: NORG responses keep private, no-store");
