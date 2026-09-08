@@ -48,7 +48,7 @@ test("reads every binding from custom origin headers", () => {
   // The adapter stamps its own identity onto the config object; core reads the
   // version and platform from there rather than importing a constant, so one
   // core serves every provider.
-  assert.equal(env.EDGE_SCRIPT_VERSION, "0.5.0");
+  assert.equal(env.EDGE_SCRIPT_VERSION, "0.5.1");
   assert.equal(env.EDGE_PLATFORM, "cloudfront");
   delete env.EDGE_SCRIPT_VERSION;
   delete env.EDGE_PLATFORM;
@@ -111,7 +111,7 @@ test("survives an origin with no custom headers at all", () => {
   // but it still knows which artifact it is.
   for (const request of [{ uri: "/", origin: { custom: { domainName: "e.com" } } }, { uri: "/" }]) {
     assert.deepEqual(readConfig(request), {
-      EDGE_SCRIPT_VERSION: "0.5.0",
+      EDGE_SCRIPT_VERSION: "0.5.1",
       EDGE_PLATFORM: "cloudfront",
     });
   }

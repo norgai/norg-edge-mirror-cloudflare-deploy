@@ -90,7 +90,7 @@ import {
   mayDivert,
   verifiedSource,
 } from "../../core/agent.js";
-import { flushDeferred } from "../../core/deferred.js";
+import { flushDeferred, sweepDeferred } from "../../core/deferred.js";
 import { getBotFeed, isEntitled } from "../../core/feed.js";
 import { clientIp, passthrough as toPassthrough, toCloudFrontResponse, toRequest } from "./lib/event.js";
 import {
@@ -645,9 +645,10 @@ export async function handler(event) {
 
   try {
     scrubConfigHeaders((pristine = structuredClone(cfRequest)));
-    // Started first so work suspended when this container last froze gets an
-    // event-loop turn while the pipeline does its own awaits.
-    const flushed = flushDeferred();
+    // Started first, awaited after the pipeline, so anything a previous
+    // invocation on this container left behind runs concurrently with the
+    // pipeline's own network calls and normally costs this request nothing.
+    const swept = sweepDeferred();
 
     const env = readConfig(cfRequest);
     // Rule 3, in CloudFront's shape: core's isConfigured() wants the key on the
@@ -664,9 +665,16 @@ export async function handler(event) {
       }),
     ]).finally(() => clearTimeout(watchdog));
 
-    await flushed;
-    // Starts whatever this invocation queued. Awaiting the flush call (not the
-    // tasks) is what lets them begin before the container freezes.
+    await swept;
+    // The last moment anything deferred can actually land. Lambda@Edge freezes
+    // the instant the handler returns, so an unsettled fetch is not finished
+    // later — it is suspended until its own abort timer has already expired.
+    // That is why this provider had never delivered a single router event.
+    //
+    // The wait is bounded, and usually near zero: `defer` starts the work at
+    // the point of deferral, so a visit event has been in flight since before
+    // the mirror fetch and has normally landed by now. With passthrough events
+    // off by default there is nothing outstanding on a human request at all.
     await flushDeferred();
 
     if (result === PASSTHROUGH) return toPassthrough(alignHostToOrigin(cfRequest));
@@ -678,6 +686,10 @@ export async function handler(event) {
     return response || toPassthrough(alignHostToOrigin(scrubConfigHeaders(pristine)));
   } catch (e) {
     console.error("norg edge router error", e);
+    // The pipeline may have already deferred a visit event before throwing, and
+    // this is the last moment before the container freezes. Bounded, and it
+    // swallows its own failures, so it cannot turn a handled error into a 502.
+    await flushDeferred().catch(() => {});
     return scrubConfigHeaders(pristine);
   }
 }

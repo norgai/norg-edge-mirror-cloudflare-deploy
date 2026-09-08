@@ -116,7 +116,9 @@ var LOOP_GUARD_HEADER = "x-norg-edge";
 var HEALTH_CHECK_HEADER = "x-norg-edge-check";
 var MIRROR_FETCH_TIMEOUT_MS = 4e3;
 var PATTERN_FETCH_TIMEOUT_MS = 5e3;
-var CONTROL_CALL_TIMEOUT_MS = 3e3;
+var DEFERRED_CALL_TIMEOUT_MS = 1200;
+var DEFERRED_FLUSH_BUDGET_MS = 1500;
+var DEFERRED_SWEEP_BUDGET_MS = 200;
 var MCP_FORWARD_TIMEOUT_MS = 3e3;
 var RESPONSE_CACHE_DEFAULT_TTL_SECONDS = 300;
 var PATTERN_DEFAULT_TTL_MS = 3600 * 1e3;
@@ -243,7 +245,7 @@ var STATIC_ASSET_SUFFIXES = /* @__PURE__ */ new Set([
 ]);
 
 // aws/lambda/lib/config.js
-var EDGE_SCRIPT_VERSION = "0.5.0";
+var EDGE_SCRIPT_VERSION = "0.5.1";
 var CONFIG_HEADERS = {
   "x-norg-site-id": "SITE_ID",
   "x-norg-secret-arn": "NORG_SECRET_ARN",
@@ -595,40 +597,29 @@ function anonymousClassification() {
 }
 
 // core/deferred.js
-var MAX_PENDING = 25;
-var MAX_PENDING_AGE_MS = 30 * 1e3;
-var FLUSH_AWAIT_TIMEOUT_MS = 1500;
-var pending = [];
 var inFlight = [];
 function defer(task) {
-  pending.push({ task, queuedAt: Date.now() });
-}
-function mustAwaitFlush() {
-  if (pending.length >= MAX_PENDING) return true;
-  const oldest = pending[0];
-  return Boolean(oldest && Date.now() - oldest.queuedAt > MAX_PENDING_AGE_MS);
-}
-async function flushDeferred() {
-  inFlight = inFlight.filter((entry) => entry.settled !== true);
-  if (pending.length === 0) return;
-  const blocking = mustAwaitFlush();
-  const batch = pending;
-  pending = [];
-  const started = batch.map(({ task }) => {
-    const entry = { settled: false };
-    entry.promise = Promise.resolve().then(task).catch((error) => {
-      console.error("norg edge deferred task failed", error);
-    }).finally(() => {
-      entry.settled = true;
-    });
-    inFlight.push(entry);
-    return entry.promise;
+  const entry = { settled: false };
+  entry.promise = Promise.resolve().then(task).catch((error) => {
+    console.error("norg edge deferred task failed", error);
+  }).finally(() => {
+    entry.settled = true;
   });
-  if (!blocking) return;
+  inFlight.push(entry);
+}
+async function flushDeferred({
+  budgetMs = DEFERRED_FLUSH_BUDGET_MS
+} = {}) {
+  const outstanding = inFlight.filter((entry) => entry.settled !== true);
+  inFlight = outstanding;
+  if (outstanding.length === 0) return;
   await Promise.race([
-    Promise.allSettled(started),
-    new Promise((resolve) => setTimeout(resolve, FLUSH_AWAIT_TIMEOUT_MS))
+    Promise.allSettled(outstanding.map((entry) => entry.promise)),
+    new Promise((resolve) => setTimeout(resolve, budgetMs))
   ]);
+}
+async function sweepDeferred() {
+  return flushDeferred({ budgetMs: DEFERRED_SWEEP_BUDGET_MS });
 }
 
 // core/feed.js
@@ -1176,7 +1167,7 @@ async function postControl(env, path, body) {
       method: "POST",
       headers: controlHeaders(env),
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(CONTROL_CALL_TIMEOUT_MS)
+      signal: AbortSignal.timeout(DEFERRED_CALL_TIMEOUT_MS)
     });
   } catch (e) {
     console.error("norg edge control call failed", path, e);
@@ -1439,7 +1430,7 @@ async function handler(event) {
   let pristine = cfRequest;
   try {
     scrubConfigHeaders(pristine = structuredClone(cfRequest));
-    const flushed = flushDeferred();
+    const swept = sweepDeferred();
     const env = readConfig(cfRequest);
     if (!env.SITE_ID || !env.NORG_SECRET_ARN) return cfRequest;
     let watchdog;
@@ -1449,13 +1440,15 @@ async function handler(event) {
         watchdog = setTimeout(() => resolve(PASSTHROUGH), WATCHDOG_MS);
       })
     ]).finally(() => clearTimeout(watchdog));
-    await flushed;
+    await swept;
     await flushDeferred();
     if (result === PASSTHROUGH) return passthrough(alignHostToOrigin(cfRequest));
     const response = await toCloudFrontResponse(result);
     return response || passthrough(alignHostToOrigin(scrubConfigHeaders(pristine)));
   } catch (e) {
     console.error("norg edge router error", e);
+    await flushDeferred().catch(() => {
+    });
     return scrubConfigHeaders(pristine);
   }
 }
