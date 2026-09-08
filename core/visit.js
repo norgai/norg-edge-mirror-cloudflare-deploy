@@ -68,11 +68,19 @@ function firstField(raw) {
 /**
  * Encode a document as base64url, the shape the receptionist decodes.
  *
+ * Built on TextEncoder and btoa rather than Node's Buffer, because this module
+ * runs on every provider and Fastly's runtime has no Buffer at all: the first
+ * live 0.2.0 deploy there threw here on every agent request and served the
+ * origin instead of the mirror. Every target runtime has both of these.
+ *
  * @param {Object} document Plain JSON-serialisable object.
  * @returns {string} Header value.
  */
 function encode(document) {
-  return Buffer.from(JSON.stringify(document), "utf8").toString("base64url");
+  const bytes = new TextEncoder().encode(JSON.stringify(document));
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 /**

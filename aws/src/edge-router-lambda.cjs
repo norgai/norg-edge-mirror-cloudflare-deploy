@@ -1231,7 +1231,10 @@ function firstField(raw) {
   return raw ? raw.split(":")[0] : null;
 }
 function encode(document) {
-  return Buffer.from(JSON.stringify(document), "utf8").toString("base64url");
+  const bytes = new TextEncoder().encode(JSON.stringify(document));
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 function visitHeader(request, classification, served, servedOnMiss) {
   const userAgent = request.headers.get("user-agent") || "";
