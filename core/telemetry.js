@@ -49,12 +49,19 @@ const renderDedup = new Map();
  */
 async function postControl(env, path, body) {
   try {
-    return await fetch(`${binding(env, "NORG_API_URL")}${path}`, {
+    const response = await fetch(`${binding(env, "NORG_API_URL")}${path}`, {
       method: "POST",
       headers: controlHeaders(env),
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(DEFERRED_CALL_TIMEOUT_MS),
     });
+    // A refused call used to be indistinguishable from a delivered one: only a
+    // thrown error was logged, so a 401 or a 422 left no trace anywhere. That
+    // is how a whole provider can look healthy while recording nothing.
+    if (!response.ok) {
+      console.error("norg edge control call refused", path, response.status);
+    }
+    return response;
   } catch (e) {
     console.error("norg edge control call failed", path, e);
     return null;
@@ -84,8 +91,24 @@ function viewerAttributes(headers) {
     as_organization: null,
     colo: null,
     http_protocol: value("cloudfront-viewer-http-version"),
-    tls_version: value("cloudfront-viewer-tls"),
+    // CloudFront publishes the whole negotiated suite here —
+    // `TLSv1.3:TLS_AES_128_GCM_SHA256:fullHandshake` — where Cloudflare's
+    // `request.cf.tlsVersion` is just `TLSv1.3`. Sending it whole is what made
+    // every CloudFront visit event fail: 44 characters into the 20-character
+    // column NORG stores it in, so the endpoint answered 500 and the event was
+    // discarded. Take the protocol and match the shape the other providers send.
+    tls_version: firstField(value("cloudfront-viewer-tls")),
   };
+}
+
+/**
+ * The first colon-separated field of a header value.
+ *
+ * @param {?string} raw Header value, or null.
+ * @returns {?string} Text before the first colon, or null.
+ */
+function firstField(raw) {
+  return raw ? raw.split(":")[0] : null;
 }
 
 /**
