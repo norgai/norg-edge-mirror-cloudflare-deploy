@@ -14,9 +14,7 @@ import { strict as assert } from "node:assert";
 import { afterEach, test } from "node:test";
 
 import { handler } from "../lambda/edge-router-lambda.js";
-import { __test_setFeed } from "../../core/feed.js";
-import { __resetResponseCache } from "../lambda/lib/response-cache.js";
-import { __test_reset as resetDeferred } from "../../core/deferred.js";
+import { __test_getFeed, __test_setFeed } from "../../core/feed.js";
 import { __test_reset as resetTelemetry } from "../../core/telemetry.js";
 import {
   CHROME_UA,
@@ -43,9 +41,31 @@ const realFetch = globalThis.fetch;
 afterEach(() => {
   globalThis.fetch = realFetch;
   __test_setFeed(null);
-  resetDeferred();
   resetTelemetry();
 });
+
+/**
+ * The visit document a receptionist fetch carried, decoded.
+ *
+ * @param {Array} calls Recorded fetch calls.
+ * @returns {?Object} The decoded X-Norg-Visit document, or null.
+ */
+function visitOn(calls) {
+  const call = calls.find((c) => c.url.startsWith(CONTENT_BASE));
+  const raw = call && new Headers(call.init.headers).get("x-norg-visit");
+  return raw ? JSON.parse(Buffer.from(raw, "base64url").toString("utf8")) : null;
+}
+
+/**
+ * The headers a receptionist fetch carried.
+ *
+ * @param {Array} calls Recorded fetch calls.
+ * @returns {?Headers} The headers, or null when the receptionist was not called.
+ */
+function receptionistHeaders(calls) {
+  const call = calls.find((c) => c.url.startsWith(CONTENT_BASE));
+  return call ? new Headers(call.init.headers) : null;
+}
 
 /**
  * Run the handler against a fresh, entitled container.
@@ -212,16 +232,65 @@ test("serving_policy is obeyed even when the source IP WOULD verify", async () =
 
 // --- Misses, strip and lazy render -----------------------------------------
 
-test("a mirror miss strips the origin and asks NORG to render", async () => {
+test("a mirror miss strips the origin and asks the receptionist to enqueue the render", async () => {
   const { result, calls } = await run({ headers: { "user-agent": GPTBOT_UA } });
 
   assert.equal(header(result, "x-norg-edge"), "stripped");
   assert.equal(/<nav>|<script/i.test(result.body), false, "the strip did not run");
   assert.match(result.body, /word0/);
-  assert.ok(
+  // The render request is not a call of the router's own: the mirror fetch it
+  // was going to make anyway carries the ask, and the receptionist enqueues it.
+  assert.equal(receptionistHeaders(calls).get("x-norg-lazy-render"), "1");
+  assert.equal(
     calls.some((c) => c.url.includes("/api/v1/edge/render-requests")),
-    "a definite 404 must enqueue a render",
+    false,
+    "the router makes no background call",
   );
+  assert.equal(visitOn(calls).served_on_miss, "stripped", "the receptionist records what the miss was served as");
+});
+
+test("a verified agent visit is recorded by the receptionist, never by the router", async () => {
+  const { calls } = await run(
+    {
+      headers: {
+        "user-agent": GPTBOT_UA,
+        "cloudfront-viewer-country": "AU",
+        "cloudfront-viewer-asn": "13335",
+        "cloudfront-viewer-tls": "TLSv1.3:TLS_AES_128_GCM_SHA256:fullHandshake",
+      },
+    },
+    { mirror: () => mirrorHit() },
+  );
+
+  assert.equal(calls.some((c) => c.url.includes("/api/v1/edge/events")), false, "no event call from the router");
+  const visit = visitOn(calls);
+  assert.equal(visit.user_agent, GPTBOT_UA);
+  assert.equal(visit.is_ai_bot, true);
+  assert.equal(visit.bot_name, "gptbot");
+  assert.equal(visit.company, "openai");
+  assert.equal(visit.served, "mirror");
+  assert.equal(visit.ip_country, "AU");
+  assert.equal(visit.asn, "13335");
+  assert.equal(visit.tls_version, "TLSv1.3", "the protocol alone, as the column allows");
+  assert.equal("as_organization" in visit, false, "nulls are omitted, not sent");
+});
+
+test("the override and the agentic subtree carry their own visit labels", async () => {
+  const override = await run(
+    { querystring: "agent=true", headers: { "user-agent": CHROME_UA } },
+    { mirror: () => mirrorHit() },
+  );
+  assert.equal(visitOn(override.calls).served, "agent_param_override");
+  assert.equal(visitOn(override.calls).served_on_miss, "agent_param_override_miss");
+  assert.equal(receptionistHeaders(override.calls).get("x-norg-lazy-render"), null, "demo traffic never enqueues a render");
+
+  const agentic = await run(
+    { uri: "/ai/widgets/", headers: { "user-agent": CHROME_UA } },
+    { mirror: () => mirrorHit() },
+  );
+  assert.equal(visitOn(agentic.calls).served, "agentic_path");
+  assert.equal(visitOn(agentic.calls).served_on_miss, "agentic_path_miss");
+  assert.equal(visitOn(agentic.calls).is_ai_bot, false, "addressed by URL, not by caller");
 });
 
 test("a thin strip serves the untouched origin instead", async () => {
@@ -250,10 +319,18 @@ test("LAZY_RENDER_ENABLED=false serves the strip without asking for a render", a
 
   assert.equal(header(result, "x-norg-edge"), "stripped");
   assert.equal(
-    calls.some((c) => c.url.includes("/render-requests")),
-    false,
-    "a deployed-only edge must not trigger renders",
+    receptionistHeaders(calls).get("x-norg-lazy-render"),
+    null,
+    "a deployed-only edge must not ask for renders",
   );
+});
+
+test("STRIP_FALLBACK_ENABLED=false is declared to the receptionist as an origin miss", async () => {
+  const { calls } = await run({
+    headers: { "user-agent": GPTBOT_UA },
+    config: { "x-norg-strip-fallback": "false" },
+  });
+  assert.equal(visitOn(calls).served_on_miss, "origin");
 });
 
 test("STRIP_FALLBACK_ENABLED=false passes the origin through on a miss", async () => {
@@ -272,7 +349,72 @@ test("a non-HTML origin is never stripped", async () => {
         new Response('{"data":1}', { status: 200, headers: { "content-type": "application/json" } }),
     },
   );
-  assert.notEqual(header(result, "x-norg-edge"), "stripped");
+  assert.ok(isPassthroughResult(result), "CloudFront serves it, not this function");
+});
+
+test("an origin error on the strip path is served by passthrough, never relayed", async () => {
+  // The function's own read may lack what the origin expects; CloudFront's
+  // does not. Relaying a 403 from here gave the agent a 403 nobody else saw.
+  const { result } = await run(
+    { headers: { "user-agent": GPTBOT_UA } },
+    { origin: () => new Response("forbidden", { status: 403, headers: { "content-type": "text/html" } }) },
+  );
+  assert.ok(isPassthroughResult(result));
+});
+
+test("a direct origin read carries the origin's own custom headers and asks for identity encoding", async () => {
+  let seen = null;
+  const event = cloudFrontEvent({ headers: { "user-agent": GPTBOT_UA, "accept-encoding": "br, gzip" } });
+  event.Records[0].cf.request.origin.custom.customHeaders["x-origin-verify"] = [
+    { key: "x-origin-verify", value: "theirs-secret" },
+  ];
+  stubNetwork({
+    origin: (_url, init) => {
+      seen = new Headers(init.headers);
+      return new Response(longHtml(), { status: 200, headers: { "content-type": "text/html" } });
+    },
+  });
+
+  const result = await handler(event);
+
+  assert.equal(header(result, "x-norg-edge"), "stripped");
+  assert.equal(seen.get("x-origin-verify"), "theirs-secret", "an origin behind a verification header must accept the read");
+  assert.equal(seen.get("x-norg-site-id"), null, "NORG's own config headers were scrubbed first");
+  assert.equal(seen.get("accept-encoding"), "identity", "the strip needs bytes it can read");
+});
+
+test("a relayed origin artifact never carries a content-encoding it no longer has", async () => {
+  // Node's fetch decodes the body but keeps the header; relaying it labelled a
+  // plain body as compressed and the client failed to decode it.
+  const { result } = await run(
+    { uri: "/llms.txt", headers: { "user-agent": CHROME_UA } },
+    {
+      origin: () =>
+        new Response("customer llms", {
+          status: 200,
+          headers: { "content-type": "text/plain", "content-encoding": "gzip" },
+        }),
+    },
+  );
+  assert.match(result.body, /customer llms/);
+  assert.equal(header(result, "content-encoding"), null);
+});
+
+test("a discovery artifact the origin errors on falls back to NORG, then to passthrough", async () => {
+  const norg = await run(
+    { uri: "/llms.txt", headers: { "user-agent": CHROME_UA } },
+    {
+      origin: () => new Response("nope", { status: 500, headers: { "content-type": "text/plain" } }),
+      mirror: () => mirrorHit("norg llms", { "content-type": "text/plain" }),
+    },
+  );
+  assert.match(norg.result.body, /norg llms/);
+
+  const neither = await run(
+    { uri: "/llms.txt", headers: { "user-agent": CHROME_UA } },
+    { origin: () => new Response("nope", { status: 500, headers: { "content-type": "text/plain" } }) },
+  );
+  assert.ok(isPassthroughResult(neither.result), "never the origin's error from here, never a NORG error page");
 });
 
 // --- The 1 MB generated-response ceiling -----------------------------------
@@ -705,6 +847,47 @@ test("the health-probe header never reaches the origin, even when it is wrong", 
   );
 });
 
+// --- Revocation and the stale feed ------------------------------------------
+
+test("a receptionist refusal stops the install diverting on the very next request", async () => {
+  const first = await run(
+    { headers: { "user-agent": GPTBOT_UA } },
+    { mirror: () => new Response("unauthorized", { status: 401 }) },
+  );
+  assert.ok(isPassthroughResult(first.result));
+  assert.equal(__test_getFeed().entitled, false, "a 401 from NORG is a refusal, wherever it arrives");
+
+  const second = await run({ headers: { "user-agent": GPTBOT_UA } }, { mirror: () => mirrorHit() });
+  assert.ok(isPassthroughResult(second.result));
+  assert.deepEqual(second.calls, [], "unentitled, and negative-cached: no NORG call at all");
+});
+
+test("a stale feed is refreshed inline for an agent, so a deferred refresh is never lost", async () => {
+  __test_setFeed({
+    ...FEED,
+    entitled: true,
+    patterns: FEED.patterns,
+    cidrRanges: FEED.cidr_ranges,
+    skipPaths: [],
+    agenticPathPrefix: "/ai",
+    etag: "",
+    fetchedAt: Date.now() - 10_000,
+    ttl: 1,
+  });
+  const before = __test_getFeed().fetchedAt;
+  await run(
+    { headers: { "user-agent": GPTBOT_UA } },
+    {
+      feed: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return new Response(JSON.stringify(FEED), { status: 200, headers: { "content-type": "application/json" } });
+      },
+      mirror: () => mirrorHit(),
+    },
+  );
+  assert.ok(__test_getFeed().fetchedAt > before, "the refresh landed before the handler returned");
+});
+
 // --- IPv6 source verification (workers/lib/cidr.mjs) -----------------------
 
 test("an IPv6 viewer inside the operator's published IPv6 range gets the mirror", async () => {
@@ -763,64 +946,4 @@ test("MCP POST forwards JSON-RPC headers and NORG identity, never cookies or aut
   assert.ok(forwarded.get("x-norg-site-id"), "site id must still be attached");
   assert.ok(forwarded.get("x-norg-site-key"), "site key must still be attached");
   assert.ok(forwarded.get("x-norg-edge-version"), "version must still be attached");
-});
-
-// --- The in-function mirror cache -----------------------------------------
-//
-// The point of caching INSIDE the function rather than in CloudFront: a hit
-// still classifies and still records the visit. A CloudFront hit would do
-// neither, which is why every mirror stays no-store at the CDN layer.
-
-test("a cached mirror is served without refetching, and STILL records the visit", async () => {
-  __resetResponseCache();
-  const cachingFeed = () =>
-    new Response(
-      JSON.stringify({
-        ...FEED,
-        response_cache: { enabled: true, ttl: 300 },
-      }),
-      { status: 200, headers: { "content-type": "application/json" } }
-    );
-
-  const first = await run(
-    { headers: { "user-agent": GPTBOT_UA } },
-    { feed: cachingFeed, mirror: () => mirrorHit("<html><body>CACHED</body></html>") }
-  );
-  assert.equal(first.result.headers["x-norg-edge"][0].value, "mirror");
-
-  const second = await run(
-    { headers: { "user-agent": GPTBOT_UA } },
-    { feed: cachingFeed, mirror: () => mirrorHit("<html><body>SHOULD NOT BE FETCHED</body></html>") }
-  );
-
-  // Served from the container copy, not the receptionist.
-  assert.equal(second.result.headers["x-norg-edge"][0].value, "mirror");
-  assert.match(second.result.body, /CACHED/);
-  assert.doesNotMatch(second.result.body, /SHOULD NOT BE FETCHED/);
-
-  const mirrorFetches = second.calls.filter(c => c.url.startsWith(CONTENT_BASE));
-  assert.equal(mirrorFetches.length, 0, "a hit must not touch the receptionist");
-
-  // The whole reason this cache is not the CDN's: the visit is still reported.
-  const events = second.calls.filter(c => c.url.includes("/api/v1/edge/events"));
-  assert.equal(events.length, 1, "a cache hit must still record the agent visit");
-  assert.match(String(events[0].body), /"served":"mirror"/);
-
-  __resetResponseCache();
-});
-
-test("a cached mirror is still marked unstorable by any shared cache", async () => {
-  __resetResponseCache();
-  const cachingFeed = () =>
-    new Response(
-      JSON.stringify({ ...FEED, response_cache: { enabled: true, ttl: 300 } }),
-      { status: 200, headers: { "content-type": "application/json" } }
-    );
-  const opts = { headers: { "user-agent": GPTBOT_UA } };
-  await run(opts, { feed: cachingFeed, mirror: () => mirrorHit() });
-  const { result } = await run(opts, { feed: cachingFeed, mirror: () => mirrorHit() });
-
-  assert.equal(result.headers["cache-control"][0].value, "private, no-store");
-  assert.equal(result.headers["cdn-cache-control"][0].value, "private, no-store");
-  __resetResponseCache();
 });

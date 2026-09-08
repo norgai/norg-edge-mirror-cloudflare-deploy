@@ -2,6 +2,12 @@
  * Outbound control calls: events, heartbeats and render requests.
  *
  * @description Pins that telemetry is deferred, throttled and never blocking.
+ *
+ * The deferred senders here are the shared core's, used by the adapters that
+ * have a deferred-work primitive. The CloudFront router does not call them for
+ * agent visits — the receptionist records those from the visit header — and
+ * uses only `fireEdgeEvent`, the un-awaited sender, for the opt-in human
+ * passthrough event.
  */
 
 import { strict as assert } from "node:assert";
@@ -9,6 +15,7 @@ import { afterEach, test } from "node:test";
 
 import {
   __test_reset as resetTelemetry,
+  fireEdgeEvent,
   logEdgeEvent,
   maybeHeartbeat,
   requestRender,
@@ -275,4 +282,28 @@ test("a failing control call never escapes to the caller", async () => {
   await settle();
   // Reaching here without a rejection is the assertion.
   assert.ok(true);
+});
+
+test("fireEdgeEvent starts the call at once and defers nothing", async () => {
+  captureFetch();
+  fireEdgeEvent({ ...ENV, EDGE_EVENTS_VERBOSE: "true" }, requestWith(), BOT, "origin");
+
+  assert.equal(posts.length, 1, "started synchronously, so it is in flight before the handler returns");
+  assert.equal(deferredState().pending, 0, "nothing queued for a flush that will never run");
+  assert.equal(posts[0].body.served, "origin");
+});
+
+test("fireEdgeEvent honours the passthrough opt-in exactly as the deferred sender does", async () => {
+  captureFetch();
+  fireEdgeEvent(ENV, requestWith(), BOT, "origin");
+  assert.equal(posts.length, 0, "a human passthrough sends nothing unless the install opts in");
+});
+
+test("fireEdgeEvent swallows a failing call", async () => {
+  globalThis.fetch = async () => {
+    throw new Error("NORG unreachable");
+  };
+  fireEdgeEvent({ ...ENV, EDGE_EVENTS_VERBOSE: "true" }, requestWith(), BOT, "origin");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.ok(true, "no unhandled rejection reached the runtime");
 });

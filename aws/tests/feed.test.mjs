@@ -7,7 +7,14 @@
 import { strict as assert } from "node:assert";
 import { afterEach, test } from "node:test";
 
-import { __test_getFeed, __test_setFeed, getBotFeed, refreshFeed } from "../../core/feed.js";
+import {
+  __test_getFeed,
+  __test_setFeed,
+  getBotFeed,
+  knownAgenticPathPrefix,
+  refreshFeed,
+  stampRefusal,
+} from "../../core/feed.js";
 import {
   __test_reset as resetDeferred,
   __test_state as deferredState,
@@ -291,4 +298,57 @@ test("a response_cache ttl of 0 survives instead of taking the default", async (
 
   const feed = await getBotFeed(ENV);
   assert.equal(feed.responseCache.ttl, 0);
+});
+
+test("awaitStaleRefresh refreshes a stale entry before answering", async () => {
+  // For a runtime with no deferred-work primitive, where a deferred refresh is
+  // lost the moment the handler returns.
+  __test_setFeed({
+    entitled: true, patterns: [{ pattern: "old" }], cidrRanges: {}, skipPaths: [],
+    etag: "", fetchedAt: Date.now() - 10_000, ttl: 1,
+  });
+  stubFetch([async () => {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return feedResponse();
+  }]);
+
+  const feed = await getBotFeed(ENV, { awaitStaleRefresh: true, budgetMs: 2000 });
+
+  assert.equal(feed.patterns[0].pattern, "gptbot", "the fresh entry answers");
+  assert.equal(deferredState().pending, 0, "nothing deferred");
+});
+
+test("awaitStaleRefresh serves the stale entry when the budget runs out", async () => {
+  __test_setFeed({
+    entitled: true, patterns: [{ pattern: "old" }], cidrRanges: {}, skipPaths: [],
+    etag: "", fetchedAt: Date.now() - 10_000, ttl: 1,
+  });
+  stubFetch([async () => {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    return feedResponse();
+  }]);
+
+  const started = Date.now();
+  const feed = await getBotFeed(ENV, { awaitStaleRefresh: true, budgetMs: 30 });
+
+  assert.equal(feed.patterns[0].pattern, "old", "stale, not nothing");
+  assert.ok(Date.now() - started < 150, "the budget, not the slow call, bounds the wait");
+});
+
+test("a refusal stamped from another call revokes the container at once", () => {
+  __test_setFeed({
+    entitled: true, patterns: [{ pattern: "gptbot" }], cidrRanges: {}, skipPaths: [],
+    etag: "", fetchedAt: Date.now(), ttl: 3_600_000,
+  });
+  stampRefusal();
+  assert.equal(__test_getFeed().entitled, false);
+  assert.deepEqual(__test_getFeed().patterns, []);
+});
+
+test("the known agentic prefix is the default until the feed says otherwise", async () => {
+  __test_setFeed(null);
+  assert.equal(knownAgenticPathPrefix(), "/ai");
+  stubFetch([() => feedResponse({ ...FEED_BODY, agentic_path_prefix: "/for-agents" })]);
+  await getBotFeed(ENV);
+  assert.equal(knownAgenticPathPrefix(), "/for-agents");
 });

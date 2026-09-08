@@ -4,20 +4,21 @@
  * @description Covers the refusals, which are the point of the tool.
  *
  * The risky part of attaching is not the happy path — it is what the tool does
- * when the distribution already has routing on it, or when applying the router
- * would silently change someone's caching. Those are refusals, and a refusal
- * that quietly stopped refusing is the failure worth catching.
+ * when the distribution already has routing on it. That is a refusal, and a
+ * refusal that quietly stopped refusing is the failure worth catching. The
+ * other thing worth pinning is the one caching change the tool makes on
+ * purpose: pages stop being cached at the edge, and the dry run says so.
  */
 
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 
 import {
-  assertReplaceIsSafe,
   attach,
   detach,
   isOurs,
   parseArgs,
+  quotaLines,
   setOriginHeaders,
 } from "../install/attach.mjs";
 import {
@@ -29,9 +30,6 @@ import {
 
 const OUTPUTS = {
   EdgeRouterVersionArn: "arn:aws:lambda:us-east-1:111:function:norg-router:7",
-  CacheGuardVersionArn: "arn:aws:lambda:us-east-1:111:function:norg-cache-guard:3",
-  ViewerClassifierArn: "arn:aws:cloudfront::111:function/norg-viewer-classifier",
-  CachePolicyId: "cache-policy-norg",
   OriginRequestPolicyId: "origin-policy-norg",
   StaticCachePolicyId: "static-policy",
   OriginCustomHeaders:
@@ -71,33 +69,49 @@ function distributionConfig(overrides = {}) {
   };
 }
 
-const OPTIONS = { cachePolicy: "replace", siteKey: "nek_live_secret" };
+const OPTIONS = { siteKey: "nek_live_secret" };
 
-test("attaching associates both functions and the origin request policy", () => {
+test("attaching associates the router and the origin request policy, and nothing else", () => {
   const config = distributionConfig();
   attach(config, OUTPUTS, OPTIONS);
   const behaviour = config.DefaultCacheBehavior;
 
+  assert.equal(behaviour.LambdaFunctionAssociations.Items.length, 1);
   assert.equal(behaviour.LambdaFunctionAssociations.Items[0].EventType, "origin-request");
   assert.equal(
     behaviour.LambdaFunctionAssociations.Items[0].LambdaFunctionARN,
     OUTPUTS.EdgeRouterVersionArn,
   );
-  assert.equal(behaviour.FunctionAssociations.Items[0].EventType, "viewer-request");
+  assert.deepEqual(
+    behaviour.FunctionAssociations,
+    { Quantity: 0, Items: [] },
+    "no viewer-request function is added: there is no cache key to stamp",
+  );
   assert.equal(behaviour.OriginRequestPolicyId, OUTPUTS.OriginRequestPolicyId);
 });
 
-test("the default behaviour gets the body OFF and the cache guard ON", () => {
+test("the default behaviour gets the body OFF and stops caching pages", () => {
   // IncludeBody is per association; on the default behaviour it delivered
-  // every cache-miss POST body on the site into the router's memory.
+  // every POST body on the site into the router's memory.
   const config = distributionConfig();
-  attach(config, OUTPUTS, OPTIONS);
-  const items = config.DefaultCacheBehavior.LambdaFunctionAssociations.Items;
+  const changes = attach(config, OUTPUTS, OPTIONS);
+  const behaviour = config.DefaultCacheBehavior;
 
-  assert.equal(items[0].EventType, "origin-request");
-  assert.equal(items[0].IncludeBody, false);
-  assert.equal(items[1].EventType, "origin-response");
-  assert.equal(items[1].LambdaFunctionARN, OUTPUTS.CacheGuardVersionArn);
+  assert.equal(behaviour.LambdaFunctionAssociations.Items[0].IncludeBody, false);
+  assert.equal(behaviour.CachePolicyId, MANAGED_CACHING_DISABLED_ID);
+  const line = changes.find((c) => c.startsWith("cache policy"));
+  assert.match(line, /managed-caching-optimized -> CachingDisabled/);
+  assert.match(
+    line,
+    /HTML is no longer cached at the edge/,
+    "the one caching change must be stated in the dry run, in those words",
+  );
+});
+
+test("a distribution already on CachingDisabled reports the policy unchanged", () => {
+  const config = distributionConfig({ CachePolicyId: MANAGED_CACHING_DISABLED_ID });
+  const changes = attach(config, OUTPUTS, OPTIONS);
+  assert.ok(changes.some((c) => /cache policy\s+CachingDisabled \(already\)/.test(c)));
 });
 
 test("the MCP behaviours are the only place the body is included, and they run the router", () => {
@@ -110,12 +124,12 @@ test("the MCP behaviours are the only place the body is included, and they run t
   for (const pattern of MCP_PATH_PATTERNS) {
     const b = byPattern[pattern];
     assert.ok(b, `${pattern} behaviour missing`);
-    const [router, guard] = b.LambdaFunctionAssociations.Items;
+    assert.equal(b.LambdaFunctionAssociations.Items.length, 1, `${pattern} runs only the router`);
+    const [router] = b.LambdaFunctionAssociations.Items;
     assert.equal(router.LambdaFunctionARN, OUTPUTS.EdgeRouterVersionArn);
     assert.equal(router.IncludeBody, true);
-    assert.equal(guard.LambdaFunctionARN, OUTPUTS.CacheGuardVersionArn);
-    assert.equal(b.FunctionAssociations.Items[0].FunctionARN, OUTPUTS.ViewerClassifierArn);
-    assert.equal(b.CachePolicyId, OUTPUTS.CachePolicyId);
+    assert.equal(b.FunctionAssociations, undefined);
+    assert.equal(b.CachePolicyId, MANAGED_CACHING_DISABLED_ID, `${pattern} is never cached`);
   }
   const withBody = config.CacheBehaviors.Items.filter((b) =>
     (b.LambdaFunctionAssociations?.Items || []).some((l) => l.IncludeBody),
@@ -136,33 +150,15 @@ test("dynamic carve-outs are NOT cached and forward everything", () => {
   }
 });
 
-test("attaching REFUSES a distribution that already has a foreign origin-response function", () => {
+test("a foreign origin-response function is not a conflict: the router needs no such slot", () => {
+  // 0.5.x needed origin-response for the cache guard. With no page caching
+  // there is nothing to guard, so a customer's own origin-response function
+  // stays exactly where it is.
+  const theirs = { EventType: "origin-response", LambdaFunctionARN: "arn:aws:lambda:us-east-1:222:function:theirs:1" };
   const config = distributionConfig({
-    LambdaFunctionAssociations: {
-      Quantity: 1,
-      Items: [{ EventType: "origin-response", LambdaFunctionARN: "arn:aws:lambda:us-east-1:222:function:theirs:1" }],
-    },
+    LambdaFunctionAssociations: { Quantity: 1, Items: [theirs] },
   });
-  assert.throws(() => attach(config, OUTPUTS, OPTIONS), /already has an origin-response Lambda@Edge function/);
-});
-
-test("replace is refused when the customer's key carries cookies, headers or query strings", () => {
-  const keyed = (extra) => ({
-    ParametersInCacheKeyAndForwardedToOrigin: {
-      CookiesConfig: { CookieBehavior: "none" },
-      HeadersConfig: { HeaderBehavior: "none" },
-      QueryStringsConfig: { QueryStringBehavior: "none" },
-      ...extra,
-    },
-  });
-  // Collapsing a session or per-variant cache serves one visitor's page to the next.
-  assert.throws(() => assertReplaceIsSafe(keyed({ CookiesConfig: { CookieBehavior: "all" } })), /keys on cookies/);
-  assert.throws(() => assertReplaceIsSafe(keyed({ HeadersConfig: { HeaderBehavior: "whitelist" } })), /keys on headers/);
-  assert.throws(() => assertReplaceIsSafe(keyed({ QueryStringsConfig: { QueryStringBehavior: "all" } })), /keys on query strings/);
-  assert.doesNotThrow(() => assertReplaceIsSafe(keyed({})));
-  // An unreadable policy is not a licence to proceed silently either way; the
-  // caller passes what get-cache-policy returned, and "none" is the default.
-  assert.doesNotThrow(() => assertReplaceIsSafe(undefined));
+  assert.doesNotThrow(() => attach(config, OUTPUTS, OPTIONS));
 });
 
 test("attaching REFUSES a distribution that already has an origin-request function", () => {
@@ -180,41 +176,21 @@ test("attaching REFUSES a distribution that already has an origin-request functi
   );
 });
 
-test("attaching REFUSES a distribution that already has a viewer-request function", () => {
-  const config = distributionConfig({
-    FunctionAssociations: {
-      Quantity: 1,
-      Items: [{ EventType: "viewer-request", FunctionARN: "arn:aws:cloudfront::111:function/theirs" }],
-    },
-  });
-
-  assert.throws(() => attach(config, OUTPUTS, OPTIONS), /already has a viewer-request CloudFront Function/);
-});
-
-test("a viewer-RESPONSE function is not a conflict", () => {
-  const config = distributionConfig({
-    FunctionAssociations: {
-      Quantity: 1,
-      Items: [{ EventType: "viewer-response", FunctionARN: "arn:aws:cloudfront::111:function/headers" }],
-    },
-  });
+test("a customer's own CloudFront Functions are left exactly as they are", () => {
+  // The router attaches nothing at viewer-request or viewer-response, so
+  // neither slot is a conflict and neither is touched — on attach or detach.
+  const theirs = {
+    Quantity: 2,
+    Items: [
+      { EventType: "viewer-request", FunctionARN: "arn:aws:cloudfront::111:function/theirs" },
+      { EventType: "viewer-response", FunctionARN: "arn:aws:cloudfront::111:function/headers" },
+    ],
+  };
+  const config = distributionConfig({ FunctionAssociations: structuredClone(theirs) });
   assert.doesNotThrow(() => attach(config, OUTPUTS, OPTIONS));
-});
-
-test("attaching REFUSES to guess about the cache key", () => {
-  const config = distributionConfig();
-
-  assert.throws(
-    () => attach(config, OUTPUTS, { ...OPTIONS, cachePolicy: null }),
-    /needs `x-norg-agent` in this behaviour's cache key/,
-    "changing a customer's caching without being told is not the tool's call",
-  );
-});
-
-test("--cache-policy=keep leaves the existing policy alone", () => {
-  const config = distributionConfig();
-  attach(config, OUTPUTS, { ...OPTIONS, cachePolicy: "keep" });
-  assert.equal(config.DefaultCacheBehavior.CachePolicyId, "managed-caching-optimized");
+  assert.deepEqual(config.DefaultCacheBehavior.FunctionAssociations, theirs);
+  detach(config);
+  assert.deepEqual(config.DefaultCacheBehavior.FunctionAssociations, theirs);
 });
 
 test("attaching preserves the customer's own origin headers", () => {
@@ -238,10 +214,6 @@ test("re-attaching our OWN router is allowed, so upgrades and key rotation work"
       Quantity: 1,
       // The same function at an older published version.
       Items: [{ EventType: "origin-request", LambdaFunctionARN: "arn:aws:lambda:us-east-1:111:function:norg-router:5" }],
-    },
-    FunctionAssociations: {
-      Quantity: 1,
-      Items: [{ EventType: "viewer-request", FunctionARN: OUTPUTS.ViewerClassifierArn }],
     },
   });
 
@@ -273,8 +245,7 @@ test("the Quantity field always matches the item count", () => {
   const behaviour = config.DefaultCacheBehavior;
 
   // CloudFront rejects a config whose Quantity disagrees with its Items.
-  assert.equal(behaviour.LambdaFunctionAssociations.Quantity, 2);
-  assert.equal(behaviour.FunctionAssociations.Quantity, 1);
+  assert.equal(behaviour.LambdaFunctionAssociations.Quantity, 1);
   assert.equal(
     config.Origins.Items[0].CustomHeaders.Quantity,
     config.Origins.Items[0].CustomHeaders.Items.length,
@@ -310,10 +281,28 @@ test("argument parsing accepts both --flag value and --flag=value", () => {
   assert.deepEqual(parseArgs(["--distribution-id", "E1", "--stack=s1", "--apply"]), {
     apply: true,
     detach: false,
-    cachePolicy: null,
     distributionId: "E1",
     stack: "s1",
   });
+});
+
+test("the retired --cache-policy flag is rejected, not silently accepted", () => {
+  // An operator on an old runbook must find out the choice no longer exists,
+  // rather than believe they kept their HTML cache.
+  assert.throws(() => parseArgs(["--cache-policy=keep"]), /unknown argument/);
+});
+
+test("the quota table names every Lambda@Edge region and warns on a low one", () => {
+  const lines = quotaLines([
+    { region: "us-east-1", value: 1000 },
+    { region: "ap-southeast-2", value: 10 },
+    { region: "eu-west-1", value: null },
+  ]);
+  assert.ok(lines.some((l) => /us-east-1\s+1000$/.test(l)));
+  assert.ok(lines.some((l) => /ap-southeast-2\s+10\s+<- LOW/.test(l)), "a quota of 10 is 100 rps, then 503s");
+  assert.ok(lines.some((l) => /eu-west-1\s+unreadable/.test(l)), "an unreadable region is reported, never fatal");
+  assert.ok(lines.some((l) => /L-B99A9384/.test(l) && /ap-southeast-2/.test(l)), "the warning says which quota to raise, and where");
+  assert.equal(quotaLines([{ region: "us-east-1", value: 1000 }]).length, 1, "no warning when nothing is low");
 });
 
 test("an unknown argument is rejected rather than ignored", () => {
