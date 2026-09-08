@@ -13,6 +13,7 @@ import { test } from "node:test";
 import { EDGE_SCRIPT_VERSION, readConfig } from "../src/lib/config.js";
 import { PASSTHROUGH, fetchOrigin } from "../src/lib/origin.js";
 import { clientIp, visitorHost, visitorUrl } from "../src/lib/request.js";
+import { htmlNoCacheRule, htmlNoStoreHeaderRule, norgNoStoreRule } from "../install.mjs";
 import { binding, isConfigured } from "../../core/config.js";
 import { bunnyRequest, ORIGIN_HOST, PUBLIC_HOST, UNVERIFIED_IP, VERIFIED_IP } from "./helpers.mjs";
 
@@ -118,4 +119,39 @@ test("fetchOrigin adds the loop guard and never throws", async () => {
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+// --- installer: the two edge rules --------------------------------------------
+
+test("the HTML-only rule keeps pages out of the cache and touches nothing else", () => {
+  // Importing install.mjs must make no network call; the rule builders are
+  // pure. One trigger, one pattern: Bunny refuses more than five per trigger,
+  // and an asset denylist needs about fifty.
+  const rule = htmlNoCacheRule();
+  assert.equal(rule.ActionType, "OverrideCacheTime");
+  assert.equal(rule.ActionParameter1, "0");
+  assert.equal(rule.Enabled, true);
+  assert.equal(rule.Triggers.length, 1);
+  assert.deepEqual(rule.Triggers[0], {
+    Type: "ResponseHeader",
+    PatternMatches: ["*text/html*"],
+    PatternMatchingType: 0,
+    Parameter1: "Content-Type",
+  });
+});
+
+test("the NORG no-store rule matches only responses the router stamped", () => {
+  const rule = norgNoStoreRule();
+  assert.equal(rule.ActionType, "OverrideBrowserCacheResponseHeader");
+  assert.equal(rule.ActionParameter1, "private, no-store");
+  assert.equal(rule.Triggers[0].Parameter1, "X-Norg-Edge");
+});
+
+test("the HTML header rule keeps the browser-facing Cache-Control at private, no-store", () => {
+  // Bunny rewrites it to public, max-age=0 when the cache-time rule fires
+  // (measured on bunny.foxx.ai); the second rule on the same trigger fixes it.
+  const rule = htmlNoStoreHeaderRule();
+  assert.equal(rule.ActionType, "OverrideBrowserCacheResponseHeader");
+  assert.equal(rule.ActionParameter1, "private, no-store");
+  assert.deepEqual(rule.Triggers[0], htmlNoCacheRule().Triggers[0], "same trigger as the cache-time rule");
 });

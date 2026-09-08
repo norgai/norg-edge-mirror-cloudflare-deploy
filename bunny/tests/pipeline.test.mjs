@@ -14,11 +14,10 @@ import { afterEach, test } from "node:test";
 
 import { handleRequest } from "../src/router.js";
 import { PASSTHROUGH } from "../src/lib/origin.js";
-import { __test_setFeed } from "../../core/feed.js";
-import { __test_reset as resetDeferred, flushDeferred } from "../../core/deferred.js";
-import { __test_reset as resetTelemetry } from "../../core/telemetry.js";
+import { __test_getFeed, __test_setFeed } from "../../core/feed.js";
 import {
   CHROME_UA,
+  CONTENT_BASE,
   ENV,
   GOOGLEBOT_UA,
   GOOGLE_EXTENDED_UA,
@@ -37,28 +36,49 @@ const realFetch = globalThis.fetch;
 afterEach(() => {
   globalThis.fetch = realFetch;
   __test_setFeed(null);
-  resetDeferred();
-  resetTelemetry();
 });
 
 /**
  * Run the pipeline against a fresh, entitled isolate.
  *
+ * Background work is handed to `env.EDGE_KEEPALIVE`, exactly as index.js hands
+ * it to Bunny's waitUntil; the promises are collected here so a test can wait
+ * for them the way the platform would.
+ *
  * @param {Object} requestOptions Options for bunnyRequest.
  * @param {Object} network Options for stubNetwork.
  * @param {Object} envOverrides Extra install config.
- * Telemetry is deferred, exactly as it is in production, so the queue is
- * flushed here the way index.js flushes it — otherwise every assertion about
- * an event or a render request would pass vacuously.
- *
- * @returns {Promise<{result: *, calls: Array}>} Outcome.
+ * @returns {Promise<{result: *, calls: Array, held: Array<Promise>}>} Outcome.
  */
 async function run(requestOptions = {}, network = {}, envOverrides = {}) {
   const { calls } = stubNetwork(network);
-  const result = await handleRequest(bunnyRequest(requestOptions), { ...ENV, ...envOverrides });
-  await flushDeferred();
-  await new Promise((resolve) => setImmediate(resolve));
-  return { result, calls };
+  const held = [];
+  const env = { ...ENV, ...envOverrides, EDGE_KEEPALIVE: (p) => held.push(p) };
+  const result = await handleRequest(bunnyRequest(requestOptions), env);
+  return { result, calls, held };
+}
+
+/**
+ * The visit document a receptionist fetch carried, decoded.
+ *
+ * @param {Array} calls Recorded fetch calls.
+ * @returns {?Object} The decoded X-Norg-Visit document, or null.
+ */
+function visitOn(calls) {
+  const call = calls.find((c) => c.url.startsWith(CONTENT_BASE));
+  const raw = call && new Headers(call.init.headers).get("x-norg-visit");
+  return raw ? JSON.parse(Buffer.from(raw, "base64url").toString("utf8")) : null;
+}
+
+/**
+ * The headers a receptionist fetch carried.
+ *
+ * @param {Array} calls Recorded fetch calls.
+ * @returns {?Headers} The headers, or null when the receptionist was not called.
+ */
+function receptionistHeaders(calls) {
+  const call = calls.find((c) => c.url.startsWith(CONTENT_BASE));
+  return call ? new Headers(call.init.headers) : null;
 }
 
 const isPassthrough = (result) => result === PASSTHROUGH;
@@ -73,16 +93,73 @@ test("a real browser gets the origin, with no NORG header at all", async () => {
   assert.ok(isPassthrough(result), "a human must never get a generated response");
 });
 
-test("a human never triggers a mirror lookup", async () => {
-  const { calls } = await run(
+test("a human on an ordinary page makes no call at all", async () => {
+  // The fast path: no feed, no mirror, no NORG. On this platform every page
+  // request invokes the script, so this is what keeps a person from paying.
+  for (const path of ["/", "/widgets/", "/aircraft/", "/blog/2026/post"]) {
+    const { result, calls } = await run(
+      { path, headers: { "user-agent": CHROME_UA } },
+      { mirror: () => mirrorHit() },
+    );
+    assert.ok(isPassthrough(result), path);
+    assert.deepEqual(calls, [], `${path}: a human must not cost any round trip`);
+  }
+});
+
+test("a human on a NORG surface still runs the real sequence", async () => {
+  for (const path of ["/ai/widgets/", "/llms.txt", "/about/index.md", "/.well-known/mcp.json"]) {
+    __test_setFeed(null);
+    const { calls } = await run(
+      { path, headers: { "user-agent": CHROME_UA } },
+      { mirror: () => mirrorHit(), origin: () => new Response("", { status: 404 }) },
+    );
+    assert.ok(calls.some((c) => c.url.includes("bot-patterns")), `${path}: the feed decides entitlement here`);
+  }
+});
+
+test("anything that might be an agent leaves the fast path", async () => {
+  const shapes = [
+    { name: "bot-shaped user agent", headers: { "user-agent": GPTBOT_UA } },
+    { name: "no user agent", headers: { "user-agent": "" } },
+    { name: "a Web Bot Auth signature on a Chrome UA", headers: { "user-agent": CHROME_UA, "signature-agent": '"https://chatgpt.com"' } },
+    { name: "the ?agent=true override", headers: { "user-agent": CHROME_UA }, path: "/widgets/?agent=true" },
+  ];
+  for (const { name, headers, path = "/widgets/" } of shapes) {
+    __test_setFeed(null);
+    const { calls } = await run({ path, headers }, { mirror: () => mirrorHit() });
+    assert.ok(calls.some((c) => c.url.includes("bot-patterns")), `${name}: must reach the feed`);
+  }
+});
+
+test("a verbose human passthrough event is handed to the keep-alive, never awaited", async () => {
+  let resolveEvent;
+  const settled = new Promise((resolve) => {
+    resolveEvent = resolve;
+  });
+  const { result, calls, held } = await run(
     { headers: { "user-agent": CHROME_UA } },
+    {
+      control: async () => {
+        await settled;
+        return new Response("{}", { status: 200 });
+      },
+    },
+    { EDGE_EVENTS_VERBOSE: "true" },
+  );
+  assert.ok(isPassthrough(result), "the handler returned while the event was still in flight");
+  assert.equal(calls.filter((c) => c.url.includes("/api/v1/edge/events")).length, 1);
+  assert.equal(held.length, 1, "Bunny's waitUntil holds the isolate open for it");
+  resolveEvent();
+  await Promise.all(held);
+});
+
+test("a search crawler on an ordinary page makes no call either", async () => {
+  const { result, calls } = await run(
+    { headers: { "user-agent": GOOGLEBOT_UA } },
     { mirror: () => mirrorHit() },
   );
-  assert.equal(
-    calls.some((c) => c.url.includes("edge-content")),
-    false,
-    "a human must not cost a receptionist round trip",
-  );
+  assert.ok(isPassthrough(result));
+  assert.deepEqual(calls, []);
 });
 
 test("Googlebot always gets the origin, even with ?agent=true", async () => {
@@ -188,15 +265,17 @@ test("an unreachable NORG leaves the customer's site untouched", async () => {
 
 // --- Surfaces --------------------------------------------------------------
 
-test("?agent=true serves the mirror without enqueuing a render", async () => {
+test("?agent=true serves the mirror and declares its own labels, asking for no render", async () => {
   const { result, calls } = await run(
     { path: "/widgets/?agent=true", headers: { "user-agent": CHROME_UA } },
     { mirror: () => mirrorHit() },
   );
   assert.equal(result.headers.get("x-norg-edge"), "mirror");
+  assert.equal(visitOn(calls).served, "agent_param_override");
+  assert.equal(visitOn(calls).served_on_miss, "agent_param_override_miss");
   assert.equal(
-    calls.some((c) => c.url.includes("render-requests")),
-    false,
+    receptionistHeaders(calls).get("x-norg-lazy-render"),
+    null,
     "the override must not trigger renders across the catalogue",
   );
 });
@@ -239,6 +318,9 @@ test("the agentic subtree reads the INNER path, not the prefixed one", async () 
   );
   const read = calls.find((c) => c.url.includes("edge-content"));
   assert.ok(read.url.endsWith("/widgets/index.html"), `read ${read.url}`);
+  assert.equal(visitOn(calls).served, "agentic_path");
+  assert.equal(visitOn(calls).served_on_miss, "agentic_path_miss");
+  assert.equal(visitOn(calls).is_ai_bot, false, "addressed by URL, not by caller");
 });
 
 test("the health probe answers only with the site key", async () => {
@@ -253,29 +335,88 @@ test("the health probe answers only with the site key", async () => {
 
 // --- The strip fallback ----------------------------------------------------
 
-test("a bot miss serves the stripped origin and asks NORG to render", async () => {
+test("a bot miss serves the stripped origin and asks the receptionist to enqueue the render", async () => {
   const { result, calls } = await run(
     { headers: { "user-agent": GPTBOT_UA } },
     { mirror: () => new Response("", { status: 404 }) },
   );
   assert.equal(result.headers.get("x-norg-edge"), "stripped");
   assert.equal(result.headers.get("cache-control"), "private, no-store");
-  assert.ok(
-    calls.some((c) => c.url.includes("render-requests")),
-    "a definite 404 must enqueue a render",
+  // The render request is not a call of the router's own: the mirror fetch it
+  // was going to make anyway carries the ask, and the receptionist enqueues it.
+  assert.equal(receptionistHeaders(calls).get("x-norg-lazy-render"), "1");
+  assert.equal(visitOn(calls).served_on_miss, "stripped");
+  assert.equal(
+    calls.some((c) => c.url.includes("render-requests") || c.url.includes("/api/v1/edge/events")),
+    false,
+    "the router makes no background call",
   );
 });
 
-test("a receptionist ERROR is not a miss and must not enqueue a render", async () => {
-  const { calls } = await run(
+test("LAZY_RENDER_ENABLED=false serves the strip without asking for a render", async () => {
+  const { result, calls } = await run(
     { headers: { "user-agent": GPTBOT_UA } },
-    { mirror: () => new Response("", { status: 500 }) },
+    { mirror: () => new Response("", { status: 404 }) },
+    { LAZY_RENDER_ENABLED: "false" },
   );
-  assert.equal(
-    calls.some((c) => c.url.includes("render-requests")),
-    false,
-    "an outage must not look like every page vanishing",
+  assert.equal(result.headers.get("x-norg-edge"), "stripped");
+  assert.equal(receptionistHeaders(calls).get("x-norg-lazy-render"), null);
+});
+
+test("STRIP_FALLBACK_ENABLED=false is declared to the receptionist as an origin miss", async () => {
+  const { result, calls } = await run(
+    { headers: { "user-agent": GPTBOT_UA } },
+    { mirror: () => new Response("", { status: 404 }) },
+    { STRIP_FALLBACK_ENABLED: "false" },
   );
+  assert.ok(isPassthrough(result));
+  assert.equal(visitOn(calls).served_on_miss, "origin");
+});
+
+test("a receptionist refusal changes nothing on this request and revokes the next", async () => {
+  const first = await run(
+    { headers: { "user-agent": GPTBOT_UA } },
+    { mirror: () => new Response("unauthorized", { status: 401 }) },
+  );
+  assert.ok(isPassthrough(first.result), "no strip for a refused install");
+  assert.equal(__test_getFeed().entitled, false, "a 401 from NORG is a refusal, wherever it arrives");
+
+  const second = await run({ headers: { "user-agent": GPTBOT_UA } }, { mirror: () => mirrorHit() });
+  assert.ok(isPassthrough(second.result));
+  assert.deepEqual(second.calls, [], "unentitled, and negative-cached: no NORG call at all");
+});
+
+test("a stale feed refreshes behind the response through the keep-alive", async () => {
+  __test_setFeed({
+    entitled: true,
+    patterns: [{ pattern: "gptbot", company: "openai", purpose: "training", serving_policy: "divert" }],
+    cidrRanges: { openai: { cidrs: ["20.171.0.0/16"] } },
+    skipPaths: [],
+    agenticPathPrefix: "/ai",
+    etag: "",
+    fetchedAt: Date.now() - 10_000,
+    ttl: 1,
+  });
+  const before = __test_getFeed().fetchedAt;
+  const { result, held } = await run(
+    { headers: { "user-agent": GPTBOT_UA } },
+    { mirror: () => mirrorHit() },
+  );
+  assert.equal(result.headers.get("x-norg-edge"), "mirror", "the stale entry answered at once");
+  assert.equal(held.length, 1, "the refresh went to Bunny's waitUntil");
+  await Promise.all(held);
+  assert.ok(__test_getFeed().fetchedAt > before, "and landed behind the response");
+});
+
+test("an origin error on the strip path is served by passthrough, never relayed", async () => {
+  const { result } = await run(
+    { headers: { "user-agent": GPTBOT_UA } },
+    {
+      mirror: () => new Response("", { status: 404 }),
+      origin: () => new Response("forbidden", { status: 403, headers: { "content-type": "text/html" } }),
+    },
+  );
+  assert.ok(isPassthrough(result));
 });
 
 test("a thin origin is served untouched rather than stripped to nothing", async () => {
@@ -307,19 +448,34 @@ test("the strip fetch carries the loop guard", async () => {
 
 // --- The visitor URL, which Bunny rewrites before the hook -----------------
 
-test("a visit event records the VISITOR host, not the origin host", async () => {
-  // Bunny rewrites request.url to the origin before the hook runs, so getting
-  // this wrong would silently file every customer's traffic under their origin.
+test("a verified agent visit is recorded by the receptionist, never by the router", async () => {
+  // Bunny rewrites request.url to the origin before the hook runs; the visit
+  // header is built from the visitor-facing view, and NORG's content service
+  // records it against the site it authenticated.
   const { calls } = await run(
     { headers: { "user-agent": GPTBOT_UA } },
     { mirror: () => mirrorHit() },
   );
-  const event = calls.find((c) => c.url.includes("/api/v1/edge/events"));
-  assert.ok(event, "a diverted request must report a visit event");
-  const body = JSON.parse(event.init.body);
-  assert.equal(body.domain, PUBLIC_HOST, "the event must record the customer's hostname");
-  assert.equal(body.path, "/widgets/");
-  assert.equal(body.served, "mirror");
+  assert.equal(calls.some((c) => c.url.includes("/api/v1/edge/events")), false, "no event call from the router");
+  const visit = visitOn(calls);
+  assert.equal(visit.user_agent, GPTBOT_UA);
+  assert.equal(visit.is_ai_bot, true);
+  assert.equal(visit.bot_name, "gptbot");
+  assert.equal(visit.company, "openai");
+  assert.equal(visit.served, "mirror");
+  // Bunny publishes geo under cdn-* names that core does not read, so the
+  // header carries none — recorded null, never guessed.
+  assert.equal("ip_country" in visit, false);
+});
+
+test("the canonical Link on a sibling names the VISITOR host, not the origin", async () => {
+  // Getting the visitor URL wrong would file every customer's traffic under
+  // their origin's hostname; the sibling's Link header proves the view.
+  const { result } = await run(
+    { path: "/widgets/index.md", headers: { "user-agent": GPTBOT_UA } },
+    { mirror: () => mirrorHit("# mirror"), origin: () => new Response("nope", { status: 404 }) },
+  );
+  assert.ok(result.headers.get("link").includes(`https://${PUBLIC_HOST}/widgets/`));
 });
 
 test("a sibling artifact carries the canonical Link at the visitor's host", async () => {

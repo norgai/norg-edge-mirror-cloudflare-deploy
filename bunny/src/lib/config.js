@@ -27,8 +27,16 @@
  * Versioned independently of the other providers because it is a separate
  * deployable with its own pin; content-craft compares it against
  * EDGE_WORKER_VERSION_BUNNY.
+ *
+ * 0.2.0 — the 0.6.0 architecture shared with CloudFront: an ordinary browser,
+ * a search crawler and a static asset are answered before the feed is read;
+ * the router makes no call of its own to report a visit (the visit rides as a
+ * header on the mirror fetch and NORG's content service records it, and on a
+ * miss enqueues the render); the deferred queue and traffic heartbeat are
+ * gone; and the installer keeps HTML out of the pull zone's cache by default
+ * with an HTML-only edge rule rather than the zone-wide bypass.
  */
-export const EDGE_SCRIPT_VERSION = "0.1.2";
+export const EDGE_SCRIPT_VERSION = "0.2.0";
 
 // Environment names this install reads. Mirrors build_worker_bindings() in
 // content-craft's install_service.py; adding a binding there means adding it
