@@ -48,7 +48,7 @@ test("reads every binding from custom origin headers", () => {
   // The adapter stamps its own identity onto the config object; core reads the
   // version and platform from there rather than importing a constant, so one
   // core serves every provider.
-  assert.equal(env.EDGE_SCRIPT_VERSION, "0.5.2");
+  assert.equal(env.EDGE_SCRIPT_VERSION, "0.6.0");
   assert.equal(env.EDGE_PLATFORM, "cloudfront");
   delete env.EDGE_SCRIPT_VERSION;
   delete env.EDGE_PLATFORM;
@@ -111,10 +111,34 @@ test("survives an origin with no custom headers at all", () => {
   // but it still knows which artifact it is.
   for (const request of [{ uri: "/", origin: { custom: { domainName: "e.com" } } }, { uri: "/" }]) {
     assert.deepEqual(readConfig(request), {
-      EDGE_SCRIPT_VERSION: "0.5.2",
+      EDGE_SCRIPT_VERSION: "0.6.0",
       EDGE_PLATFORM: "cloudfront",
     });
   }
+});
+
+test("an S3 origin's custom headers are read and scrubbed like a custom origin's", () => {
+  // CloudFront attaches origin custom headers to S3 origins too, under a
+  // different key. Reading only origin.custom meant an S3-backed distribution
+  // installed cleanly and then did nothing.
+  const request = {
+    uri: "/",
+    headers: {},
+    origin: {
+      s3: {
+        domainName: "bucket.s3.amazonaws.com",
+        customHeaders: {
+          "x-norg-site-id": [{ key: "x-norg-site-id", value: "site-s3" }],
+          "x-norg-secret-arn": [{ key: "x-norg-secret-arn", value: "arn:aws:secretsmanager:us-east-1:1:secret:k" }],
+          "x-theirs": [{ key: "x-theirs", value: "kept" }],
+        },
+      },
+    },
+  };
+  const env = readConfig(request);
+  assert.equal(env.SITE_ID, "site-s3");
+  assert.equal(env.NORG_SECRET_ARN, "arn:aws:secretsmanager:us-east-1:1:secret:k");
+  assert.deepEqual(Object.keys(request.origin.s3.customHeaders), ["x-theirs"]);
 });
 
 test("absent bindings take the baked default, set ones override it", () => {

@@ -116,6 +116,23 @@ export const STRIP_WORD_FLOOR = 120;
  * Note "google-extended" (Google's AI crawler) does not contain "googlebot",
  * so it is served like any other AI agent.
  */
+// Tokens that never appear in an ordinary browser user-agent, and do appear in
+// crawler and scripted-client ones. "compatible;" is included on purpose: every
+// major crawler uses the "Mozilla/5.0 (compatible; Name/1.0; +url)" form, and
+// among real browsers only legacy IE does — which is worth one extra lookup.
+// A divert-policy pattern NORG publishes must contain one of these, or the
+// crawler takes the human fast path and is never diverted; content-craft
+// asserts that at publish time.
+export const BOT_MARKERS = [
+  "bot", "crawl", "spider", "slurp", "scrape", "fetch", "agent",
+  "compatible;", "http://", "https://", "headless", "preview",
+  "python", "curl", "wget", "java/", "okhttp", "axios", "node-fetch",
+  "go-http", "ruby", "perl", "libwww", "httpx", "aiohttp",
+];
+
+// A real browser presents Mozilla/5.0 AND one of these engine or brand tokens.
+export const BROWSER_MARKERS = ["chrome/", "safari/", "firefox/", "edg/", "opr/", "trident/"];
+
 export const TRADITIONAL_SEARCH_BOTS = [
   "googlebot",
   "bingbot",

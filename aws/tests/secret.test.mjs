@@ -15,8 +15,11 @@ import { afterEach, test } from "node:test";
 import {
   __primeSecretCache,
   __resetSecretCache,
+  EDGE_REGIONS,
   getSiteKey,
+  localReadRegion,
   parseSecret,
+  regionalArn,
 } from "../lambda/lib/secret.js";
 
 const ARN = "arn:aws:secretsmanager:us-east-1:1:secret:norg-AbCdEf";
@@ -74,4 +77,49 @@ test("an unusable secret is null, never a partial value", () => {
   assert.equal(parseSecret(null), null);
   assert.equal(parseSecret("{not json"), null);
   assert.equal(parseSecret('{"unrelated":"x"}'), null);
+});
+
+test("a replica's ARN is the primary's with only the region changed", () => {
+  assert.equal(
+    regionalArn(ARN, "ap-southeast-2"),
+    "arn:aws:secretsmanager:ap-southeast-2:1:secret:norg-AbCdEf",
+  );
+  assert.equal(regionalArn("not-an-arn", "ap-southeast-2"), null);
+  assert.equal(regionalArn("arn:aws:lambda:us-east-1:1:function:x", "ap-southeast-2"), null);
+});
+
+test("the local region is read first only when it is an edge region other than the primary", () => {
+  const saved = process.env.AWS_REGION;
+  try {
+    process.env.AWS_REGION = "ap-southeast-2";
+    assert.equal(localReadRegion(ARN), "ap-southeast-2");
+    process.env.AWS_REGION = "us-east-1";
+    assert.equal(localReadRegion(ARN), null, "the primary is not a replica");
+    process.env.AWS_REGION = "ca-central-1";
+    assert.equal(localReadRegion(ARN), null, "no regional edge cache there, so no replica to read");
+    delete process.env.AWS_REGION;
+    assert.equal(localReadRegion(ARN), null);
+  } finally {
+    if (saved === undefined) delete process.env.AWS_REGION;
+    else process.env.AWS_REGION = saved;
+  }
+});
+
+test("a failed replica read is remembered, and the primary is used from then on", async () => {
+  const saved = process.env.AWS_REGION;
+  try {
+    process.env.AWS_REGION = "eu-west-1";
+    assert.equal(localReadRegion(ARN), "eu-west-1");
+    // No SDK here, so the replica read throws, then the primary read throws.
+    assert.equal(await getSiteKey({ NORG_SECRET_ARN: ARN }), null);
+    assert.equal(localReadRegion(ARN), null, "an install without replicas pays for the miss once per container");
+  } finally {
+    if (saved === undefined) delete process.env.AWS_REGION;
+    else process.env.AWS_REGION = saved;
+  }
+});
+
+test("the edge region list is the thirteen regional edge caches", () => {
+  assert.equal(EDGE_REGIONS.size, 13);
+  assert.ok(EDGE_REGIONS.has("us-east-1"));
 });

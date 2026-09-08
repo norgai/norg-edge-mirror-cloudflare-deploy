@@ -74,7 +74,7 @@ test("the router bundle requires nothing the Lambda runtime does not provide", (
 });
 
 test("no NORG-internal secret name reaches a customer account", () => {
-  for (const artifact of ["edge-router-lambda.cjs", "heartbeat-lambda.cjs", "viewer-classifier.js"]) {
+  for (const artifact of ["edge-router-lambda.cjs", "heartbeat-lambda.cjs"]) {
     const source = readFileSync(join(awsDir, "src", artifact), "utf8");
     for (const forbidden of [
       "CRAWLER_EVENT_SECRET",
@@ -89,9 +89,15 @@ test("no NORG-internal secret name reaches a customer account", () => {
   }
 });
 
-test("the CloudFront Function artifact is under the 10 KB limit", () => {
-  const bytes = statSync(join(awsDir, "src", "viewer-classifier.js")).size;
-  assert.ok(bytes < 10 * 1024, `${bytes} bytes`);
+test("exactly two artifacts are published, and both are digested", () => {
+  // The viewer function and the cache guard left with the page cache in
+  // 0.6.0; a third file here would be one the templates do not deploy.
+  const digests = JSON.parse(readFileSync(join(awsDir, "src", "DIGESTS.json"), "utf8"));
+  assert.deepEqual(Object.keys(digests.files).sort(), ["edge-router-lambda.cjs", "heartbeat-lambda.cjs"]);
+  for (const [name, digest] of Object.entries(digests.files)) {
+    assert.match(digest, /^[0-9a-f]{64}$/, name);
+    assert.ok(statSync(join(awsDir, "src", name)).size > 0, name);
+  }
 });
 
 test("the bundle reports the same version as the source", async () => {

@@ -17,15 +17,17 @@
  * Two behaviours are deliberate and worth knowing before you read the code:
  *
  *  - It REFUSES rather than works around a conflict. An existing origin-request
- *    Lambda@Edge association, or an existing viewer-request function, is
- *    someone else's routing decision; silently replacing it is how an install
- *    breaks a site in a way nobody can attribute. This mirrors how the
- *    Cloudflare installer refuses an overlapping worker route.
- *  - It will not silently change your caching. The router needs `x-norg-agent`
- *    in the cache key or agents get served humans' cached pages, but your cache
- *    policy is tuned to your application and may be shared with other
- *    distributions. So the choice is yours to state with --cache-policy, and
- *    there is no default that guesses.
+ *    Lambda@Edge association is someone else's routing decision; silently
+ *    replacing it is how an install breaks a site in a way nobody can
+ *    attribute. This mirrors how the Cloudflare installer refuses an
+ *    overlapping worker route.
+ *  - It stops CloudFront caching your HTML. The default behaviour's cache
+ *    policy becomes the managed CachingDisabled policy, so every page request
+ *    reaches the router and your origin answers it. That is stated in the dry
+ *    run, in those words, before you confirm. Asset carve-outs stay cached.
+ *  - It reads your Lambda concurrency quota in every region Lambda@Edge runs
+ *    in and warns when one is low, because that quota is the one limit that
+ *    answers a visitor with a 503. It never refuses on it.
  *
  * Shells out to the AWS CLI rather than taking an SDK dependency: this repo's
  * build and tests are zero-install, and anyone attaching a distribution already
@@ -52,6 +54,19 @@ import {
 
 const REGION = "us-east-1";
 
+// Where Lambda@Edge executes. The router's concurrency in each of these is
+// bounded by that region's Lambda quota, shared with every other Lambda the
+// account runs there.
+const EDGE_REGIONS = [
+  "us-east-1", "us-east-2", "us-west-1", "us-west-2",
+  "ap-south-1", "ap-northeast-1", "ap-northeast-2", "ap-southeast-1", "ap-southeast-2",
+  "eu-central-1", "eu-west-1", "eu-west-2", "sa-east-1",
+];
+const LAMBDA_CONCURRENCY_QUOTA_CODE = "L-B99A9384";
+// Each Lambda@Edge instance serves 10 requests per second, so the regional
+// page-request ceiling is ten times the quota. Below this the warning fires.
+const LOW_CONCURRENCY_QUOTA = 100;
+
 /**
  * Parse argv into an options object.
  *
@@ -59,14 +74,13 @@ const REGION = "us-east-1";
  * @returns {Object} Parsed options.
  */
 function parseArgs(argv) {
-  const options = { apply: false, detach: false, cachePolicy: null };
+  const options = { apply: false, detach: false };
   for (let i = 0; i < argv.length; i += 1) {
     const [flag, inline] = argv[i].split("=");
     const next = () => inline ?? argv[++i];
     if (flag === "--distribution-id") options.distributionId = next();
     else if (flag === "--stack") options.stack = next();
     else if (flag === "--site-key") options.siteKey = next();
-    else if (flag === "--cache-policy") options.cachePolicy = next();
     else if (flag === "--apply") options.apply = true;
     else if (flag === "--detach") options.detach = true;
     else throw new Error(`unknown argument: ${argv[i]}`);
@@ -78,10 +92,11 @@ function parseArgs(argv) {
  * Run an AWS CLI command and parse its JSON output.
  *
  * @param {Array<string>} args CLI arguments after `aws`.
+ * @param {string} region Region to run it in.
  * @returns {Object} Parsed response.
  */
-function aws(args) {
-  const output = execFileSync("aws", [...args, "--region", REGION, "--output", "json"], {
+function aws(args, region = REGION) {
+  const output = execFileSync("aws", [...args, "--region", region, "--output", "json"], {
     encoding: "utf8",
     maxBuffer: 32 * 1024 * 1024,
   });
@@ -143,89 +158,54 @@ function assertNoConflict(behaviour, outputs) {
         "first, or attach to a staging distribution instead.",
     );
   }
-
-  const foreignGuard = lambdas.find(
-    (item) =>
-      item.EventType === "origin-response" &&
-      !sameFunction(item.LambdaFunctionARN, outputs.CacheGuardVersionArn),
-  );
-  if (foreignGuard) {
-    throw new Error(
-      "this distribution already has an origin-response Lambda@Edge function " +
-        `(${foreignGuard.LambdaFunctionARN}).\n` +
-        "The cache guard needs that slot. Merge the two functions by hand, or " +
-        "attach to a staging distribution instead.",
-    );
-  }
-
-  const functions = behaviour.FunctionAssociations?.Items || [];
-  const conflictingFunction = functions.find(
-    (item) =>
-      item.EventType === "viewer-request" && item.FunctionARN !== outputs.ViewerClassifierArn,
-  );
-  if (conflictingFunction) {
-    throw new Error(
-      "this distribution already has a viewer-request CloudFront Function " +
-        `(${conflictingFunction.FunctionARN}).\n` +
-        "The router needs that slot to stamp the cache key. Merge the two " +
-        "functions by hand, or attach to a staging distribution instead.",
-    );
-  }
 }
 
 /**
- * Refuse to replace a cache policy whose key carries more than ours does.
+ * The Lambda concurrency quota in every region Lambda@Edge runs in.
  *
- * The stack's policy keys on x-norg-agent, the `agent` query string and the
- * encoding — nothing else. A customer policy that keys on cookies is a session
- * cache; one that keys on other query strings or headers is a per-variant
- * cache. Replacing either collapses those variants into one entry, and
- * CloudFront would then serve one visitor's page to the next. That is not a
- * risk to warn about; it is one to refuse.
+ * Read, never enforced: the operator decides. A region that cannot be read
+ * (no permission, no CLI access) reports null rather than failing the attach.
  *
- * @param {Object} config The customer's CachePolicyConfig (from get-cache-policy).
- * @returns {void}
+ * @returns {Array<{region: string, value: ?number}>} One entry per region.
  */
-function assertReplaceIsSafe(config) {
-  const key = config?.ParametersInCacheKeyAndForwardedToOrigin || {};
-  const carried = [];
-  if ((key.CookiesConfig?.CookieBehavior || "none") !== "none") carried.push("cookies");
-  if ((key.HeadersConfig?.HeaderBehavior || "none") !== "none") carried.push("headers");
-  if ((key.QueryStringsConfig?.QueryStringBehavior || "none") !== "none") carried.push("query strings");
-  if (carried.length === 0) return;
-  throw new Error(
-    `refusing --cache-policy=replace: your current cache policy keys on ${carried.join(", ")}, ` +
-      "and the stack's policy does not. Replacing it would collapse those cache " +
-      "variants into one entry and serve one visitor's page to the next.\n\n" +
-      "Use --cache-policy=keep and add the `x-norg-agent` header to your own " +
-      "policy's cache key instead (copy it first if it is a managed policy).",
-  );
+function lambdaConcurrencyQuotas() {
+  return EDGE_REGIONS.map((region) => {
+    try {
+      const { Quota } = aws(
+        ["service-quotas", "get-service-quota", "--service-code", "lambda",
+          "--quota-code", LAMBDA_CONCURRENCY_QUOTA_CODE],
+        region,
+      );
+      return { region, value: typeof Quota?.Value === "number" ? Quota.Value : null };
+    } catch (e) {
+      return { region, value: null };
+    }
+  });
 }
 
 /**
- * Decide what to do about the cache key, or refuse until told.
+ * Human-readable lines for the quota table, with a warning on low regions.
  *
- * @param {Object} behaviour The default cache behaviour.
- * @param {Object} options Parsed CLI options.
- * @param {Object} outputs Stack outputs.
- * @returns {?string} Cache policy id to set, or null to leave it alone.
+ * @param {Array<{region: string, value: ?number}>} quotas From lambdaConcurrencyQuotas.
+ * @returns {Array<string>} Lines to print.
  */
-function resolveCachePolicy(behaviour, options, outputs) {
-  if (options.cachePolicy === "keep") return null;
-  if (options.cachePolicy === "replace") return outputs.CachePolicyId;
-
-  throw new Error(
-    "the router needs `x-norg-agent` in this behaviour's cache key. Without it, a " +
-      "page warmed by a human is served from cache to the next AI agent and the " +
-      "router never runs — the install looks fine and does nothing.\n\n" +
-      `This behaviour currently uses cache policy ${behaviour.CachePolicyId}.\n\n` +
-      "Choose explicitly:\n" +
-      "  --cache-policy=replace  use the stack's policy (DefaultTTL 0, honours your\n" +
-      "                          origin's Cache-Control; review it first)\n" +
-      "  --cache-policy=keep     keep yours — then add the `x-norg-agent` header to\n" +
-      "                          its cache key yourself. A CloudFront MANAGED policy\n" +
-      "                          cannot be edited, so 'keep' means copying it first.",
-  );
+function quotaLines(quotas) {
+  const lines = quotas.map(({ region, value }) => {
+    const shown = value === null ? "unreadable" : String(value);
+    const flag = value !== null && value < LOW_CONCURRENCY_QUOTA ? "  <- LOW" : "";
+    return `  ${region.padEnd(16)} ${shown.padStart(6)}${flag}`;
+  });
+  const low = quotas.filter((q) => q.value !== null && q.value < LOW_CONCURRENCY_QUOTA);
+  if (low.length) {
+    lines.push(
+      "",
+      "  Every page request is a Lambda@Edge invocation, and each instance serves",
+      "  10 requests per second: a region's ceiling is 10x its quota, and past it",
+      `  CloudFront answers every page request there with a 503. Request an increase`,
+      `  for quota ${LAMBDA_CONCURRENCY_QUOTA_CODE} (service: lambda) in: ${low.map((q) => q.region).join(", ")}.`,
+    );
+  }
+  return lines;
 }
 
 /**
@@ -242,40 +222,32 @@ function attach(config, outputs, options) {
 
   const changes = [];
   // IncludeBody is OFF on the default behaviour on purpose: it is set per
-  // association, not per path, and on here it delivers every cache-miss POST
-  // body on the site into the router's memory. The MCP transport is the one
-  // surface that needs a body, and it gets its own behaviours (below) — the
-  // only place IncludeBody is true.
+  // association, not per path, and on here it delivers every POST body on the
+  // site into the router's memory. The MCP transport is the one surface that
+  // needs a body, and it gets its own behaviours (below) — the only place
+  // IncludeBody is true.
   behaviour.LambdaFunctionAssociations = {
-    Quantity: 2,
+    Quantity: 1,
     Items: [
       {
         EventType: "origin-request",
         LambdaFunctionARN: outputs.EdgeRouterVersionArn,
         IncludeBody: false,
       },
-      {
-        EventType: "origin-response",
-        LambdaFunctionARN: outputs.CacheGuardVersionArn,
-        IncludeBody: false,
-      },
     ],
   };
   changes.push(`origin-request  -> ${outputs.EdgeRouterVersionArn} (IncludeBody off)`);
-  changes.push(`origin-response -> ${outputs.CacheGuardVersionArn} (cache guard)`);
 
-  behaviour.FunctionAssociations = {
-    Quantity: 1,
-    Items: [{ EventType: "viewer-request", FunctionARN: outputs.ViewerClassifierArn }],
-  };
-  changes.push(`viewer-request  -> ${outputs.ViewerClassifierArn}`);
-
-  const cachePolicyId = resolveCachePolicy(behaviour, options, outputs);
-  if (cachePolicyId) {
-    changes.push(`cache policy    ${behaviour.CachePolicyId} -> ${cachePolicyId}`);
-    behaviour.CachePolicyId = cachePolicyId;
+  // Pages are never cached at the edge. Stated here in the words the operator
+  // reads in the dry run, because it is the one change to their caching.
+  if (behaviour.CachePolicyId !== MANAGED_CACHING_DISABLED_ID) {
+    changes.push(
+      `cache policy    ${behaviour.CachePolicyId} -> CachingDisabled ` +
+        "(HTML is no longer cached at the edge; your origin answers every page request)",
+    );
+    behaviour.CachePolicyId = MANAGED_CACHING_DISABLED_ID;
   } else {
-    changes.push("cache policy    unchanged (you are adding x-norg-agent to it yourself)");
+    changes.push("cache policy    CachingDisabled (already)");
   }
 
   behaviour.OriginRequestPolicyId = outputs.OriginRequestPolicyId;
@@ -333,7 +305,6 @@ function setOriginHeaders(origin, outputs, options) {
 function detach(config) {
   const behaviour = config.DefaultCacheBehavior;
   behaviour.LambdaFunctionAssociations = { Quantity: 0, Items: [] };
-  behaviour.FunctionAssociations = { Quantity: 0, Items: [] };
 
   const keptBehaviours = (config.CacheBehaviors?.Items || []).filter((b) => !isOurs(b, config));
   config.CacheBehaviors = { Quantity: keptBehaviours.length, Items: keptBehaviours };
@@ -347,11 +318,9 @@ function detach(config) {
 
   return [
     "origin-request  -> removed",
-    "origin-response -> removed",
-    "viewer-request  -> removed",
     "origin headers  -> x-norg-* removed",
     "carve-outs      -> removed (yours kept)",
-    "cache policy    unchanged (change it back yourself if you replaced it)",
+    "cache policy    CachingDisabled left in place (set your own back if you want HTML cached again)",
   ];
 }
 
@@ -383,7 +352,8 @@ function assertDoesNotShadowNorg(pattern) {
 /**
  * The behaviours the router adds, in match order (first match wins).
  *
- *  1. MCP paths — the full router, and the ONLY place IncludeBody is on.
+ *  1. MCP paths — the full router, never cached, and the ONLY place
+ *     IncludeBody is on.
  *  2. Dynamic paths — no Lambda, NO cache (managed CachingDisabled), every
  *     method allowed. A 24 h TTL on /cart would serve one visitor's page to
  *     the next, so these must not share the static policy.
@@ -404,17 +374,12 @@ function carveOutBehaviours(outputs, targetOriginId) {
   const mcp = MCP_PATH_PATTERNS.map((pattern) => ({
     ...base(pattern),
     AllowedMethods: ALL_METHODS,
-    CachePolicyId: outputs.CachePolicyId,
+    CachePolicyId: MANAGED_CACHING_DISABLED_ID,
     OriginRequestPolicyId: outputs.OriginRequestPolicyId,
-    FunctionAssociations: {
-      Quantity: 1,
-      Items: [{ EventType: "viewer-request", FunctionARN: outputs.ViewerClassifierArn }],
-    },
     LambdaFunctionAssociations: {
-      Quantity: 2,
+      Quantity: 1,
       Items: [
         { EventType: "origin-request", LambdaFunctionARN: outputs.EdgeRouterVersionArn, IncludeBody: true },
-        { EventType: "origin-response", LambdaFunctionARN: outputs.CacheGuardVersionArn, IncludeBody: false },
       ],
     },
   }));
@@ -576,18 +541,16 @@ async function main() {
   const current = aws(["cloudfront", "get-distribution-config", "--id", options.distributionId]);
   const config = current.DistributionConfig;
 
-  if (!options.detach && options.cachePolicy === "replace") {
-    const { CachePolicy } = aws([
-      "cloudfront", "get-cache-policy", "--id", config.DefaultCacheBehavior.CachePolicyId,
-    ]);
-    assertReplaceIsSafe(CachePolicy?.CachePolicyConfig);
-  }
-
   const changes = options.detach ? detach(config) : attach(config, outputs, options);
 
   console.log(`\nDistribution ${options.distributionId} (${config.Comment || "no comment"})`);
   console.log("Default cache behaviour changes:\n");
   for (const change of changes) console.log(`  ${change}`);
+
+  if (!options.detach) {
+    console.log("\nLambda concurrency quota per Lambda@Edge region (the 503 ceiling):\n");
+    for (const line of quotaLines(lambdaConcurrencyQuotas())) console.log(line);
+  }
 
   if (!options.apply) {
     console.log("\nDry run. Re-run with --apply to make these changes.");
@@ -640,12 +603,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 
 export {
   addCarveOuts,
-  assertReplaceIsSafe,
   isOurs,
   attach,
   carveOutBehaviours,
   detach,
   parseArgs,
-  resolveCachePolicy,
+  quotaLines,
   setOriginHeaders,
 };

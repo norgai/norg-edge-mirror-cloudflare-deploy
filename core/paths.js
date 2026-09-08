@@ -10,6 +10,8 @@
  */
 
 import {
+  BOT_MARKERS,
+  BROWSER_MARKERS,
   OPENAI_FEED_PATHS,
   RESERVED_NORG_PREFIX,
   SIBLING_ARTIFACT_FILENAMES,
@@ -196,4 +198,45 @@ export function isTraditionalSearchBot(userAgent) {
  */
 export function hasAgentOverride(url) {
   return url.searchParams.get("agent") === "true";
+}
+
+/**
+ * Is this confidently an ordinary browser?
+ *
+ * The cheap human exit for a runtime where every page request reaches the
+ * router. It does NOT decide what to serve — a true answer means "make no
+ * lookup and return the origin"; a false one means "run the real sequence".
+ * The two directions of error are not symmetric, and that asymmetry is the
+ * whole design: a human wrongly called a bot costs one lookup and gets the
+ * origin anyway; an agent wrongly called a human is never diverted, silently.
+ * So the test is deliberately lopsided: true ONLY for a user-agent that is
+ * unambiguously a browser, false for everything else including an absent one.
+ * The set of requests that continue must be a SUPERSET of everything the
+ * router might divert.
+ *
+ * @param {string} userAgent Raw User-Agent header.
+ * @returns {boolean} True only when the shape is unambiguously a browser.
+ */
+export function isOrdinaryBrowser(userAgent) {
+  if (!userAgent) return false;
+  const ua = userAgent.toLowerCase();
+  if (!ua.startsWith("mozilla/5.0")) return false;
+  if (BOT_MARKERS.some((marker) => ua.includes(marker))) return false;
+  return BROWSER_MARKERS.some((marker) => ua.includes(marker));
+}
+
+/**
+ * Does this request carry a Web Bot Auth signature?
+ *
+ * Signed agents (OpenAI's ChatGPT agent, Google-Agent, cloud browsers) present
+ * a plain Chrome user-agent and identify themselves only by RFC 9421 message
+ * signatures. Verifying one is not done here; the presence of the headers is
+ * enough to keep such a request out of the human fast path so the real
+ * sequence sees it.
+ *
+ * @param {Request} request Incoming request.
+ * @returns {boolean} True when signature headers are present.
+ */
+export function hasSignatureHeaders(request) {
+  return Boolean(request.headers.get("signature-agent") || request.headers.get("signature-input"));
 }

@@ -7,12 +7,14 @@
 import { strict as assert } from "node:assert";
 import { afterEach, test } from "node:test";
 
-import { __test_getFeed, __test_setFeed, getBotFeed, refreshFeed } from "../../core/feed.js";
 import {
-  __test_reset as resetDeferred,
-  __test_state as deferredState,
-  flushDeferred,
-} from "../../core/deferred.js";
+  __test_getFeed,
+  __test_setFeed,
+  getBotFeed,
+  knownAgenticPathPrefix,
+  refreshFeed,
+  stampRefusal,
+} from "../../core/feed.js";
 
 const ENV = { SITE_ID: "site-1", NORG_SITE_KEY: "nek_live_key" };
 
@@ -65,8 +67,17 @@ const feedResponse = (body = FEED_BODY, headers = {}) =>
 afterEach(() => {
   globalThis.fetch = realFetch;
   __test_setFeed(null);
-  resetDeferred();
 });
+
+/**
+ * A keep-alive that records what it was handed, like a platform waitUntil.
+ *
+ * @returns {{env: Object, held: Array<Promise>}} Env carrying it, and the list.
+ */
+function keepAliveEnv() {
+  const held = [];
+  return { env: { ...ENV, EDGE_KEEPALIVE: (p) => held.push(p) }, held };
+}
 
 test("a cold container with a 200 feed becomes entitled", async () => {
   __test_setFeed(null);
@@ -112,28 +123,23 @@ for (const status of [401, 403]) {
   });
 }
 
-test("a refusal arriving on the DEFERRED refresh revokes the next request", async () => {
-  // The stale-entitled path answers from cache and refreshes behind the
-  // response — on Cloudflare too — so a revocation lands one request later,
-  // not on the request that discovered it. This pins that one-request lag.
+test("with a keep-alive, a refusal on the background refresh revokes the next request", async () => {
+  // Where the platform holds the instance open (Fastly, Bunny) the stale entry
+  // answers and the refresh runs behind the response — so a revocation lands
+  // one request later, not on the request that discovered it.
   __test_setFeed({
     entitled: true, patterns: [{ pattern: "gptbot" }], cidrRanges: {}, skipPaths: [],
     etag: "", fetchedAt: Date.now() - 10_000, ttl: 1,
   });
   stubFetch([() => new Response("denied", { status: 403 })]);
+  const { env, held } = keepAliveEnv();
 
-  const served = await getBotFeed(ENV);
+  const served = await getBotFeed(env);
   assert.equal(served.entitled, true, "this request still serves from the stale entry");
+  assert.equal(held.length, 1, "the refresh was handed to the platform, not dropped");
 
-  // The refresh is already in flight; the flush is the bounded wait for it.
-  await flushDeferred();
-  await new Promise((resolve) => setTimeout(resolve, 20));
-
-  assert.equal(
-    __test_getFeed().entitled,
-    false,
-    "the deferred refresh must apply the refusal for the next request",
-  );
+  await Promise.all(held);
+  assert.equal(__test_getFeed().entitled, false, "the background refresh applied the refusal");
 });
 
 test("a refusal is negative-cached, so a paused site stops probing on every request", async () => {
@@ -148,7 +154,7 @@ test("a refusal is negative-cached, so a paused site stops probing on every requ
 });
 
 test("an OUTAGE never revokes a working install", async () => {
-  const entitled = {
+  __test_setFeed({
     entitled: true,
     patterns: [{ pattern: "gptbot", serving_policy: "divert" }],
     cidrRanges: {},
@@ -157,17 +163,11 @@ test("an OUTAGE never revokes a working install", async () => {
     // Stale: fetched long ago with a short TTL.
     fetchedAt: Date.now() - 10_000,
     ttl: 1,
-  };
-  __test_setFeed(entitled);
+  });
   stubFetch([() => new Error("ECONNRESET")]);
 
   const feed = await getBotFeed(ENV);
   assert.equal(feed.entitled, true, "the stale entry answers while NORG is away");
-
-  // And crucially the refresh that follows it, which FAILS, must not revoke.
-  await flushDeferred();
-  await new Promise((resolve) => setTimeout(resolve, 20));
-
   assert.equal(
     __test_getFeed().entitled,
     true,
@@ -176,27 +176,19 @@ test("an OUTAGE never revokes a working install", async () => {
   assert.equal(__test_getFeed().patterns.length, 1);
 });
 
-test("a stale entitled feed is served now and refreshed behind the response", async () => {
+test("with a keep-alive, a stale entitled feed answers at once and refreshes behind", async () => {
   __test_setFeed({
-    entitled: true,
-    patterns: [{ pattern: "old" }],
-    cidrRanges: {},
-    skipPaths: [],
-    etag: "",
-    fetchedAt: Date.now() - 10_000,
-    ttl: 1,
+    entitled: true, patterns: [{ pattern: "old" }], cidrRanges: {}, skipPaths: [],
+    etag: "", fetchedAt: Date.now() - 10_000, ttl: 1,
   });
   stubFetch([() => feedResponse()]);
+  const { env, held } = keepAliveEnv();
 
-  const feed = await getBotFeed(ENV);
-
+  const feed = await getBotFeed(env);
   assert.equal(feed.patterns[0].pattern, "old", "the stale entry answers immediately");
-  assert.equal(deferredState().pending, 1, "the refresh is deferred, not dropped");
-  // Deferred work STARTS at the point of deferral rather than at the flush, so
-  // the refresh is already in flight here, overlapping the rest of the
-  // pipeline. What matters is that the visitor was answered from the stale
-  // entry above without waiting for it — issued is not the same as awaited.
-  assert.equal(calls.length, 1, "the refresh is already on its way");
+  assert.equal(held.length, 1);
+  await Promise.all(held);
+  assert.equal(__test_getFeed().patterns[0].pattern, "gptbot");
 });
 
 test("a stale NEGATIVE feed re-probes rather than serving stale", async () => {
@@ -291,4 +283,55 @@ test("a response_cache ttl of 0 survives instead of taking the default", async (
 
   const feed = await getBotFeed(ENV);
   assert.equal(feed.responseCache.ttl, 0);
+});
+
+test("without a keep-alive, a stale entitled feed is refreshed inline before answering", async () => {
+  // Lambda@Edge: a background refresh is lost when the container freezes, so
+  // the refresh is awaited — and every caller has already left the human fast
+  // path, so the wait is an agent's.
+  __test_setFeed({
+    entitled: true, patterns: [{ pattern: "old" }], cidrRanges: {}, skipPaths: [],
+    etag: "", fetchedAt: Date.now() - 10_000, ttl: 1,
+  });
+  stubFetch([async () => {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return feedResponse();
+  }]);
+
+  const feed = await getBotFeed(ENV);
+  assert.equal(feed.patterns[0].pattern, "gptbot", "the fresh entry answers");
+});
+
+test("an inline refresh serves the stale entry when the budget runs out", async () => {
+  __test_setFeed({
+    entitled: true, patterns: [{ pattern: "old" }], cidrRanges: {}, skipPaths: [],
+    etag: "", fetchedAt: Date.now() - 10_000, ttl: 1,
+  });
+  stubFetch([async () => {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    return feedResponse();
+  }]);
+
+  const started = Date.now();
+  const feed = await getBotFeed(ENV, { budgetMs: 30 });
+  assert.equal(feed.patterns[0].pattern, "old", "stale, not nothing");
+  assert.ok(Date.now() - started < 150, "the budget, not the slow call, bounds the wait");
+});
+
+test("a refusal stamped from another call revokes the container at once", () => {
+  __test_setFeed({
+    entitled: true, patterns: [{ pattern: "gptbot" }], cidrRanges: {}, skipPaths: [],
+    etag: "", fetchedAt: Date.now(), ttl: 3_600_000,
+  });
+  stampRefusal();
+  assert.equal(__test_getFeed().entitled, false);
+  assert.deepEqual(__test_getFeed().patterns, []);
+});
+
+test("the known agentic prefix is the default until the feed says otherwise", async () => {
+  __test_setFeed(null);
+  assert.equal(knownAgenticPathPrefix(), "/ai");
+  stubFetch([() => feedResponse({ ...FEED_BODY, agentic_path_prefix: "/for-agents" })]);
+  await getBotFeed(ENV);
+  assert.equal(knownAgenticPathPrefix(), "/for-agents");
 });
