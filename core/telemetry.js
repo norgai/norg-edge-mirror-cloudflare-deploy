@@ -16,6 +16,7 @@
 
 import { DEFERRED_CALL_TIMEOUT_MS } from "./constants.mjs";
 import { binding, controlHeaders } from "./config.js";
+import { edgeFetch, timeoutSignal } from "./http.js";
 import { viewerAttributes } from "./visit.js";
 
 // Served values that describe an untouched origin response. Reported only when
@@ -32,11 +33,11 @@ const PASSTHROUGH_SERVED = new Set(["origin", "origin_thin"]);
  */
 async function postControl(env, path, body) {
   try {
-    const response = await fetch(`${binding(env, "NORG_API_URL")}${path}`, {
+    const response = await edgeFetch(env, `${binding(env, "NORG_API_URL")}${path}`, {
       method: "POST",
       headers: controlHeaders(env),
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(DEFERRED_CALL_TIMEOUT_MS),
+      signal: timeoutSignal(DEFERRED_CALL_TIMEOUT_MS),
     });
     // A refused call used to be indistinguishable from a delivered one: only a
     // thrown error was logged, so a 401 or a 422 left no trace anywhere. That

@@ -29,6 +29,7 @@ import {
   RESERVED_ASSET_CACHE_CONTROL,
 } from "./constants.mjs";
 import { binding, contentStem, controlHeaders, edgeEnv } from "./config.js";
+import { edgeFetch, timeoutSignal } from "./http.js";
 import { stampRefusal } from "./feed.js";
 
 /**
@@ -58,9 +59,9 @@ import { stampRefusal } from "./feed.js";
 export async function fetchFromNorg(env, keySuffix, extraHeaders = {}) {
   const target = `${contentStem(env)}${keySuffix}`;
   try {
-    const response = await fetch(target, {
+    const response = await edgeFetch(env, target, {
       headers: { ...controlHeaders(env), [LOOP_GUARD_HEADER]: "1", ...extraHeaders },
-      signal: AbortSignal.timeout(MIRROR_FETCH_TIMEOUT_MS),
+      signal: timeoutSignal(MIRROR_FETCH_TIMEOUT_MS),
     });
 
     if (response.status === 404) return { response: null, missing: true, refused: false };
