@@ -1,47 +1,29 @@
 /**
- * Outbound control calls to NORG: visit events, render requests, heartbeats.
+ * Outbound control calls to NORG that are not on any visitor's path.
  *
- * @description Reports to NORG without ever delaying the visitor's response.
+ * @description The opt-in passthrough event, sent off the response path.
  *
- * Every call here is deferred (see deferred.js) rather than awaited, matching
- * the Cloudflare worker's use of `ctx.waitUntil`. Telemetry must never affect
- * what the visitor sees, so failures are swallowed and no caller inspects a
- * result.
- *
- * One deliberate behavioural difference from Cloudflare. The worker logs an
- * event for EVERY classified visit, including the plain origin passthrough that
- * humans take. On CloudFront the origin-request trigger only fires on a cache
- * MISS, so that event stream would be both incomplete and — since it rides the
- * customer's human traffic — the one place where a slow NORG could be felt by a
- * real visitor. Passthrough events are therefore off by default and enabled per
- * install with `x-norg-events-verbose`. Diverted traffic, which is what the
- * product measures, is always reported.
+ * Agent visits are not reported from here: every adapter records those by
+ * describing the visit in a header on the mirror fetch it awaits anyway
+ * (core/visit.js), and the receptionist writes the event through its own
+ * deferred-work primitive. What remains is the human passthrough event, off
+ * by default, which must never hold a person's response. It is started at
+ * once and handed to the platform's keep-alive when the adapter provides one
+ * (`env.EDGE_KEEPALIVE`, Fastly and Bunny); where none exists (Lambda@Edge) it
+ * is left un-awaited, and a freezing container may drop it. That is the
+ * accepted cost of never making a human wait.
  */
 
-import {
-  DEFERRED_CALL_TIMEOUT_MS,
-  HEARTBEAT_MIN_INTERVAL_MS,
-  RENDER_DEDUP_MAX_ENTRIES,
-  RENDER_DEDUP_TTL_MS,
-} from "./constants.mjs";
-import { binding, controlHeaders, edgeEnv } from "./config.js";
-import { edgeFetch, timeoutSignal } from "./http.js";
-import { defer } from "./deferred.js";
+import { DEFERRED_CALL_TIMEOUT_MS } from "./constants.mjs";
+import { binding, controlHeaders } from "./config.js";
+import { viewerAttributes } from "./visit.js";
 
 // Served values that describe an untouched origin response. Reported only when
 // the install opts into verbose events.
 const PASSTHROUGH_SERVED = new Set(["origin", "origin_thin"]);
 
-let lastHeartbeatAt = 0;
-const renderDedup = new Map();
-
 /**
  * POST to a NORG control endpoint, swallowing every failure.
- *
- * The abort budget is the DEFERRED one, deliberately shorter than a foreground
- * call's. Every caller here is queued through `defer`, and a call permitted to
- * outlive the flush waiting on it is a call that gets abandoned in flight on
- * every runtime without a keep-alive.
  *
  * @param {Object} env Install config.
  * @param {string} path API path beginning with "/".
@@ -50,11 +32,11 @@ const renderDedup = new Map();
  */
 async function postControl(env, path, body) {
   try {
-    const response = await edgeFetch(env, `${binding(env, "NORG_API_URL")}${path}`, {
+    const response = await fetch(`${binding(env, "NORG_API_URL")}${path}`, {
       method: "POST",
       headers: controlHeaders(env),
       body: JSON.stringify(body),
-      signal: timeoutSignal(DEFERRED_CALL_TIMEOUT_MS),
+      signal: AbortSignal.timeout(DEFERRED_CALL_TIMEOUT_MS),
     });
     // A refused call used to be indistinguishable from a delivered one: only a
     // thrown error was logged, so a 401 or a 422 left no trace anywhere. That
@@ -70,151 +52,62 @@ async function postControl(env, path, body) {
 }
 
 /**
- * Geo and connection attributes CloudFront exposes as request headers.
+ * The event document NORG's /edge/events endpoint stores.
  *
- * Cloudflare hands these over as `request.cf`; CloudFront adds them as
- * `CloudFront-Viewer-*` headers, but ONLY when the distribution's origin
- * request policy asks for them, so every field is independently optional and a
- * missing one must read as null rather than break the event.
- *
- * @param {Headers} headers Request headers.
- * @returns {Object} Event fields describing where the request came from.
+ * @param {Request} request Incoming request.
+ * @param {Object} classification Bot classification.
+ * @param {string} served How the request was answered.
+ * @returns {Object} JSON body.
  */
-function viewerAttributes(headers) {
-  const value = (name) => headers.get(name) || null;
+function eventBody(request, classification, served) {
+  const url = new URL(request.url);
   return {
-    ip_country: value("cloudfront-viewer-country"),
-    ip_city: value("cloudfront-viewer-city"),
-    asn: value("cloudfront-viewer-asn"),
-    // CloudFront publishes no AS organisation name and no edge-location id in
-    // request headers; both are Cloudflare-only. Null keeps the event shape
-    // identical across providers rather than inventing a value.
-    as_organization: null,
-    colo: null,
-    http_protocol: value("cloudfront-viewer-http-version"),
-    // CloudFront publishes the whole negotiated suite here —
-    // `TLSv1.3:TLS_AES_128_GCM_SHA256:fullHandshake` — where Cloudflare's
-    // `request.cf.tlsVersion` is just `TLSv1.3`. Sending it whole is what made
-    // every CloudFront visit event fail: 44 characters into the 20-character
-    // column NORG stores it in, so the endpoint answered 500 and the event was
-    // discarded. Take the protocol and match the shape the other providers send.
-    tls_version: firstField(value("cloudfront-viewer-tls")),
+    domain: url.hostname,
+    path: url.pathname,
+    user_agent: request.headers.get("user-agent") || null,
+    is_ai_bot: classification.is_ai_bot,
+    bot_name: classification.bot_name,
+    company: classification.company,
+    purpose: classification.purpose,
+    served,
+    raw_word_count: null,
+    response_status: null,
+    ...viewerAttributes(request.headers),
   };
 }
 
 /**
- * The first colon-separated field of a header value.
- *
- * @param {?string} raw Header value, or null.
- * @returns {?string} Text before the first colon, or null.
- */
-function firstField(raw) {
-  return raw ? raw.split(":")[0] : null;
-}
-
-/**
- * Report a classified visit to NORG.
+ * Report a visit with a call that is started now and never waited for here.
  *
  * @param {Object} env Install config.
  * @param {Request} request Incoming request.
  * @param {Object} classification Bot classification.
  * @param {string} served How the request was answered.
- * @param {?number} rawWordCount Visible words in the raw origin, or null.
- * @param {?number} responseStatus Status actually returned, or null.
- * @returns {void}
+ * @returns {Promise<void>} Settles with the call; never rejects.
  */
-export function logEdgeEvent(
-  env,
-  request,
-  classification,
-  served,
-  rawWordCount = null,
-  responseStatus = null,
-) {
-  if (PASSTHROUGH_SERVED.has(served) && env.EDGE_EVENTS_VERBOSE !== "true") return;
-
-  const url = new URL(request.url);
-  defer(() =>
-    postControl(env, "/api/v1/edge/events", {
-      domain: url.hostname,
-      path: url.pathname,
-      user_agent: request.headers.get("user-agent") || null,
-      is_ai_bot: classification.is_ai_bot,
-      bot_name: classification.bot_name,
-      company: classification.company,
-      purpose: classification.purpose,
-      served,
-      raw_word_count: rawWordCount,
-      response_status: responseStatus,
-      ...viewerAttributes(request.headers),
-    }),
-  );
-}
-
-/**
- * Send a heartbeat if enough time has passed in this container.
- *
- * @param {Object} env Install config.
- * @param {string} trigger "traffic" or "cron".
- * @returns {void}
- */
-export function maybeHeartbeat(env, trigger) {
-  const now = Date.now();
-  if (trigger === "traffic" && now - lastHeartbeatAt < HEARTBEAT_MIN_INTERVAL_MS) return;
-  lastHeartbeatAt = now;
-
-  defer(() =>
-    postControl(env, "/api/v1/edge/heartbeat", {
-      script_version: env.EDGE_SCRIPT_VERSION || "unknown",
-      trigger,
-      // The environment this install believes it is bound to. NORG warns when
-      // this disagrees with the environment it can confirm, surfacing a
-      // wrong-env manual install.
-      env: edgeEnv(env),
-      // Tells NORG which artifact is reporting, so drift detection compares
-      // against that provider's version setting rather than the Cloudflare one.
-      platform: env.EDGE_PLATFORM || "unknown",
-    }),
-  );
-}
-
-/**
- * Ask NORG to render a path, at most once per path per container window.
- *
- * Fired only when the receptionist returned a definite 404. A timeout or
- * network error is NOT a miss — reporting those would let an outage look like
- * every page vanishing, and NORG would re-render the whole site.
- *
- * @param {Object} env Install config.
- * @param {URL} url Requested URL.
- * @returns {void}
- */
-export function requestRender(env, url) {
-  const now = Date.now();
-  const seenAt = renderDedup.get(url.pathname);
-  if (seenAt && now - seenAt < RENDER_DEDUP_TTL_MS) return;
-
-  // Bounded: drop the oldest entry rather than let a container grow forever.
-  if (renderDedup.size >= RENDER_DEDUP_MAX_ENTRIES) {
-    renderDedup.delete(renderDedup.keys().next().value);
+export function fireEdgeEvent(env, request, classification, served) {
+  if (PASSTHROUGH_SERVED.has(served) && env.EDGE_EVENTS_VERBOSE !== "true") {
+    return Promise.resolve();
   }
-  renderDedup.set(url.pathname, now);
-
-  defer(() =>
-    postControl(env, "/api/v1/edge/render-requests", {
-      path: url.pathname,
-      url: url.toString(),
-      reason: "bot_miss",
-    }),
-  );
+  return postControl(env, "/api/v1/edge/events", eventBody(request, classification, served))
+    .then(() => undefined)
+    .catch(() => undefined);
 }
 
 /**
- * Reset per-container throttles. Test-only.
+ * Report a human passthrough, entirely off the visitor's path.
  *
+ * Opt-in (`EDGE_EVENTS_VERBOSE`). The call is handed to the platform's
+ * keep-alive where the adapter provides one, so on Fastly and Bunny it lands
+ * after the response; elsewhere it is best-effort.
+ *
+ * @param {Object} env Install config.
+ * @param {Request} request Incoming request.
+ * @param {Object} classification Classification to report, human by default.
  * @returns {void}
  */
-export function __test_reset() {
-  lastHeartbeatAt = 0;
-  renderDedup.clear();
+export function reportPassthrough(env, request, classification) {
+  if (env.EDGE_EVENTS_VERBOSE !== "true") return;
+  const done = fireEdgeEvent(env, request, classification, "origin");
+  if (typeof env.EDGE_KEEPALIVE === "function") env.EDGE_KEEPALIVE(done);
 }

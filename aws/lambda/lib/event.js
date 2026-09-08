@@ -28,6 +28,11 @@
 // headers a CDN must own. Matched case-insensitively, prefixes included.
 const DISALLOWED_RESPONSE_HEADERS = new Set([
   "connection",
+  // Node's fetch decodes gzip and brotli bodies but leaves the header on the
+  // response. Relaying it onto a generated response labels a plain body as
+  // compressed, and the client then fails to decode it. CloudFront compresses
+  // the generated response itself where the viewer accepts it.
+  "content-encoding",
   "content-length",
   "expect",
   "keep-alive",
