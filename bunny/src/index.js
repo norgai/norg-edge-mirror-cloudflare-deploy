@@ -19,7 +19,7 @@
  * without the preview 400ed the whole zone until the hook was removed.)
  *
  * The consequence is that the router runs on a cache MISS only, so the install
- * must disable the pull zone's cache. See the README, "The cache is the
+ * keeps HTML out of the pull zone's cache. See the README, "The cache is the
  * hazard".
  */
 
@@ -27,7 +27,6 @@ import * as BunnySDK from "@bunny.net/edgescript-sdk@0.12.1";
 import process from "node:process";
 
 import { isConfigured } from "../../core/config.js";
-import { flushDeferred, sweepDeferred } from "../../core/deferred.js";
 
 import { readConfig } from "./lib/config.js";
 import { PASSTHROUGH } from "./lib/origin.js";
@@ -96,26 +95,16 @@ export async function onOriginRequest(ctx) {
     // correct behaviour is to do nothing rather than fail slowly on each one.
     if (!isConfigured(env)) return request;
 
-    // Clears anything a previous request on this isolate left outstanding,
-    // overlapped with the pipeline's own network calls so it normally costs
-    // this request nothing.
-    const swept = sweepDeferred();
+    // The only background work left is the opt-in passthrough event and a
+    // stale feed's refresh; core hands each to this, and Bunny holds the
+    // isolate open until it settles. Agent visits are recorded by NORG's
+    // content service from the visit header, never from here.
+    env.EDGE_KEEPALIVE = keepAlive;
     const result = await raceWatchdog(request, env);
-    await swept;
-
-    // Asks Bunny to hold the isolate open until this request's own deferred
-    // work settles. The promise MUST track settlement, not merely the start of
-    // the work — one that resolves early tells the platform there is nothing
-    // left to wait for, and the isolate is torn down with the visit event
-    // still in flight. That is what this handed Bunny before 0.5.1.
-    keepAlive(flushDeferred());
 
     return result === PASSTHROUGH ? request : result;
   } catch (e) {
     console.error("norg edge router error", e);
-    // The pipeline may have deferred a visit event before throwing. Handing it
-    // to the platform costs the visitor nothing and saves the event.
-    keepAlive(flushDeferred());
     return request;
   }
 }

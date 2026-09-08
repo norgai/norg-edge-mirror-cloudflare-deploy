@@ -20,16 +20,41 @@ var HEALTH_CHECK_HEADER = "x-norg-edge-check";
 var MIRROR_FETCH_TIMEOUT_MS = 4e3;
 var PATTERN_FETCH_TIMEOUT_MS = 5e3;
 var DEFERRED_CALL_TIMEOUT_MS = 1200;
-var DEFERRED_FLUSH_BUDGET_MS = 1500;
-var DEFERRED_SWEEP_BUDGET_MS = 200;
 var MCP_FORWARD_TIMEOUT_MS = 3e3;
 var RESPONSE_CACHE_DEFAULT_TTL_SECONDS = 300;
 var PATTERN_DEFAULT_TTL_MS = 3600 * 1e3;
 var UNENTITLED_TTL_MS = 60 * 1e3;
 var HEARTBEAT_MIN_INTERVAL_MS = 15 * 60 * 1e3;
 var RENDER_DEDUP_TTL_MS = 10 * 60 * 1e3;
-var RENDER_DEDUP_MAX_ENTRIES = 500;
 var STRIP_WORD_FLOOR = 120;
+var BOT_MARKERS = [
+  "bot",
+  "crawl",
+  "spider",
+  "slurp",
+  "scrape",
+  "fetch",
+  "agent",
+  "compatible;",
+  "http://",
+  "https://",
+  "headless",
+  "preview",
+  "python",
+  "curl",
+  "wget",
+  "java/",
+  "okhttp",
+  "axios",
+  "node-fetch",
+  "go-http",
+  "ruby",
+  "perl",
+  "libwww",
+  "httpx",
+  "aiohttp"
+];
+var BROWSER_MARKERS = ["chrome/", "safari/", "firefox/", "edg/", "opr/", "trident/"];
 var TRADITIONAL_SEARCH_BOTS = [
   "googlebot",
   "bingbot",
@@ -171,34 +196,8 @@ function isConfigured(env) {
   return Boolean(env.SITE_ID && env.NORG_SITE_KEY);
 }
 
-// core/deferred.js
-var inFlight = [];
-function defer(task) {
-  const entry = { settled: false };
-  entry.promise = Promise.resolve().then(task).catch((error) => {
-    console.error("norg edge deferred task failed", error);
-  }).finally(() => {
-    entry.settled = true;
-  });
-  inFlight.push(entry);
-}
-async function flushDeferred({
-  budgetMs = DEFERRED_FLUSH_BUDGET_MS
-} = {}) {
-  const outstanding = inFlight.filter((entry) => entry.settled !== true);
-  inFlight = outstanding;
-  if (outstanding.length === 0) return;
-  await Promise.race([
-    Promise.allSettled(outstanding.map((entry) => entry.promise)),
-    new Promise((resolve) => setTimeout(resolve, budgetMs))
-  ]);
-}
-async function sweepDeferred() {
-  return flushDeferred({ budgetMs: DEFERRED_SWEEP_BUDGET_MS });
-}
-
 // bunny/src/lib/config.js
-var EDGE_SCRIPT_VERSION = "0.1.2";
+var EDGE_SCRIPT_VERSION = "0.2.0";
 var ENV_NAMES = [
   "SITE_ID",
   "NORG_SITE_KEY",
@@ -491,6 +490,7 @@ function anonymousClassification() {
 }
 
 // core/feed.js
+var STALE_REFRESH_BUDGET_MS = 2e3;
 var feedCache = {
   entitled: false,
   patterns: [],
@@ -562,11 +562,12 @@ async function refreshFeed(env) {
   feedCache = entry;
   return { outcome: "ok", entry };
 }
-async function getBotFeed(env) {
+async function getBotFeed(env, { budgetMs = STALE_REFRESH_BUDGET_MS } = {}) {
   const now = Date.now();
   if (feedCache.fetchedAt && now - feedCache.fetchedAt < feedCache.ttl) return feedCache;
   if (feedCache.entitled) {
-    defer(() => refreshFeed(env));
+    if (typeof env.EDGE_KEEPALIVE === "function") env.EDGE_KEEPALIVE(refreshFeed(env));
+    else await refreshWithin(env, budgetMs);
     return feedCache;
   }
   const { outcome, entry } = await refreshFeed(env);
@@ -574,24 +575,110 @@ async function getBotFeed(env) {
   if (outcome === "unreachable") stampNegativeFeed();
   return feedCache;
 }
+async function refreshWithin(env, budgetMs) {
+  let timer;
+  await Promise.race([
+    refreshFeed(env),
+    new Promise((resolve) => {
+      timer = setTimeout(resolve, budgetMs);
+    })
+  ]).finally(() => clearTimeout(timer));
+}
+function stampRefusal() {
+  stampNegativeFeed();
+}
+function knownAgenticPathPrefix() {
+  return feedCache.agenticPathPrefix || DEFAULT_AGENTIC_PATH_PREFIX;
+}
 function isEntitled() {
   return feedCache.entitled;
 }
 
+// core/paths.js
+function isDiscoveryPath(pathname) {
+  return pathname === "/llms.txt" || pathname === "/llms-full.txt" || pathname === "/tree.json" || pathname === "/graph.jsonld" || pathname === "/agents.md";
+}
+function isSiblingArtifactPath(pathname) {
+  return SIBLING_ARTIFACT_FILENAMES.has(pathname.slice(pathname.lastIndexOf("/") + 1));
+}
+function siblingPageOf(pathname) {
+  return pathname.slice(0, pathname.lastIndexOf("/")) || "/";
+}
+function isReservedNorgPath(pathname) {
+  return pathname.startsWith(RESERVED_NORG_PREFIX);
+}
+function isOpenAiFeedPath(pathname) {
+  return OPENAI_FEED_PATHS.has(pathname);
+}
+function isMcpPath(pathname) {
+  return pathname === "/.well-known/mcp.json" || pathname.endsWith("/mcp") || pathname.endsWith("/sse");
+}
+function isNorgOwnedArtifactPath(pathname) {
+  return isMcpPath(pathname) || isDiscoveryPath(pathname) || isReservedNorgPath(pathname) || isOpenAiFeedPath(pathname);
+}
+function isStaticAssetPath(pathname) {
+  const lastSlash = pathname.lastIndexOf("/");
+  const segment = lastSlash === -1 ? pathname : pathname.slice(lastSlash + 1);
+  const dot = segment.lastIndexOf(".");
+  if (dot <= 0 || dot === segment.length - 1) return false;
+  return STATIC_ASSET_SUFFIXES.has(segment.slice(dot).toLowerCase());
+}
+function normaliseSkipPath(pathname) {
+  if (pathname.length <= 1) return pathname;
+  const collapsed = pathname.replace(/\/{2,}/g, "/");
+  return collapsed.replace(/\/+$/, "") || "/";
+}
+function isSkippedPath(feed, pathname) {
+  return Boolean(feed.skipPaths && feed.skipPaths.includes(normaliseSkipPath(pathname)));
+}
+function isTraditionalSearchBot(userAgent) {
+  const ua = (userAgent || "").toLowerCase();
+  return TRADITIONAL_SEARCH_BOTS.some((bot) => ua.includes(bot));
+}
+function hasAgentOverride(url) {
+  return url.searchParams.get("agent") === "true";
+}
+function isOrdinaryBrowser(userAgent) {
+  if (!userAgent) return false;
+  const ua = userAgent.toLowerCase();
+  if (!ua.startsWith("mozilla/5.0")) return false;
+  if (BOT_MARKERS.some((marker) => ua.includes(marker))) return false;
+  return BROWSER_MARKERS.some((marker) => ua.includes(marker));
+}
+function hasSignatureHeaders(request) {
+  return Boolean(request.headers.get("signature-agent") || request.headers.get("signature-input"));
+}
+
+// core/fastpath.js
+function isNorgSurface(pathname) {
+  return isNorgOwnedArtifactPath(pathname) || isSiblingArtifactPath(pathname) || isAgenticPath(pathname, knownAgenticPathPrefix());
+}
+function fastPathExit(request, url, userAgent) {
+  if (isNorgSurface(url.pathname)) return null;
+  if (isStaticAssetPath(url.pathname)) return "static";
+  if (isTraditionalSearchBot(userAgent)) return "search";
+  const plainHuman = isOrdinaryBrowser(userAgent) && !hasAgentOverride(url) && !hasSignatureHeaders(request);
+  return plainHuman ? "human" : null;
+}
+
 // core/norg.js
-async function fetchFromNorg(env, keySuffix) {
+async function fetchFromNorg(env, keySuffix, extraHeaders = {}) {
   const target = `${contentStem(env)}${keySuffix}`;
   try {
     const response = await fetch(target, {
-      headers: { ...controlHeaders(env), [LOOP_GUARD_HEADER]: "1" },
+      headers: { ...controlHeaders(env), [LOOP_GUARD_HEADER]: "1", ...extraHeaders },
       signal: AbortSignal.timeout(MIRROR_FETCH_TIMEOUT_MS)
     });
-    if (response.status === 404) return { response: null, missing: true };
-    if (!response.ok) return { response: null, missing: false };
-    return { response, missing: false };
+    if (response.status === 404) return { response: null, missing: true, refused: false };
+    if (REFUSAL_STATUSES.has(response.status)) {
+      stampRefusal();
+      return { response: null, missing: false, refused: true };
+    }
+    if (!response.ok) return { response: null, missing: false, refused: false };
+    return { response, missing: false, refused: false };
   } catch (e) {
     console.error("norg edge mirror fetch failed", e);
-    return { response: null, missing: false };
+    return { response: null, missing: false, refused: false };
   }
 }
 function setNonCacheable(headers) {
@@ -674,51 +761,6 @@ function healthResponse(env, entitled) {
       }
     }
   );
-}
-
-// core/paths.js
-function isDiscoveryPath(pathname) {
-  return pathname === "/llms.txt" || pathname === "/llms-full.txt" || pathname === "/tree.json" || pathname === "/graph.jsonld" || pathname === "/agents.md";
-}
-function isSiblingArtifactPath(pathname) {
-  return SIBLING_ARTIFACT_FILENAMES.has(pathname.slice(pathname.lastIndexOf("/") + 1));
-}
-function siblingPageOf(pathname) {
-  return pathname.slice(0, pathname.lastIndexOf("/")) || "/";
-}
-function isReservedNorgPath(pathname) {
-  return pathname.startsWith(RESERVED_NORG_PREFIX);
-}
-function isOpenAiFeedPath(pathname) {
-  return OPENAI_FEED_PATHS.has(pathname);
-}
-function isMcpPath(pathname) {
-  return pathname === "/.well-known/mcp.json" || pathname.endsWith("/mcp") || pathname.endsWith("/sse");
-}
-function isNorgOwnedArtifactPath(pathname) {
-  return isMcpPath(pathname) || isDiscoveryPath(pathname) || isReservedNorgPath(pathname) || isOpenAiFeedPath(pathname);
-}
-function isStaticAssetPath(pathname) {
-  const lastSlash = pathname.lastIndexOf("/");
-  const segment = lastSlash === -1 ? pathname : pathname.slice(lastSlash + 1);
-  const dot = segment.lastIndexOf(".");
-  if (dot <= 0 || dot === segment.length - 1) return false;
-  return STATIC_ASSET_SUFFIXES.has(segment.slice(dot).toLowerCase());
-}
-function normaliseSkipPath(pathname) {
-  if (pathname.length <= 1) return pathname;
-  const collapsed = pathname.replace(/\/{2,}/g, "/");
-  return collapsed.replace(/\/+$/, "") || "/";
-}
-function isSkippedPath(feed, pathname) {
-  return Boolean(feed.skipPaths && feed.skipPaths.includes(normaliseSkipPath(pathname)));
-}
-function isTraditionalSearchBot(userAgent) {
-  const ua = (userAgent || "").toLowerCase();
-  return TRADITIONAL_SEARCH_BOTS.some((bot) => ua.includes(bot));
-}
-function hasAgentOverride(url) {
-  return url.searchParams.get("agent") === "true";
 }
 
 // core/strip.js
@@ -890,10 +932,58 @@ function countVisibleWords(html) {
   return text ? text.split(" ").length : 0;
 }
 
+// core/visit.js
+var MAX_HEADER_BYTES = 4 * 1024;
+var MAX_USER_AGENT_CHARS = 512;
+var MAX_FIELD_CHARS = 255;
+function viewerAttributes(headers) {
+  const value = (name) => headers.get(name) || null;
+  return {
+    ip_country: value("cloudfront-viewer-country"),
+    ip_city: value("cloudfront-viewer-city"),
+    asn: value("cloudfront-viewer-asn"),
+    // CloudFront publishes no AS organisation name and no edge-location id in
+    // request headers; both are Cloudflare-only. Null keeps the event shape
+    // identical across providers rather than inventing a value.
+    as_organization: null,
+    colo: null,
+    http_protocol: value("cloudfront-viewer-http-version"),
+    // CloudFront publishes the whole negotiated suite here —
+    // `TLSv1.3:TLS_AES_128_GCM_SHA256:fullHandshake` — where Cloudflare's
+    // `request.cf.tlsVersion` is just `TLSv1.3`. NORG stores the field in 20
+    // characters, so only the protocol is sent.
+    tls_version: firstField(value("cloudfront-viewer-tls"))
+  };
+}
+function firstField(raw) {
+  return raw ? raw.split(":")[0] : null;
+}
+function encode(document) {
+  return Buffer.from(JSON.stringify(document), "utf8").toString("base64url");
+}
+function visitHeader(request, classification, served, servedOnMiss) {
+  const userAgent = request.headers.get("user-agent") || "";
+  const document = {
+    user_agent: userAgent.slice(0, MAX_USER_AGENT_CHARS),
+    is_ai_bot: classification.is_ai_bot,
+    bot_name: classification.bot_name,
+    company: classification.company,
+    purpose: classification.purpose,
+    served,
+    served_on_miss: servedOnMiss
+  };
+  for (const [key, value] of Object.entries(viewerAttributes(request.headers))) {
+    if (value !== null) document[key] = String(value).slice(0, MAX_FIELD_CHARS);
+  }
+  let encoded = encode(document);
+  if (encoded.length > MAX_HEADER_BYTES) {
+    encoded = encode({ ...document, user_agent: userAgent.slice(0, 128) });
+  }
+  return encoded;
+}
+
 // core/telemetry.js
 var PASSTHROUGH_SERVED = /* @__PURE__ */ new Set(["origin", "origin_thin"]);
-var lastHeartbeatAt = 0;
-var renderDedup = /* @__PURE__ */ new Map();
 async function postControl(env, path, body) {
   try {
     const response = await fetch(`${binding(env, "NORG_API_URL")}${path}`, {
@@ -911,82 +1001,32 @@ async function postControl(env, path, body) {
     return null;
   }
 }
-function viewerAttributes(headers) {
-  const value = (name) => headers.get(name) || null;
+function eventBody(request, classification, served) {
+  const url = new URL(request.url);
   return {
-    ip_country: value("cloudfront-viewer-country"),
-    ip_city: value("cloudfront-viewer-city"),
-    asn: value("cloudfront-viewer-asn"),
-    // CloudFront publishes no AS organisation name and no edge-location id in
-    // request headers; both are Cloudflare-only. Null keeps the event shape
-    // identical across providers rather than inventing a value.
-    as_organization: null,
-    colo: null,
-    http_protocol: value("cloudfront-viewer-http-version"),
-    // CloudFront publishes the whole negotiated suite here —
-    // `TLSv1.3:TLS_AES_128_GCM_SHA256:fullHandshake` — where Cloudflare's
-    // `request.cf.tlsVersion` is just `TLSv1.3`. Sending it whole is what made
-    // every CloudFront visit event fail: 44 characters into the 20-character
-    // column NORG stores it in, so the endpoint answered 500 and the event was
-    // discarded. Take the protocol and match the shape the other providers send.
-    tls_version: firstField(value("cloudfront-viewer-tls"))
+    domain: url.hostname,
+    path: url.pathname,
+    user_agent: request.headers.get("user-agent") || null,
+    is_ai_bot: classification.is_ai_bot,
+    bot_name: classification.bot_name,
+    company: classification.company,
+    purpose: classification.purpose,
+    served,
+    raw_word_count: null,
+    response_status: null,
+    ...viewerAttributes(request.headers)
   };
 }
-function firstField(raw) {
-  return raw ? raw.split(":")[0] : null;
-}
-function logEdgeEvent(env, request, classification, served, rawWordCount = null, responseStatus = null) {
-  if (PASSTHROUGH_SERVED.has(served) && env.EDGE_EVENTS_VERBOSE !== "true") return;
-  const url = new URL(request.url);
-  defer(
-    () => postControl(env, "/api/v1/edge/events", {
-      domain: url.hostname,
-      path: url.pathname,
-      user_agent: request.headers.get("user-agent") || null,
-      is_ai_bot: classification.is_ai_bot,
-      bot_name: classification.bot_name,
-      company: classification.company,
-      purpose: classification.purpose,
-      served,
-      raw_word_count: rawWordCount,
-      response_status: responseStatus,
-      ...viewerAttributes(request.headers)
-    })
-  );
-}
-function maybeHeartbeat(env, trigger) {
-  const now = Date.now();
-  if (trigger === "traffic" && now - lastHeartbeatAt < HEARTBEAT_MIN_INTERVAL_MS) return;
-  lastHeartbeatAt = now;
-  defer(
-    () => postControl(env, "/api/v1/edge/heartbeat", {
-      script_version: env.EDGE_SCRIPT_VERSION || "unknown",
-      trigger,
-      // The environment this install believes it is bound to. NORG warns when
-      // this disagrees with the environment it can confirm, surfacing a
-      // wrong-env manual install.
-      env: edgeEnv(env),
-      // Tells NORG which artifact is reporting, so drift detection compares
-      // against that provider's version setting rather than the Cloudflare one.
-      platform: env.EDGE_PLATFORM || "unknown"
-    })
-  );
-}
-function requestRender(env, url) {
-  const now = Date.now();
-  const seenAt = renderDedup.get(url.pathname);
-  if (seenAt && now - seenAt < RENDER_DEDUP_TTL_MS) return;
-  if (renderDedup.size >= RENDER_DEDUP_MAX_ENTRIES) {
-    renderDedup.delete(renderDedup.keys().next().value);
+function fireEdgeEvent(env, request, classification, served) {
+  if (PASSTHROUGH_SERVED.has(served) && env.EDGE_EVENTS_VERBOSE !== "true") {
+    return Promise.resolve();
   }
-  renderDedup.set(url.pathname, now);
-  defer(
-    () => postControl(env, "/api/v1/edge/render-requests", {
-      path: url.pathname,
-      url: url.toString(),
-      reason: "bot_miss"
-    })
-  );
+  return postControl(env, "/api/v1/edge/events", eventBody(request, classification, served)).then(() => void 0).catch(() => void 0);
+}
+function reportPassthrough(env, request, classification) {
+  if (env.EDGE_EVENTS_VERBOSE !== "true") return;
+  const done = fireEdgeEvent(env, request, classification, "origin");
+  if (typeof env.EDGE_KEEPALIVE === "function") env.EDGE_KEEPALIVE(done);
 }
 
 // bunny/src/lib/request.js
@@ -1041,9 +1081,19 @@ async function serveOriginFirstArtifact(originRequest, env, url, alternateFormat
     if (!/text\/html/i.test(contentType)) return origin;
   }
   const { response } = await fetchFromNorg(env, pathToKeySuffix(url.pathname));
-  if (!response) return origin || PASSTHROUGH;
+  if (!response) return PASSTHROUGH;
   const served = mirrorResponse(response, env);
   return alternateFormatHeaders ? withAlternateFormatHeaders(served, url, url.pathname) : served;
+}
+function visitHeaders(request, env, classification, served, servedOnMiss, lazyRender) {
+  const headers = { "X-Norg-Visit": visitHeader(request, classification, served, servedOnMiss) };
+  if (lazyRender && binding(env, "LAZY_RENDER_ENABLED") !== "false") {
+    headers["X-Norg-Lazy-Render"] = "1";
+  }
+  return headers;
+}
+function missIntent(env) {
+  return binding(env, "STRIP_FALLBACK_ENABLED") === "false" ? "origin" : "stripped";
 }
 async function forwardMcpToNorg(originRequest, env, url) {
   try {
@@ -1072,55 +1122,49 @@ async function handleMcp(originRequest, env, url) {
   return response ? mcpResponse(response) : null;
 }
 async function serveAgent(originRequest, request, env, url, classification) {
-  const { response, missing } = await fetchFromNorg(env, pathToKeySuffix(url.pathname));
-  if (response) {
-    logEdgeEvent(env, request, classification, "mirror", null, response.status);
-    return withAlternateFormatHeaders(mirrorResponse(response, env), url, url.pathname);
-  }
-  if (missing && binding(env, "LAZY_RENDER_ENABLED") !== "false") {
-    requestRender(env, url);
-  }
-  return serveStrippedOrigin(originRequest, request, env, classification);
+  const headers = visitHeaders(request, env, classification, "mirror", missIntent(env), true);
+  const { response, refused } = await fetchFromNorg(env, pathToKeySuffix(url.pathname), headers);
+  if (response) return withAlternateFormatHeaders(mirrorResponse(response, env), url, url.pathname);
+  if (refused) return PASSTHROUGH;
+  return serveStrippedOrigin(originRequest, env);
 }
-async function serveStrippedOrigin(originRequest, request, env, classification) {
+async function serveStrippedOrigin(originRequest, env) {
   if (binding(env, "STRIP_FALLBACK_ENABLED") === "false") return PASSTHROUGH;
   const origin = await fetchOrigin(originRequest, MIRROR_FETCH_TIMEOUT_MS);
   if (!origin) return PASSTHROUGH;
   const contentType = origin.headers.get("content-type") || "";
-  if (origin.status !== 200 || !/text\/html/i.test(contentType)) {
-    logEdgeEvent(env, request, classification, "origin", null, origin.status);
-    return origin;
-  }
+  if (origin.status !== 200 || !/text\/html/i.test(contentType)) return PASSTHROUGH;
   const html = await origin.text();
   const stripped = stripHtml(html);
-  const rawWordCount = countVisibleWords(stripped);
-  if (rawWordCount < STRIP_WORD_FLOOR) {
-    logEdgeEvent(env, request, classification, "origin_thin", rawWordCount, origin.status);
-    return PASSTHROUGH;
-  }
-  logEdgeEvent(env, request, classification, "stripped", rawWordCount, origin.status);
+  if (countVisibleWords(stripped) < STRIP_WORD_FLOOR) return PASSTHROUGH;
   return strippedResponse(stripped, origin.status, env);
 }
 async function serveAgenticPath(request, env, url, prefix) {
   const innerPath = url.pathname.slice(prefix.length) || "/";
-  const { response } = await fetchFromNorg(env, pathToKeySuffix(innerPath));
-  const classification = anonymousClassification();
-  if (!response) {
-    logEdgeEvent(env, request, classification, "agentic_path_miss", null, null);
-    return PASSTHROUGH;
-  }
-  logEdgeEvent(env, request, classification, "agentic_path", null, response.status);
+  const headers = visitHeaders(
+    request,
+    env,
+    anonymousClassification(),
+    "agentic_path",
+    "agentic_path_miss",
+    false
+  );
+  const { response } = await fetchFromNorg(env, pathToKeySuffix(innerPath), headers);
+  if (!response) return PASSTHROUGH;
   return withAlternateFormatHeaders(mirrorResponse(response, env), url, url.pathname);
 }
 async function serveAgentOverride(request, env, url) {
-  const classification = agentOverrideClassification();
-  const { response } = await fetchFromNorg(env, pathToKeySuffix(url.pathname));
-  if (response) {
-    logEdgeEvent(env, request, classification, "agent_param_override", null, response.status);
-    return withAlternateFormatHeaders(mirrorResponse(response, env), url, url.pathname);
-  }
-  logEdgeEvent(env, request, classification, "agent_param_override_miss", null, null);
-  return PASSTHROUGH;
+  const headers = visitHeaders(
+    request,
+    env,
+    agentOverrideClassification(),
+    "agent_param_override",
+    "agent_param_override_miss",
+    false
+  );
+  const { response } = await fetchFromNorg(env, pathToKeySuffix(url.pathname), headers);
+  if (!response) return PASSTHROUGH;
+  return withAlternateFormatHeaders(mirrorResponse(response, env), url, url.pathname);
 }
 async function serveNorgOwnedSurface(originRequest, env, url) {
   const pathname = url.pathname;
@@ -1141,17 +1185,13 @@ async function serveNorgOwnedSurface(originRequest, env, url) {
   return null;
 }
 async function serveClassified(originRequest, request, env, url, feed) {
-  if (hasAgentOverride(url)) {
-    maybeHeartbeat(env, "traffic");
-    return serveAgentOverride(request, env, url);
-  }
+  if (hasAgentOverride(url)) return serveAgentOverride(request, env, url);
   const classification = classifyAgent(request.headers.get("user-agent") || "", feed.patterns);
   if (!classification.is_ai_bot) return PASSTHROUGH;
   if (!mayDivert(classification)) return PASSTHROUGH;
   if (!verifiedSource(clientIp(originRequest), feed.cidrRanges, classification)) {
     return PASSTHROUGH;
   }
-  maybeHeartbeat(env, "traffic");
   return serveAgent(originRequest, request, env, url, classification);
 }
 async function handleRequest(originRequest, env) {
@@ -1159,12 +1199,16 @@ async function handleRequest(originRequest, env) {
   const request = toVisitorRequest(originRequest, url);
   if (isHealthProbe(request, env)) return healthResponse(env, isEntitled());
   if (isPassthrough(originRequest, url, env)) return PASSTHROUGH;
+  const exit = fastPathExit(request, url, request.headers.get("user-agent") || "");
+  if (exit) {
+    if (exit === "human") reportPassthrough(env, request, anonymousClassification());
+    return PASSTHROUGH;
+  }
   const feed = await getBotFeed(env);
   if (!feed.entitled) return PASSTHROUGH;
   const owned = await serveNorgOwnedSurface(originRequest, env, url);
   if (owned) return owned;
   if (isAgenticPath(url.pathname, feed.agenticPathPrefix)) {
-    maybeHeartbeat(env, "traffic");
     return serveAgenticPath(request, env, url, feed.agenticPathPrefix);
   }
   if (isSiblingArtifactPath(url.pathname)) {
@@ -1203,14 +1247,11 @@ async function onOriginRequest(ctx) {
   try {
     const env = readConfig(process.env);
     if (!isConfigured(env)) return request;
-    const swept = sweepDeferred();
+    env.EDGE_KEEPALIVE = keepAlive;
     const result = await raceWatchdog(request, env);
-    await swept;
-    keepAlive(flushDeferred());
     return result === PASSTHROUGH ? request : result;
   } catch (e) {
     console.error("norg edge router error", e);
-    keepAlive(flushDeferred());
     return request;
   }
 }

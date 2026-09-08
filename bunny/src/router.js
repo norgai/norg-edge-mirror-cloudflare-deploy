@@ -32,8 +32,20 @@
  * variables + secrets), request (client IP and the visitor-facing URL) and
  * origin (the passthrough sentinel).
  *
+ * THE SAME THREE CHOICES AS EVERY 0.6.0 ADAPTER:
+ *  - Humans never wait on NORG. An ordinary browser, a search crawler and a
+ *    static asset leave before the feed is read (core/fastpath.js).
+ *  - The router makes no call of its own to report a visit. The visit rides
+ *    as one header on the mirror fetch it awaits anyway (core/visit.js), and
+ *    NORG's content service records it — and, on a miss, enqueues the render.
+ *  - The human page is never cached at the edge, so every page request
+ *    reaches the router. On Bunny that is an install-time property of the
+ *    pull zone rather than of this code — see the README, "The cache is the
+ *    hazard".
+ *
  * WHAT BUNNY GIVES US THAT CLOUDFRONT DID NOT:
- *  - A real `waitUntil`, so telemetry needs no flush-on-next-invocation trick.
+ *  - A real `waitUntil` (`env.EDGE_KEEPALIVE`), so the opt-in passthrough
+ *    event and a stale feed's refresh run behind the response.
  *  - No generated-response cap, so a mirror is always returned inline WITH its
  *    X-Norg-Edge headers — no origin-switch fallback.
  *  - Write-only secrets for NORG_SITE_KEY.
@@ -45,9 +57,7 @@
  *    install, exactly as on Fastly and CloudFront.
  *  - A verified-bot signal. Source verification is CIDR-only (see lib/request).
  *  - Before-cache execution. `onOriginRequest` runs on a cache MISS only, so
- *    the install MUST disable the pull zone's cache — see the README section
- *    "The cache is the hazard". This is the same failure CloudFront needed a
- *    cache-guard Lambda for.
+ *    the install keeps HTML out of the pull zone's cache.
  */
 
 import { withAlternateFormatHeaders } from "../../workers/lib/alternate-format.mjs";
@@ -69,6 +79,7 @@ import {
   mayDivert,
   verifiedSource,
 } from "../../core/agent.js";
+import { fastPathExit } from "../../core/fastpath.js";
 import { getBotFeed, isEntitled } from "../../core/feed.js";
 import {
   fetchFromNorg,
@@ -93,7 +104,8 @@ import {
   siblingPageOf,
 } from "../../core/paths.js";
 import { countVisibleWords, stripHtml } from "../../core/strip.js";
-import { logEdgeEvent, maybeHeartbeat, requestRender } from "../../core/telemetry.js";
+import { reportPassthrough } from "../../core/telemetry.js";
+import { visitHeader } from "../../core/visit.js";
 
 import { EDGE_SCRIPT_VERSION } from "./lib/config.js";
 import { PASSTHROUGH, fetchOrigin } from "./lib/origin.js";
@@ -183,10 +195,41 @@ async function serveOriginFirstArtifact(originRequest, env, url, alternateFormat
   }
 
   const { response } = await fetchFromNorg(env, pathToKeySuffix(url.pathname));
-  if (!response) return origin || PASSTHROUGH;
+  // Never the origin's own error from here: Bunny's passthrough carries what
+  // the origin expects, this function's read may not.
+  if (!response) return PASSTHROUGH;
 
   const served = mirrorResponse(response, env);
   return alternateFormatHeaders ? withAlternateFormatHeaders(served, url, url.pathname) : served;
+}
+
+/**
+ * The headers that let the receptionist record this visit and act on a miss.
+ *
+ * @param {Request} request Visitor-facing request view.
+ * @param {Object} env Install config.
+ * @param {Object} classification Bot classification.
+ * @param {string} served Label on a hit.
+ * @param {string} servedOnMiss Label on a miss.
+ * @param {boolean} lazyRender Whether a miss should enqueue a render.
+ * @returns {Object} Extra headers for fetchFromNorg.
+ */
+function visitHeaders(request, env, classification, served, servedOnMiss, lazyRender) {
+  const headers = { "X-Norg-Visit": visitHeader(request, classification, served, servedOnMiss) };
+  if (lazyRender && binding(env, "LAZY_RENDER_ENABLED") !== "false") {
+    headers["X-Norg-Lazy-Render"] = "1";
+  }
+  return headers;
+}
+
+/**
+ * What the router will serve if the receptionist has no mirror for an agent.
+ *
+ * @param {Object} env Install config.
+ * @returns {string} "stripped" or "origin".
+ */
+function missIntent(env) {
+  return binding(env, "STRIP_FALLBACK_ENABLED") === "false" ? "origin" : "stripped";
 }
 
 /**
@@ -259,9 +302,13 @@ async function handleMcp(originRequest, env, url) {
 /**
  * Serve an AI agent: the NORG render if it exists, else the stripped origin.
  *
- * No size branch, unlike CloudFront. Bunny imposes no cap on a generated
- * response, so the mirror is always returned inline and always carries the
- * headers that identify it.
+ * One NORG call, which the visitor was always going to wait for. The visit
+ * header on it is how the event is recorded and how a miss enqueues a render;
+ * neither is a call of this function's own. A thin strip is reported as
+ * "stripped" by the receptionist because the decision is made after it
+ * answered — `origin_thin` and the word count are not distinguished on this
+ * provider. No size branch, unlike CloudFront: Bunny imposes no cap on a
+ * generated response.
  *
  * @param {Request} originRequest Origin-pointed request.
  * @param {Request} request Visitor-facing request view.
@@ -271,18 +318,12 @@ async function handleMcp(originRequest, env, url) {
  * @returns {Promise<Response|Object>} Response, or PASSTHROUGH.
  */
 async function serveAgent(originRequest, request, env, url, classification) {
-  const { response, missing } = await fetchFromNorg(env, pathToKeySuffix(url.pathname));
-
-  if (response) {
-    logEdgeEvent(env, request, classification, "mirror", null, response.status);
-    return withAlternateFormatHeaders(mirrorResponse(response, env), url, url.pathname);
-  }
-
-  // Only a definite 404 means "NORG has not rendered this yet".
-  if (missing && binding(env, "LAZY_RENDER_ENABLED") !== "false") {
-    requestRender(env, url);
-  }
-  return serveStrippedOrigin(originRequest, request, env, classification);
+  const headers = visitHeaders(request, env, classification, "mirror", missIntent(env), true);
+  const { response, refused } = await fetchFromNorg(env, pathToKeySuffix(url.pathname), headers);
+  if (response) return withAlternateFormatHeaders(mirrorResponse(response, env), url, url.pathname);
+  // A refused install changes nothing, this request included: no strip.
+  if (refused) return PASSTHROUGH;
+  return serveStrippedOrigin(originRequest, env);
 }
 
 /**
@@ -290,42 +331,30 @@ async function serveAgent(originRequest, request, env, url, classification) {
  *
  * If the strip leaves fewer than STRIP_WORD_FLOOR visible words — a
  * client-rendered origin whose real content the strip removes — the stripped
- * page carries less than the origin, so the origin is served untouched and the
- * event is labelled "origin_thin". The async NORG render supersedes it.
+ * page carries less than the origin, so the origin is served untouched. Any
+ * origin answer that is not a 200 HTML page is served by passthrough as well,
+ * never relayed from here: Bunny's own origin fetch carries what the origin
+ * expects, and this function's read may not.
  *
  * @param {Request} originRequest Origin-pointed request.
- * @param {Request} request Visitor-facing request view.
  * @param {Object} env Install config.
- * @param {Object} classification Bot classification.
  * @returns {Promise<Response|Object>} Response, or PASSTHROUGH.
  */
-async function serveStrippedOrigin(originRequest, request, env, classification) {
+async function serveStrippedOrigin(originRequest, env) {
   if (binding(env, "STRIP_FALLBACK_ENABLED") === "false") return PASSTHROUGH;
 
   const origin = await fetchOrigin(originRequest, MIRROR_FETCH_TIMEOUT_MS);
   if (!origin) return PASSTHROUGH;
 
   const contentType = origin.headers.get("content-type") || "";
-  if (origin.status !== 200 || !/text\/html/i.test(contentType)) {
-    logEdgeEvent(env, request, classification, "origin", null, origin.status);
-    return origin;
-  }
+  if (origin.status !== 200 || !/text\/html/i.test(contentType)) return PASSTHROUGH;
 
   // Buffering is safe here: 128 MB of active memory, and the word floor cannot
   // be applied without measuring the result first.
   const html = await origin.text();
   const stripped = stripHtml(html);
-  const rawWordCount = countVisibleWords(stripped);
+  if (countVisibleWords(stripped) < STRIP_WORD_FLOOR) return PASSTHROUGH;
 
-  if (rawWordCount < STRIP_WORD_FLOOR) {
-    logEdgeEvent(env, request, classification, "origin_thin", rawWordCount, origin.status);
-    // The body is already consumed, so the origin is re-served by passthrough
-    // rather than replayed — which is also cheaper and lets Bunny's own origin
-    // policy (retries, shield, host header) apply.
-    return PASSTHROUGH;
-  }
-
-  logEdgeEvent(env, request, classification, "stripped", rawWordCount, origin.status);
   return strippedResponse(stripped, origin.status, env);
 }
 
@@ -345,14 +374,11 @@ async function serveStrippedOrigin(originRequest, request, env, classification) 
  */
 async function serveAgenticPath(request, env, url, prefix) {
   const innerPath = url.pathname.slice(prefix.length) || "/";
-  const { response } = await fetchFromNorg(env, pathToKeySuffix(innerPath));
-  const classification = anonymousClassification();
-
-  if (!response) {
-    logEdgeEvent(env, request, classification, "agentic_path_miss", null, null);
-    return PASSTHROUGH;
-  }
-  logEdgeEvent(env, request, classification, "agentic_path", null, response.status);
+  const headers = visitHeaders(
+    request, env, anonymousClassification(), "agentic_path", "agentic_path_miss", false,
+  );
+  const { response } = await fetchFromNorg(env, pathToKeySuffix(innerPath), headers);
+  if (!response) return PASSTHROUGH;
   return withAlternateFormatHeaders(mirrorResponse(response, env), url, url.pathname);
 }
 
@@ -369,15 +395,13 @@ async function serveAgenticPath(request, env, url, prefix) {
  * @returns {Promise<Response|Object>} Response, or PASSTHROUGH.
  */
 async function serveAgentOverride(request, env, url) {
-  const classification = agentOverrideClassification();
-  const { response } = await fetchFromNorg(env, pathToKeySuffix(url.pathname));
-
-  if (response) {
-    logEdgeEvent(env, request, classification, "agent_param_override", null, response.status);
-    return withAlternateFormatHeaders(mirrorResponse(response, env), url, url.pathname);
-  }
-  logEdgeEvent(env, request, classification, "agent_param_override_miss", null, null);
-  return PASSTHROUGH;
+  const headers = visitHeaders(
+    request, env, agentOverrideClassification(),
+    "agent_param_override", "agent_param_override_miss", false,
+  );
+  const { response } = await fetchFromNorg(env, pathToKeySuffix(url.pathname), headers);
+  if (!response) return PASSTHROUGH;
+  return withAlternateFormatHeaders(mirrorResponse(response, env), url, url.pathname);
 }
 
 /**
@@ -425,10 +449,7 @@ async function serveNorgOwnedSurface(originRequest, env, url) {
  * @returns {Promise<Response|Object>} Response, or PASSTHROUGH.
  */
 async function serveClassified(originRequest, request, env, url, feed) {
-  if (hasAgentOverride(url)) {
-    maybeHeartbeat(env, "traffic");
-    return serveAgentOverride(request, env, url);
-  }
+  if (hasAgentOverride(url)) return serveAgentOverride(request, env, url);
 
   const classification = classifyAgent(request.headers.get("user-agent") || "", feed.patterns);
   if (!classification.is_ai_bot) return PASSTHROUGH;
@@ -443,12 +464,15 @@ async function serveClassified(originRequest, request, env, url, feed) {
     return PASSTHROUGH;
   }
 
-  maybeHeartbeat(env, "traffic");
   return serveAgent(originRequest, request, env, url, classification);
 }
 
 /**
  * The request pipeline — routing only; each branch delegates.
+ *
+ * Order is load-bearing. Humans, search crawlers and static assets leave
+ * before the feed is touched, so a person never waits on NORG; only a
+ * bot-shaped request pays for the lookup.
  *
  * @param {Request} originRequest Origin-pointed request from the hook.
  * @param {Object} env Install config.
@@ -461,10 +485,19 @@ export async function handleRequest(originRequest, env) {
   if (isHealthProbe(request, env)) return healthResponse(env, isEntitled());
   if (isPassthrough(originRequest, url, env)) return PASSTHROUGH;
 
+  // The human fast path: no feed, no NORG. A passthrough event is sent only
+  // when the install opts in, behind the response via Bunny's waitUntil.
+  const exit = fastPathExit(request, url, request.headers.get("user-agent") || "");
+  if (exit) {
+    if (exit === "human") reportPassthrough(env, request, anonymousClassification());
+    return PASSTHROUGH;
+  }
+
   // Entitlement gate. Everything below this line serves NORG content or alters
   // the origin response, so none of it may run until NORG has authenticated
   // this install. Unentitled, the visitor gets the customer's ordinary page and
-  // cannot tell the router is installed.
+  // cannot tell the router is installed. A stale feed refreshes behind the
+  // response through the keep-alive.
   const feed = await getBotFeed(env);
   if (!feed.entitled) return PASSTHROUGH;
 
@@ -475,7 +508,6 @@ export async function handleRequest(originRequest, env) {
   // engines and agents alike get identical bytes — so it runs before the
   // search-engine floor and all classification.
   if (isAgenticPath(url.pathname, feed.agenticPathPrefix)) {
-    maybeHeartbeat(env, "traffic");
     return serveAgenticPath(request, env, url, feed.agenticPathPrefix);
   }
 
