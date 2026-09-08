@@ -25,9 +25,12 @@
 import {
   LOOP_GUARD_HEADER,
   MIRROR_FETCH_TIMEOUT_MS,
+  REFUSAL_STATUSES,
   RESERVED_ASSET_CACHE_CONTROL,
 } from "./constants.mjs";
 import { binding, contentStem, controlHeaders, edgeEnv } from "./config.js";
+import { edgeFetch, timeoutSignal } from "./http.js";
+import { stampRefusal } from "./feed.js";
 
 /**
  * Fetch a NORG-rendered object for this path from the edge-content
@@ -39,25 +42,38 @@ import { binding, contentStem, controlHeaders, edgeEnv } from "./config.js";
  * let an outage look like every page vanishing and NORG would re-render the
  * whole site.
  *
+ * A 401/403 is NORG refusing this install's credentials, and is stamped as a
+ * refusal so the next request stops diverting at once (core/feed.js).
+ *
+ * `extraHeaders` rides along for a provider that has the receptionist record
+ * the visit (core/visit.js); a provider that records its own visits passes
+ * nothing.
+ *
  * @param {Object} env Install config.
  * @param {string} keySuffix Key suffix from pathToKeySuffix.
- * @returns {Promise<{response: ?Response, missing: boolean}>} missing is true
- *   only for a definite 404, never for an error or timeout.
+ * @param {Object} [extraHeaders] Additional request headers.
+ * @returns {Promise<{response: ?Response, missing: boolean, refused: boolean}>}
+ *   missing is true only for a definite 404, never for an error or timeout;
+ *   refused is true for a 401/403, so the caller changes nothing at all.
  */
-export async function fetchFromNorg(env, keySuffix) {
+export async function fetchFromNorg(env, keySuffix, extraHeaders = {}) {
   const target = `${contentStem(env)}${keySuffix}`;
   try {
-    const response = await fetch(target, {
-      headers: { ...controlHeaders(env), [LOOP_GUARD_HEADER]: "1" },
-      signal: AbortSignal.timeout(MIRROR_FETCH_TIMEOUT_MS),
+    const response = await edgeFetch(env, target, {
+      headers: { ...controlHeaders(env), [LOOP_GUARD_HEADER]: "1", ...extraHeaders },
+      signal: timeoutSignal(MIRROR_FETCH_TIMEOUT_MS),
     });
 
-    if (response.status === 404) return { response: null, missing: true };
-    if (!response.ok) return { response: null, missing: false };
-    return { response, missing: false };
+    if (response.status === 404) return { response: null, missing: true, refused: false };
+    if (REFUSAL_STATUSES.has(response.status)) {
+      stampRefusal();
+      return { response: null, missing: false, refused: true };
+    }
+    if (!response.ok) return { response: null, missing: false, refused: false };
+    return { response, missing: false, refused: false };
   } catch (e) {
     console.error("norg edge mirror fetch failed", e);
-    return { response: null, missing: false };
+    return { response: null, missing: false, refused: false };
   }
 }
 

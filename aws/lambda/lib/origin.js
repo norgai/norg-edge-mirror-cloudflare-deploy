@@ -24,6 +24,7 @@
  */
 
 import { LOOP_GUARD_HEADER } from "../../../core/constants.mjs";
+import { originCustomHeaders } from "./config.js";
 
 /**
  * Sentinel meaning "hand the request back to CloudFront untouched".
@@ -60,9 +61,13 @@ export function originUrl(cfRequest) {
  * Fetch the customer's origin directly, for the branches that must read it.
  *
  * Carries the viewer's own headers so the origin sees the request it would have
- * seen anyway, plus the loop guard. Returns null rather than throwing, because
- * every caller's answer to a failed origin read is the same: fall back to
- * ordinary passthrough and let CloudFront try.
+ * seen anyway, plus the origin's OWN custom headers — the ones CloudFront would
+ * have attached, minus NORG's, which readConfig has already removed. An origin
+ * behind a verification header (an ALB that 403s without `x-origin-verify`)
+ * used to answer every direct read with that 403, and the agent got it. Plus
+ * the loop guard. Returns null rather than throwing, because every caller's
+ * answer to a failed origin read is the same: fall back to ordinary
+ * passthrough and let CloudFront try.
  *
  * @param {Object} cfRequest CloudFront request object.
  * @param {Request} request Request view of the same call.
@@ -74,10 +79,17 @@ export async function fetchOrigin(cfRequest, request, timeoutMs) {
   if (!target) return null;
 
   const headers = new Headers(request.headers);
+  for (const [name, entries] of Object.entries(originCustomHeaders(cfRequest) || {})) {
+    if (entries?.[0]?.value !== undefined) headers.set(name, entries[0].value);
+  }
   headers.set(LOOP_GUARD_HEADER, "1");
   // The origin is addressed by its own hostname; leaving the viewer's Host
   // header on a fetch to a different host is what breaks virtual-hosted origins.
   headers.delete("host");
+  // The body is read and re-served by this function, so it must arrive as
+  // bytes the strip can read: fetch would decode a compressed body but leave
+  // the content-encoding header behind.
+  headers.set("accept-encoding", "identity");
 
   try {
     return await fetch(target, {
