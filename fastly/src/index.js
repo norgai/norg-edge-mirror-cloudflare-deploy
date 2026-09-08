@@ -40,12 +40,19 @@ async function app(event) {
     env.EDGE_FETCH = backendFetch(env);
     const response = await handleRequest(request, env, event.client.address);
 
-    // Fastly has a real waitUntil, so the deferred queue drains behind the
-    // response — no flush-on-next-invocation trick as on Lambda@Edge.
+    // Fastly has a real waitUntil, so this is spent after the response has
+    // gone and the visitor feels none of it. What it must be given is a promise
+    // that settles WITH the work: one resolving as soon as the tasks had
+    // started told Fastly there was nothing left to wait for, and the instance
+    // was torn down with the visit event still in flight. That is why this
+    // provider had never delivered a router event.
     event.waitUntil(flushDeferred());
     return response;
   } catch (e) {
     console.error("norg edge router error", e);
+    // The pipeline may have deferred a visit event before throwing, and the
+    // catch is the path most likely to run when something is wrong.
+    event.waitUntil(flushDeferred());
     return safePassthrough(request);
   }
 }

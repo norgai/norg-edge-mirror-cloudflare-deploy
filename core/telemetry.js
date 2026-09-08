@@ -19,7 +19,7 @@
  */
 
 import {
-  CONTROL_CALL_TIMEOUT_MS,
+  DEFERRED_CALL_TIMEOUT_MS,
   HEARTBEAT_MIN_INTERVAL_MS,
   RENDER_DEDUP_MAX_ENTRIES,
   RENDER_DEDUP_TTL_MS,
@@ -38,6 +38,11 @@ const renderDedup = new Map();
 /**
  * POST to a NORG control endpoint, swallowing every failure.
  *
+ * The abort budget is the DEFERRED one, deliberately shorter than a foreground
+ * call's. Every caller here is queued through `defer`, and a call permitted to
+ * outlive the flush waiting on it is a call that gets abandoned in flight on
+ * every runtime without a keep-alive.
+ *
  * @param {Object} env Install config.
  * @param {string} path API path beginning with "/".
  * @param {Object} body JSON body.
@@ -49,7 +54,7 @@ async function postControl(env, path, body) {
       method: "POST",
       headers: controlHeaders(env),
       body: JSON.stringify(body),
-      signal: timeoutSignal(CONTROL_CALL_TIMEOUT_MS),
+      signal: timeoutSignal(DEFERRED_CALL_TIMEOUT_MS),
     });
   } catch (e) {
     console.error("norg edge control call failed", path, e);

@@ -34,7 +34,10 @@
  * platform, not chosen:
  *
  *  - No environment variables. Config arrives as CloudFront custom origin
- *    headers and is redacted as it is read (config.js).
+ *    headers and is redacted as it is read (config.js). The one SECRET does
+ *    not travel that way: the key lives in Secrets Manager and is fetched at
+ *    the edge (secret.js), so it is not readable from the distribution's
+ *    configuration and rotation is one place rather than two.
  *  - No ctx.waitUntil. Telemetry is queued and flushed at the start of the
  *    next invocation (deferred.js).
  *  - No Cache API. The feed lives in a container global and revalidates with
@@ -49,7 +52,10 @@
  *
  * Bindings (all via CloudFront custom origin headers — see config.js):
  *   SITE_ID                 edge_sites.id
- *   NORG_SITE_KEY           SECRET — per-site key. Compulsory (rule 3).
+ *   NORG_SECRET_ARN         Secrets Manager ARN holding the per-site key.
+ *                           Compulsory (rule 3) — the ARN is an address, not a
+ *                           credential, so it is safe in the distribution.
+ *   PROBE_TOKEN             Authorises the health probe and nothing else.
  *   NORG_API_URL            https://content-craft-api.norg.ai
  *   NORG_CONTENT_BASE       NORG edge-content receptionist base
  *   STRIP_FALLBACK_ENABLED  "true" | "false"
@@ -64,14 +70,19 @@ import { isAgenticPath, pathToKeySuffix } from "../../workers/lib/r2-content.mjs
 import { mcpForwardHeaders } from "../../workers/lib/mcp-forward.mjs";
 
 import {
-  HEALTH_CHECK_HEADER,
   LOOP_GUARD_HEADER,
   MCP_FORWARD_TIMEOUT_MS,
   MIRROR_FETCH_TIMEOUT_MS,
   STRIP_WORD_FLOOR,
 } from "../../core/constants.mjs";
-import { EDGE_SCRIPT_VERSION, readConfig } from "./lib/config.js";
-import { binding, contentStem, isConfigured } from "../../core/config.js";
+import { EDGE_SCRIPT_VERSION, readConfig, scrubConfigHeaders } from "./lib/config.js";
+import { __primeSecretCache, getSiteKey } from "./lib/secret.js";
+import {
+  cacheContext,
+  readCached,
+  writeCached,
+} from "./lib/response-cache.js";
+import { binding, contentStem } from "../../core/config.js";
 import {
   agentOverrideClassification,
   anonymousClassification,
@@ -79,7 +90,7 @@ import {
   mayDivert,
   verifiedSource,
 } from "../../core/agent.js";
-import { flushDeferred } from "../../core/deferred.js";
+import { flushDeferred, sweepDeferred } from "../../core/deferred.js";
 import { getBotFeed, isEntitled } from "../../core/feed.js";
 import { clientIp, passthrough as toPassthrough, toCloudFrontResponse, toRequest } from "./lib/event.js";
 import {
@@ -134,8 +145,13 @@ const MAX_INLINE_MIRROR_BYTES = 850 * 1024;
  * @returns {boolean} True when the probe key matches.
  */
 function isHealthProbe(request, env) {
-  const probeKey = request.headers.get(HEALTH_CHECK_HEADER);
-  return Boolean(probeKey && env.NORG_SITE_KEY && probeKey === env.NORG_SITE_KEY);
+  // Read from env, not from the request: readConfig captures the header and
+  // strips it in the same pass, so a failing probe cannot carry it onward to
+  // the customer's origin. Compared against the probe token rather than the
+  // site key, so the documented curl no longer puts a NORG credential on the
+  // wire.
+  const probeKey = env.PROBE_HEADER;
+  return Boolean(probeKey && env.PROBE_TOKEN && probeKey === env.PROBE_TOKEN);
 }
 
 /**
@@ -274,7 +290,7 @@ async function forwardMcpToNorg(request, env, url) {
  * @param {string} keySuffix Mirror key suffix.
  * @returns {Response|Object} Response, or PASSTHROUGH after an origin switch.
  */
-async function serveMirror(cfRequest, response, env, url, keySuffix) {
+async function serveMirror(cfRequest, response, env, url, keySuffix, ctx = null) {
   const switchOrigin = () =>
     switchOriginToNorg(cfRequest, contentStem(env), keySuffix, receptionistHeaders(env));
 
@@ -298,6 +314,10 @@ async function serveMirror(cfRequest, response, env, url, keySuffix) {
   const buffered = Buffer.from(await response.arrayBuffer());
   if (buffered.byteLength > MAX_INLINE_MIRROR_BYTES) return switchOrigin();
 
+  // Stored here because this is where the bytes already exist; buffering
+  // happens either way, so the cache costs one Map write.
+  writeCached(ctx, buffered, response.headers.get("content-type"));
+
   const inlined = new Response(buffered, { status: 200, headers: response.headers });
   return withAlternateFormatHeaders(mirrorResponse(inlined, env), url, url.pathname);
 }
@@ -316,12 +336,17 @@ async function serveMirror(cfRequest, response, env, url, keySuffix) {
  * address lands in the same `x-norg-agent: 1` bucket as a genuinely verified
  * GPTBot, as do a never_divert crawler and a person on an unusual browser.
  *
- * Today that over-inclusion is harmless — everyone in the bucket still reaches
- * this function, which applies classification, serving_policy and CIDR
- * verification and passes them through. Caching the mirror there would make it
- * harmful: a cache HIT skips this function entirely, so the spoofer would be
- * served a mirror a real crawler had warmed. That is exactly the harvesting
- * verifiedSource exists to prevent, reintroduced through the cache.
+ * That over-inclusion is only harmless while nothing in the bucket is cached.
+ * A cache HIT skips this function entirely — and the bucket is populated by
+ * PASSTHROUGHS: a spoofed UA fails verification here, gets the origin, and
+ * CloudFront would cache that origin page under (url, agent=1) for the
+ * origin's TTL, so every later verified crawler would be served the origin
+ * and the router would never run. That is why the origin-response cache
+ * guard (cache-guard-lambda.js) marks every non-human bucket no-store: it is
+ * the only thing that keeps this function in the loop on a cacheable origin.
+ * Caching the MIRROR in that bucket would be the mirror-image failure — a
+ * spoofer served a mirror a real crawler had warmed — which is exactly the
+ * harvesting verifiedSource exists to prevent, reintroduced through the cache.
  *
  * Caching mirrors safely needs an EXACT stamp — classification plus the CIDR
  * check at viewer-request — which means putting the feed in a CloudFront
@@ -340,13 +365,20 @@ async function serveMirror(cfRequest, response, env, url, keySuffix) {
  * @param {Object} classification Bot classification.
  * @returns {Promise<Response|Object>} Response, or PASSTHROUGH.
  */
-async function serveAgent(cfRequest, request, env, url, classification) {
+async function serveAgent(cfRequest, request, env, url, classification, feed) {
   const keySuffix = pathToKeySuffix(url.pathname);
-  const { response, missing } = await fetchFromNorg(env, keySuffix);
+  const ctx = cacheContext(env, feed, keySuffix);
+  // A hit skips the receptionist, NOT the event: the visit is logged below on
+  // both paths, which is the whole reason this cache lives inside the function
+  // rather than in CloudFront.
+  const cached = readCached(ctx);
+  const { response, missing } = cached
+    ? { response: cached, missing: false }
+    : await fetchFromNorg(env, keySuffix);
 
   if (response) {
     logEdgeEvent(env, request, classification, "mirror", null, response.status);
-    return await serveMirror(cfRequest, response, env, url, keySuffix);
+    return await serveMirror(cfRequest, response, env, url, keySuffix, cached ? null : ctx);
   }
 
   // Only a definite 404 means "NORG has not rendered this yet".
@@ -412,10 +444,14 @@ async function serveStrippedOrigin(cfRequest, request, env, classification) {
  * @param {string} prefix Configured agentic prefix.
  * @returns {Promise<Response|Object>} Response, or PASSTHROUGH.
  */
-async function serveAgenticPath(cfRequest, request, env, url, prefix) {
+async function serveAgenticPath(cfRequest, request, env, url, prefix, feed) {
   const innerPath = url.pathname.slice(prefix.length) || "/";
   const keySuffix = pathToKeySuffix(innerPath);
-  const { response } = await fetchFromNorg(env, keySuffix);
+  const ctx = cacheContext(env, feed, keySuffix);
+  const cached = readCached(ctx);
+  const { response } = cached
+    ? { response: cached }
+    : await fetchFromNorg(env, keySuffix);
   const classification = anonymousClassification();
 
   if (!response) {
@@ -423,7 +459,7 @@ async function serveAgenticPath(cfRequest, request, env, url, prefix) {
     return PASSTHROUGH;
   }
   logEdgeEvent(env, request, classification, "agentic_path", null, response.status);
-  return await serveMirror(cfRequest, response, env, url, keySuffix);
+  return await serveMirror(cfRequest, response, env, url, keySuffix, cached ? null : ctx);
 }
 
 /**
@@ -439,14 +475,18 @@ async function serveAgenticPath(cfRequest, request, env, url, prefix) {
  * @param {URL} url Parsed request URL.
  * @returns {Promise<Response|Object>} Response, or PASSTHROUGH.
  */
-async function serveAgentOverride(cfRequest, request, env, url) {
+async function serveAgentOverride(cfRequest, request, env, url, feed) {
   const classification = agentOverrideClassification();
   const keySuffix = pathToKeySuffix(url.pathname);
-  const { response } = await fetchFromNorg(env, keySuffix);
+  const ctx = cacheContext(env, feed, keySuffix);
+  const cached = readCached(ctx);
+  const { response } = cached
+    ? { response: cached }
+    : await fetchFromNorg(env, keySuffix);
 
   if (response) {
     logEdgeEvent(env, request, classification, "agent_param_override", null, response.status);
-    return await serveMirror(cfRequest, response, env, url, keySuffix);
+    return await serveMirror(cfRequest, response, env, url, keySuffix, cached ? null : ctx);
   }
   logEdgeEvent(env, request, classification, "agent_param_override_miss", null, null);
   return PASSTHROUGH;
@@ -506,6 +546,14 @@ export async function handleRequest(cfRequest, env) {
   // unreachable — the request is passed through completely untouched: no
   // mirror, no strip, no render request, no event. The visitor gets the
   // customer's ordinary page and cannot tell the router is installed.
+  // The site key lives in Secrets Manager, not in a header, so it is fetched
+  // here — after every cheap exit above, and immediately before the first call
+  // that needs it. Human and search-crawler traffic that leaves earlier never
+  // pays for a lookup. Assigned onto env because core/ reads it there, which
+  // keeps every provider's credential handling identical.
+  env.NORG_SITE_KEY = await getSiteKey(env);
+  if (!env.NORG_SITE_KEY) return PASSTHROUGH;
+
   const feed = await getBotFeed(env);
   if (!feed.entitled) return PASSTHROUGH;
 
@@ -517,7 +565,7 @@ export async function handleRequest(cfRequest, env) {
   // search-engine floor and all classification.
   if (isAgenticPath(url.pathname, feed.agenticPathPrefix)) {
     maybeHeartbeat(env, "traffic");
-    return serveAgenticPath(cfRequest, request, env, url, feed.agenticPathPrefix);
+    return serveAgenticPath(cfRequest, request, env, url, feed.agenticPathPrefix, feed);
   }
 
   // Per-page sibling artifacts are advertised as absolute URLs in the page's
@@ -547,7 +595,7 @@ export async function handleRequest(cfRequest, env) {
 
   if (hasAgentOverride(url)) {
     maybeHeartbeat(env, "traffic");
-    return serveAgentOverride(cfRequest, request, env, url);
+    return serveAgentOverride(cfRequest, request, env, url, feed);
   }
 
   const classification = classifyAgent(userAgent, feed.patterns);
@@ -563,7 +611,7 @@ export async function handleRequest(cfRequest, env) {
   }
 
   maybeHeartbeat(env, "traffic");
-  return serveAgent(cfRequest, request, env, url, classification);
+  return serveAgent(cfRequest, request, env, url, classification, feed);
 }
 
 /**
@@ -581,22 +629,33 @@ export async function handleRequest(cfRequest, env) {
  */
 export async function handler(event) {
   const cfRequest = event.Records[0].cf.request;
-  // A pristine copy, so a pipeline that mutated the request part-way through
-  // cannot leak a half-applied origin switch into the failure path. Seeded with
-  // the request itself and taken INSIDE the try: this function's whole job is
-  // to never throw, so it must not begin with an unguarded call.
+  // A copy, so a pipeline that mutated the request part-way through cannot leak
+  // a half-applied origin switch into the failure path. Seeded with the request
+  // itself and taken INSIDE the try: this function's whole job is to never
+  // throw, so it must not begin with an unguarded call.
+  //
+  // ORDER IS LOAD-BEARING. This clone used to be taken before readConfig ran,
+  // so it kept every config header — and the two paths that return it (the
+  // catch below, and an oversized generated response) forwarded the site key to
+  // the customer's origin and into their access logs. The catch is the rule-1
+  // safety net, which makes it the path most likely to run when anything is
+  // wrong. Every return of it now goes through scrubConfigHeaders as well,
+  // because the clone still happens before readConfig if readConfig throws.
   let pristine = cfRequest;
 
   try {
-    pristine = structuredClone(cfRequest);
-    // Started first so work suspended when this container last froze gets an
-    // event-loop turn while the pipeline does its own awaits.
-    const flushed = flushDeferred();
+    scrubConfigHeaders((pristine = structuredClone(cfRequest)));
+    // Started first, awaited after the pipeline, so anything a previous
+    // invocation on this container left behind runs concurrently with the
+    // pipeline's own network calls and normally costs this request nothing.
+    const swept = sweepDeferred();
 
     const env = readConfig(cfRequest);
-    // Rule 3: without both credentials every NORG call would be refused, so the
-    // correct behaviour is to do nothing rather than fail slowly on each one.
-    if (!isConfigured(env)) return cfRequest;
+    // Rule 3, in CloudFront's shape: core's isConfigured() wants the key on the
+    // env, but on this provider the key is not in the config at all — the ARN
+    // that leads to it is. Without both, every NORG call would be refused, so
+    // the correct behaviour is to do nothing rather than fail slowly on each.
+    if (!env.SITE_ID || !env.NORG_SECRET_ARN) return cfRequest;
 
     let watchdog;
     const result = await Promise.race([
@@ -606,9 +665,16 @@ export async function handler(event) {
       }),
     ]).finally(() => clearTimeout(watchdog));
 
-    await flushed;
-    // Starts whatever this invocation queued. Awaiting the flush call (not the
-    // tasks) is what lets them begin before the container freezes.
+    await swept;
+    // The last moment anything deferred can actually land. Lambda@Edge freezes
+    // the instant the handler returns, so an unsettled fetch is not finished
+    // later — it is suspended until its own abort timer has already expired.
+    // That is why this provider had never delivered a single router event.
+    //
+    // The wait is bounded, and usually near zero: `defer` starts the work at
+    // the point of deferral, so a visit event has been in flight since before
+    // the mirror fetch and has normally landed by now. With passthrough events
+    // off by default there is nothing outstanding on a human request at all.
     await flushDeferred();
 
     if (result === PASSTHROUGH) return toPassthrough(alignHostToOrigin(cfRequest));
@@ -617,10 +683,14 @@ export async function handler(event) {
     // Null means the body will not fit CloudFront's generated-response cap.
     // Degrading to the origin is the correct answer: the visitor gets the
     // customer's real page instead of a 502.
-    return response || toPassthrough(alignHostToOrigin(pristine));
+    return response || toPassthrough(alignHostToOrigin(scrubConfigHeaders(pristine)));
   } catch (e) {
     console.error("norg edge router error", e);
-    return pristine;
+    // The pipeline may have already deferred a visit event before throwing, and
+    // this is the last moment before the container freezes. Bounded, and it
+    // swallows its own failures, so it cannot turn a handled error into a 502.
+    await flushDeferred().catch(() => {});
+    return scrubConfigHeaders(pristine);
   }
 }
 
@@ -628,6 +698,10 @@ export default handler;
 
 // Test-only exports.
 export {
+  // Re-exported so the BUNDLE's own copy of the secret cache can be primed:
+  // the built .cjs is a separate module instance, so priming the source module
+  // does not reach it, and no test may call Secrets Manager.
+  __primeSecretCache as __test_primeSecretCache,
   isHealthProbe as __test_isHealthProbe,
   isPassthrough as __test_isPassthrough,
   serveStrippedOrigin as __test_serveStrippedOrigin,

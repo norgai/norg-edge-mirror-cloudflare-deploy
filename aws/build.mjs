@@ -8,8 +8,11 @@
  * exactly those files, and NORG's backend pins them by SHA-256. CI rebuilds and
  * fails on any diff, so a source edit can never ship without its bundle.
  *
- * Three outputs, deployed to three different places:
+ * Four outputs, deployed to four different places:
  *   edge-router-lambda.cjs Lambda@Edge, origin-request.
+ *   cache-guard-lambda.cjs Lambda@Edge, origin-response. COPIED and inlined
+ *                          into the templates (4 KB ZipFile ceiling), so it is
+ *                          plain CommonJS with no imports.
  *   heartbeat-lambda.cjs   Regional Lambda on an EventBridge schedule.
  *   viewer-classifier.js   CloudFront Function. COPIED, never bundled — the
  *                          runtime is not Node, has a hard 10 KB ceiling, and
@@ -32,9 +35,17 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 
-import { STATIC_ASSET_SUFFIXES } from "../core/constants.mjs";
-import { DEFAULT_ROUTE_EXCLUSIONS, PROTECTED_PATH_PREFIXES } from "../core/exclusions.mjs";
+import {
+  DEFAULT_ROUTE_EXCLUSIONS,
+  DYNAMIC_ROUTE_EXCLUSIONS,
+  MANAGED_ALL_VIEWER_EXCEPT_HOST_ORIGIN_REQUEST_ID,
+  MANAGED_CACHING_DISABLED_ID,
+  MCP_PATH_PATTERNS,
+  PROTECTED_PATH_PREFIXES,
+  TEMPLATE_ASSET_SUFFIXES,
+} from "../core/exclusions.mjs";
 import {
   copyFileSync,
   existsSync,
@@ -54,6 +65,10 @@ const NODE_TARGET = "node20";
 
 // CloudFront's hard limit on a function's source size.
 const CLOUDFRONT_FUNCTION_MAX_BYTES = 10 * 1024;
+
+// CloudFormation's limit on Lambda code inlined as ZipFile. The cache guard is
+// inlined (like the viewer classifier) so the stack stays self-contained.
+const CFN_ZIPFILE_MAX_BYTES = 4 * 1024;
 
 // Names that must NEVER appear in a bundle shipping into a customer's AWS
 // account. Mirrors the Cloudflare build's list and content-craft's deploy-time
@@ -89,6 +104,10 @@ function bundle(name) {
       "--bundle",
       "--format=cjs",
       "--platform=node",
+      // Provided by the Lambda Node runtime, deliberately not vendored: the
+      // deployed artifact stays a readable file an operator can diff against
+      // this repository, rather than tens of thousands of lines of SDK.
+      "--external:@aws-sdk/client-secrets-manager",
       `--target=${NODE_TARGET}`,
       "--legal-comments=inline",
       `--outfile=${outfile}`,
@@ -128,9 +147,26 @@ assertNoForbiddenNames("edge-router-lambda.cjs", router);
 assertNoForbiddenNames("heartbeat-lambda.cjs", heartbeat);
 
 // The router must be self-contained: Lambda@Edge supports no layers, so an
-// unresolved require() would fail at deploy rather than at build.
-if (/\brequire\s*\(\s*["'](?!node:)/.test(router)) {
-  throw new Error("refusing to publish: edge-router-lambda.cjs is not self-contained");
+// unresolved require() fails at RUNTIME, not at deploy — and the router's own
+// error handling would turn that into a silent site-wide passthrough.
+//
+// Exactly one exception, named rather than pattern-matched. The AWS SDK v3 is
+// part of the Node.js managed runtime (nodejs18.x and later, nodejs24.x
+// included), so requiring the Secrets Manager client resolves without vendoring
+// tens of thousands of lines that would destroy the "read the file you are
+// about to run" property. The scheduled heartbeat exercises the same code path
+// and throws on failure, so if a future runtime ever drops the SDK it surfaces
+// in the customer's CloudWatch metrics within the half-hour rather than
+// degrading quietly.
+const ALLOWED_RUNTIME_REQUIRE = "@aws-sdk/client-secrets-manager";
+const externalRequires = [...router.matchAll(/\brequire\s*\(\s*["']((?!node:)[^"']+)["']/g)]
+  .map((m) => m[1])
+  .filter((name) => name !== ALLOWED_RUNTIME_REQUIRE);
+if (externalRequires.length) {
+  throw new Error(
+    `refusing to publish: edge-router-lambda.cjs is not self-contained — ` +
+      `unexpected require(${externalRequires.join(", ")})`,
+  );
 }
 
 const functionSource = join(here, "functions", "viewer-classifier.js");
@@ -178,10 +214,66 @@ function embedViewerClassifier(templatePath, functionCode) {
   writeFileSync(templatePath, updated);
 }
 
+const guardSource = join(here, "lambda", "cache-guard-lambda.cjs");
+const guardOut = join(srcDir, "cache-guard-lambda.cjs");
+copyFileSync(guardSource, guardOut);
+const guardCode = readFileSync(guardOut, "utf8");
+assertNoForbiddenNames("cache-guard-lambda.cjs", guardCode);
+// Inlined, so it must stand alone: an import here would fail at deploy.
+if (/\brequire\s*\(|^\s*import\s/m.test(guardCode)) {
+  throw new Error("refusing to publish: cache-guard-lambda.cjs must have no imports (it is inlined)");
+}
+const guardBytes = statSync(guardOut).size;
+if (guardBytes > CFN_ZIPFILE_MAX_BYTES) {
+  throw new Error(
+    `refusing to publish: cache-guard-lambda.cjs is ${guardBytes} bytes, ` +
+      `over CloudFormation's ${CFN_ZIPFILE_MAX_BYTES}-byte ZipFile limit`,
+  );
+}
+// AWS::Lambda::Version only republishes when ITS properties change, and an
+// inlined ZipFile edit changes the function, not the version — so the guard
+// would deploy to $LATEST while the distribution stayed on the old version,
+// silently. The content hash in the Description is what forces a new one.
+const guardSha256 = createHash("sha256").update(guardCode).digest("hex");
+// The Description only has to CHANGE to force a new Version, so a short form is
+// enough there. Verification uses the full digest published in DIGESTS.json —
+// 16 hex characters is not a checksum anyone should be asked to trust.
+const guardDigest = guardSha256.slice(0, 16);
+
+/**
+ * Re-embed the cache guard's source into a template's ZipFile block, and stamp
+ * its digest into the Version resource so a code change publishes a version.
+ *
+ * @param {string} templatePath Absolute path to the template.
+ * @param {string} code Guard source.
+ * @returns {void}
+ */
+function embedCacheGuard(templatePath, code) {
+  const template = readFileSync(templatePath, "utf8");
+  const indented = code
+    .split("\n")
+    .map((line) => (line ? `          ${line}` : ""))
+    .join("\n")
+    .replace(/\s+$/, "");
+  let updated = template.replace(
+    /( {8}ZipFile: \|\n)(?: {10}.*\n| *\n)*/,
+    `$1${indented}\n`,
+  );
+  updated = updated.replace(
+    /(Description: "cache-guard sha256:)[0-9a-f]*(")/,
+    `$1${guardDigest}$2`,
+  );
+  if (!updated.includes(indented) || !updated.includes(guardDigest)) {
+    throw new Error(`failed to embed cache-guard into ${templatePath}`);
+  }
+  writeFileSync(templatePath, updated);
+}
+
 for (const template of ["new-distribution.yaml", "attach-existing.yaml"]) {
   const templatePath = join(here, "cloudformation", template);
   if (existsSync(templatePath)) {
     embedViewerClassifier(templatePath, readFileSync(functionOut, "utf8"));
+    embedCacheGuard(templatePath, guardCode);
   }
 }
 
@@ -214,7 +306,7 @@ function assertDoesNotShadowNorg(pattern) {
 }
 
 /**
- * Render one no-Lambda cache behaviour.
+ * Render one no-Lambda, cached carve-out for a static asset pattern.
  *
  * @param {string} pattern CloudFront path pattern.
  * @returns {string} Indented YAML for one CacheBehaviors entry.
@@ -226,25 +318,83 @@ function cacheBehaviour(pattern) {
     "            TargetOriginId: customer-origin",
     "            ViewerProtocolPolicy: redirect-to-https",
     "            Compress: true",
+    // No CachedMethods: CloudFront's default of [GET, HEAD] is right for an
+    // asset, and the template is byte-budgeted (see the size guard below).
     "            AllowedMethods: [GET, HEAD, OPTIONS]",
-    "            CachedMethods: [GET, HEAD, OPTIONS]",
     "            CachePolicyId: !Ref StaticCachePolicy",
+  ].join("\n");
+}
+
+/**
+ * Render one no-Lambda, NO-CACHE carve-out for a dynamic path.
+ *
+ * CachingDisabled + AllViewer: the origin sees exactly the request it would
+ * have seen without the router, nothing is stored, and every method is
+ * allowed because these are the paths that take POSTs.
+ *
+ * @param {string} pattern CloudFront path pattern.
+ * @returns {string} Indented YAML for one CacheBehaviors entry.
+ */
+function dynamicBehaviour(pattern) {
+  assertDoesNotShadowNorg(pattern);
+  return [
+    `          - PathPattern: "${pattern}"`,
+    "            TargetOriginId: customer-origin",
+    "            ViewerProtocolPolicy: redirect-to-https",
+    "            Compress: true",
+    "            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]",
+    "            CachedMethods: [GET, HEAD, OPTIONS]",
+    `            CachePolicyId: ${MANAGED_CACHING_DISABLED_ID}`,
+    `            OriginRequestPolicyId: ${MANAGED_ALL_VIEWER_EXCEPT_HOST_ORIGIN_REQUEST_ID}`,
+  ].join("\n");
+}
+
+/**
+ * Render one MCP behaviour: the full router, and the ONLY place IncludeBody is on.
+ *
+ * Deliberately not run through the shadow guard — these paths are NORG-served
+ * by design, and the whole point is that the router is attached here.
+ *
+ * @param {string} pattern CloudFront path pattern.
+ * @returns {string} Indented YAML for one CacheBehaviors entry.
+ */
+function mcpBehaviour(pattern) {
+  return [
+    `          - PathPattern: "${pattern}"`,
+    "            TargetOriginId: customer-origin",
+    "            ViewerProtocolPolicy: redirect-to-https",
+    "            Compress: true",
+    "            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]",
+    "            CachedMethods: [GET, HEAD, OPTIONS]",
+    "            CachePolicyId: !Ref CachePolicy",
+    "            OriginRequestPolicyId: !Ref OriginRequestPolicy",
+    "            FunctionAssociations:",
+    "              - EventType: viewer-request",
+    "                FunctionARN: !GetAtt ViewerClassifier.FunctionARN",
+    "            LambdaFunctionAssociations:",
+    "              - EventType: origin-request",
+    "                LambdaFunctionARN: !Ref EdgeRouterVersion",
+    "                IncludeBody: true",
+    "              - EventType: origin-response",
+    "                LambdaFunctionARN: !Ref CacheGuardVersion",
   ].join("\n");
 }
 
 /**
  * Regenerate the carve-out cache behaviours inside a template.
  *
- * Framework exclusions come first: they are prefix patterns and therefore more
- * specific than the bare suffix patterns that follow.
+ * Match order is load-bearing (first match wins): MCP paths first, then the
+ * dynamic no-cache carve-outs, then framework prefixes, then the bare asset
+ * suffixes — each group more specific than the one after it.
  *
  * @param {string} templatePath Absolute path to the template.
- * @param {Array<string>} patterns Path patterns, in match order.
+ * @param {Array<{pattern: string, render: function(string): string}>} entries
+ *   Patterns with their renderer, in match order.
  * @returns {number} How many behaviours were written.
  */
-function embedCacheBehaviours(templatePath, patterns) {
+function embedCacheBehaviours(templatePath, entries) {
   const template = readFileSync(templatePath, "utf8");
-  const body = patterns.map(cacheBehaviour).join("\n");
+  const body = entries.map(({ pattern, render }) => render(pattern)).join("\n");
   const updated = template.replace(
     /( *# BEGIN GENERATED CACHE BEHAVIOURS\n)[\s\S]*?( *# END GENERATED CACHE BEHAVIOURS)/,
     `$1${body}\n$2`,
@@ -253,10 +403,15 @@ function embedCacheBehaviours(templatePath, patterns) {
     throw new Error(`failed to embed cache behaviours into ${templatePath}`);
   }
   writeFileSync(templatePath, updated);
-  return patterns.length;
+  return entries.length;
 }
 
-const carveOuts = [...DEFAULT_ROUTE_EXCLUSIONS, ...[...STATIC_ASSET_SUFFIXES].map((s) => `*${s}`)];
+const carveOuts = [
+  ...MCP_PATH_PATTERNS.map((pattern) => ({ pattern, render: mcpBehaviour })),
+  ...DYNAMIC_ROUTE_EXCLUSIONS.map((pattern) => ({ pattern, render: dynamicBehaviour })),
+  ...DEFAULT_ROUTE_EXCLUSIONS.map((pattern) => ({ pattern, render: cacheBehaviour })),
+  ...TEMPLATE_ASSET_SUFFIXES.map((suffix) => ({ pattern: `*${suffix}`, render: cacheBehaviour })),
+];
 const behaviourCount = embedCacheBehaviours(
   join(here, "cloudformation", "new-distribution.yaml"),
   carveOuts,
@@ -267,9 +422,51 @@ if (behaviourCount + 1 > 75) {
   throw new Error(`refusing to publish: ${behaviourCount + 1} cache behaviours exceeds CloudFront's limit of 75`);
 }
 
+// CloudFormation refuses a template body over 51,200 bytes (validate-template,
+// create-stack and the console paste all hit it; only an S3 template URL is
+// bigger). The behaviours block is the swing factor, which is why the template
+// carries TEMPLATE_ASSET_SUFFIXES rather than the full list. Fail here, at
+// build time, rather than at a customer's first `aws cloudformation deploy`.
+const CFN_TEMPLATE_BODY_MAX_BYTES = 51_200;
+for (const template of ["new-distribution.yaml", "attach-existing.yaml"]) {
+  const bytes = statSync(join(here, "cloudformation", template)).size;
+  if (bytes > CFN_TEMPLATE_BODY_MAX_BYTES) {
+    throw new Error(
+      `refusing to publish: ${template} is ${bytes} bytes, over CloudFormation's ` +
+        `${CFN_TEMPLATE_BODY_MAX_BYTES}-byte template-body limit — trim TEMPLATE_ASSET_SUFFIXES`,
+    );
+  }
+}
+
 const version = /EDGE_SCRIPT_VERSION\s*=\s*"([^"]+)"/.exec(router)?.[1];
+
+// Every deployable artifact, digested in full and committed. The README tells
+// operators to check what they are about to run against this file, and it is
+// what makes "each file is pinned by digest in the public repository" a claim
+// rather than a hope. Regenerated on every build; CI fails on any diff.
+const DIGEST_FILES = [
+  "edge-router-lambda.cjs",
+  "heartbeat-lambda.cjs",
+  "cache-guard-lambda.cjs",
+  "viewer-classifier.js",
+];
+const digests = {
+  version,
+  algorithm: "sha256",
+  files: Object.fromEntries(
+    DIGEST_FILES.map((name) => [
+      name,
+      createHash("sha256").update(readFileSync(join(srcDir, name))).digest("hex"),
+    ]),
+  ),
+};
+writeFileSync(join(srcDir, "DIGESTS.json"), `${JSON.stringify(digests, null, 2)}\n`);
+
 console.log(`built aws/src/ (EDGE_SCRIPT_VERSION ${version})`);
 console.log(`  cache behaviours       ${behaviourCount} carve-outs (+1 default)`);
+console.log(`  new-distribution.yaml  ${statSync(join(here, "cloudformation", "new-distribution.yaml")).size} bytes (limit ${CFN_TEMPLATE_BODY_MAX_BYTES})`);
 console.log(`  edge-router-lambda.cjs ${statSync(join(srcDir, "edge-router-lambda.cjs")).size} bytes`);
+console.log(`  cache-guard-lambda.cjs ${guardBytes} bytes (sha256:${guardDigest})`);
 console.log(`  heartbeat-lambda.cjs   ${statSync(join(srcDir, "heartbeat-lambda.cjs")).size} bytes`);
 console.log(`  viewer-classifier.js   ${functionBytes} bytes`);
+console.log(`  DIGESTS.json           ${DIGEST_FILES.length} artifacts, full sha256`);

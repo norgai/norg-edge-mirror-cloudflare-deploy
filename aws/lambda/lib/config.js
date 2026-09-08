@@ -21,6 +21,8 @@
  * every provider.
  */
 
+import { HEALTH_CHECK_HEADER } from "../../../core/constants.mjs";
+
 /**
  * Version of this artifact, reported on every control call and heartbeat.
  *
@@ -32,15 +34,43 @@
  * 0.2.0 — carve-out cache behaviours and a 192 MB router. No request-handling
  * change; the version moves because the deployed artifact and the distribution
  * shape it expects both did.
+ *
+ * 0.3.0 — the distribution shape changes again, this time because a red-team
+ * review found the agent cache bucket could be poisoned with origin bytes: a
+ * new origin-response cache-guard function, MCP paths on their own behaviours
+ * so the default one runs with IncludeBody off, dynamic carve-outs with no
+ * cache, an EdgeDisabled kill switch, and opt-in rate limiting. The router
+ * itself is unchanged; content-craft compares this against
+ * EDGE_WORKER_VERSION_CLOUDFRONT.
+ *
+ * 0.5.0 — a per-container mirror cache (lib/response-cache.js), standing in
+ * for the Cache API Lambda@Edge does not have. A repeat crawl of the same page
+ * is answered from memory instead of refetching from the receptionist. It sits
+ * INSIDE the function on purpose: the router still classifies and still records
+ * the visit on a hit, which a CloudFront cache hit could not do. Mirrors stay
+ * no-store at the CDN layer, unchanged.
+ *
+ * 0.4.0 — the site key stops travelling as an origin custom header. It now
+ * lives in Secrets Manager and is fetched at the edge (lib/secret.js), so it is
+ * no longer readable with cloudfront:GetDistributionConfig and rotation is one
+ * place instead of two. Two leak paths are closed with it: the handler's
+ * pre-redaction `pristine` clone, which forwarded the whole config header set
+ * to the customer origin on any thrown exception or oversized response, and the
+ * health-probe header, which carried the site key in a plain viewer request.
  */
-export const EDGE_SCRIPT_VERSION = "0.2.1";
+export const EDGE_SCRIPT_VERSION = "0.5.1";
 
 // Custom origin header -> binding name. Mirrors build_worker_bindings() in
 // content-craft's install_service.py; adding a binding there means adding it
 // here. Header names are lower-cased because CloudFront normalises them.
 const CONFIG_HEADERS = {
   "x-norg-site-id": "SITE_ID",
-  "x-norg-site-key": "NORG_SITE_KEY",
+  "x-norg-secret-arn": "NORG_SECRET_ARN",
+  // Authorises the health probe and nothing else. Deliberately NOT the site
+  // key: operators are told to send this over the wire, and the old header
+  // compared against the key itself, which put a NORG credential into curl
+  // history, proxy logs, and — on a failing probe — the customer's origin.
+  "x-norg-probe-token": "PROBE_TOKEN",
   "x-norg-api-url": "NORG_API_URL",
   "x-norg-content-base": "NORG_CONTENT_BASE",
   "x-norg-strip-fallback": "STRIP_FALLBACK_ENABLED",
@@ -54,26 +84,64 @@ const CONFIG_HEADERS = {
 };
 
 /**
+ * Remove every NORG header from a request, so the origin can never see one.
+ *
+ * Two header sets, both of which have leaked in the past:
+ *
+ *  - the config custom headers, which CloudFront would otherwise forward to the
+ *    customer's own web server and into their access logs;
+ *  - the health-probe header, which a failing probe carried all the way to the
+ *    origin.
+ *
+ * Deletion is unconditional — a header is removed whether or not it held a
+ * value, so a half-configured install cannot leak through one we did not
+ * recognise as populated. Safe to call more than once, and on any shape of
+ * request, because it never throws.
+ *
+ * @param {Object} cfRequest CloudFront request, mutated in place.
+ * @returns {Object} The same request, for chaining at a return site.
+ */
+export function scrubConfigHeaders(cfRequest) {
+  const customHeaders = cfRequest?.origin?.custom?.customHeaders;
+  if (customHeaders) {
+    for (const header of Object.keys(CONFIG_HEADERS)) delete customHeaders[header];
+  }
+  if (cfRequest?.headers) delete cfRequest.headers[HEALTH_CHECK_HEADER];
+  return cfRequest;
+}
+
+/**
  * Read install config from the origin's custom headers, redacting as it goes.
  *
- * @param {Object} cfRequest CloudFront request, whose customHeaders are emptied
- *   of NORG config in place.
+ * Reads and scrubs in one step; nothing else should touch customHeaders. Note
+ * this is necessary but NOT sufficient — any object returned to CloudFront that
+ * did not come through here must be passed through `scrubConfigHeaders` first.
+ * The handler's failure paths return a clone taken before this ran.
+ *
+ * @param {Object} cfRequest CloudFront request, whose NORG headers are removed
+ *   in place.
  * @returns {Object} Binding-shaped config object.
  */
 export function readConfig(cfRequest) {
   const customHeaders = cfRequest.origin?.custom?.customHeaders;
+  // Captured before the scrub below removes it. The probe arrives as an
+  // ordinary viewer request header, so it is read here rather than left on the
+  // request: a FAILING probe used to carry it all the way to the origin.
+  const probeHeader = cfRequest.headers?.[HEALTH_CHECK_HEADER]?.[0]?.value;
   // The version rides on the config object because core reads it there — each
   // provider's artifact is versioned and pinned separately by content-craft.
   const env = { EDGE_SCRIPT_VERSION, EDGE_PLATFORM: "cloudfront" };
-  if (!customHeaders) return env;
+  if (probeHeader !== undefined) env.PROBE_HEADER = probeHeader;
+  if (!customHeaders) {
+    scrubConfigHeaders(cfRequest);
+    return env;
+  }
 
   for (const [header, name] of Object.entries(CONFIG_HEADERS)) {
     const value = customHeaders[header]?.[0]?.value;
     if (value !== undefined) env[name] = value;
-    // Deleted whether or not it was set, so a half-configured install cannot
-    // leak a key through a header we did not recognise as populated.
-    delete customHeaders[header];
   }
+  scrubConfigHeaders(cfRequest);
   return env;
 }
 
