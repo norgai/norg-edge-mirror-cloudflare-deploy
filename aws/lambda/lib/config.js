@@ -58,7 +58,7 @@ import { HEALTH_CHECK_HEADER } from "../../../core/constants.mjs";
  * to the customer origin on any thrown exception or oversized response, and the
  * health-probe header, which carried the site key in a plain viewer request.
  */
-export const EDGE_SCRIPT_VERSION = "0.5.1";
+export const EDGE_SCRIPT_VERSION = "0.5.2";
 
 // Custom origin header -> binding name. Mirrors build_worker_bindings() in
 // content-craft's install_service.py; adding a binding there means adding it
