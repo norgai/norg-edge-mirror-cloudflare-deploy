@@ -12,6 +12,9 @@ an API token, and never gets deploy access to anything in your account.
 > but the Shopify (Cloudflare O2O) setup has extra steps and two rules you
 > must not break.
 
+> **Not on Cloudflare?** The same router is ported to other CDNs, each on its
+> own branch of this repository — see [Other CDNs](#other-cdns) below.
+
 If you'd rather NORG handle the deploy and keep it automatically up to date,
 ask your NORG contact about the **API-token install** instead — see
 [Trade-offs vs. the API-token install](#trade-offs-vs-the-api-token-install)
@@ -387,6 +390,33 @@ test in `content-craft` pins the two copies against each other.
 
 Customers on this install route do **not** receive worker updates
 automatically — see [Limitations](#limitations) above.
+
+---
+
+## Other CDNs
+
+`main` is the Cloudflare Worker. The other providers live on their own
+branches, sharing the provider-neutral core (`core/` + `workers/lib/`) with
+this worker so classification, the entitlement gate, the strip and the
+telemetry contract stay identical everywhere.
+
+| CDN | Branch | Install guide | Status |
+|---|---|---|---|
+| **Cloudflare** | [`main`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/tree/main) | this README | Production |
+| **AWS CloudFront** (Lambda@Edge + CloudFront Functions) | [`feature/aws-cloudfront`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/tree/feature/aws-cloudfront) | [`aws/README.md`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/blob/feature/aws-cloudfront/aws/README.md) | Available — attaches to an existing distribution, no DNS change |
+| **Fastly Compute** | [`feature/fastly-compute`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/tree/feature/fastly-compute) | [`fastly/README.md`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/blob/feature/fastly-compute/fastly/README.md) | Available — requires pointing DNS at Fastly |
+| **Bunny Edge Scripting** | [`feature/bunny-edge-scripting`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/tree/feature/bunny-edge-scripting) | [`bunny/README.md`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/blob/feature/bunny-edge-scripting/bunny/README.md) | Available — requires pointing DNS at Bunny |
+| Akamai EdgeWorkers | [`feature/akamai-edgeworkers`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/tree/feature/akamai-edgeworkers) | — | Branch reserved; no adapter yet |
+| Vercel middleware | [`feature/vercel-middleware`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/tree/feature/vercel-middleware) | — | Branch reserved; no adapter yet |
+
+The three rules in [What this worker does](#what-this-worker-does) hold on
+every provider. What differs is what each platform can offer — bot
+verification signals, where the code runs relative to the cache, rollback
+speed — and each branch's README states its own differences from this
+install up front. Read that section before installing on another CDN.
+
+The public CloudFront architecture notes are at
+[app.norg.ai/help/edge-routing-cloudfront](https://app.norg.ai/help/edge-routing-cloudfront).
 
 ---
 
