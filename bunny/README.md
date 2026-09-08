@@ -10,8 +10,18 @@ runtime is Deno 2.7 on V8, with standard `Request`/`Response`, a real `fetch`,
 pipeline that is the Cloudflare pipeline in the same order.
 
 One structural difference dominates everything else, and it is not a detail:
-**a Bunny middleware script runs on a cache MISS only.** Read
-["The cache is the hazard"](#the-cache-is-the-hazard) before you install.
+**a Bunny middleware script runs on a cache MISS only.** The install keeps
+your HTML out of the pull zone's cache so every page request reaches the
+router; read ["The cache is the hazard"](#the-cache-is-the-hazard) before you
+install, because that part has not yet been verified on a live zone from this
+repository.
+
+Three things hold here exactly as on every other provider since 0.6.0: an
+ordinary browser, a search crawler and a static asset are answered before the
+router makes any lookup; the router makes no call of its own to report a
+visit (the visit rides as a header on the mirror fetch, and NORG's content
+service records it after answering); and the human page is never cached at
+the edge.
 
 ---
 
@@ -74,7 +84,10 @@ What it creates:
    **secret** for `NORG_SITE_KEY`.
 3. A pull zone pointed at your origin, with `OriginHostHeader` set to the
    origin's own host, and the script linked as its middleware.
-4. The hostname, a Let's Encrypt certificate, and Force SSL.
+4. Two edge rules: one that sets the cache time to 0 for HTML responses, so
+   every page request reaches the router while assets stay cached, and one
+   that keeps `private, no-store` on NORG-generated responses.
+5. The hostname, a Let's Encrypt certificate, and Force SSL.
 
 ---
 
@@ -90,7 +103,7 @@ What it creates:
 | `STRIP_FALLBACK_ENABLED` | `true` | `false` disables the stripped-origin fallback |
 | `EDGE_DISABLED` | `false` | `true` switches the router off without removing it |
 | `LAZY_RENDER_ENABLED` | `true` | `false` serves the strip without requesting a render |
-| `EDGE_EVENTS_VERBOSE` | *(off)* | `true` also reports plain origin passthroughs |
+| `EDGE_EVENTS_VERBOSE` | *(off)* | `true` also reports plain origin passthroughs, behind the response via `waitUntil` |
 
 A Bunny variable that is declared but left blank arrives as `""`, not
 `undefined`, so the adapter treats blank as absent and the baked default
@@ -123,10 +136,12 @@ Who can still reach it:
 
 **Bunny middleware runs at `onOriginRequest`, which fires on a cache MISS
 only.** On a HIT the CDN answers from cache and the script never executes. So
-if your origin serves cacheable HTML, a page warmed by one visitor is replayed
-to everyone — and an AI agent is served that cached page instead of the mirror.
-The failure is *safe* (nobody is cloaked, nothing breaks) but the product does
-not work.
+if your HTML were cached, a page warmed by one visitor would be replayed to
+everyone — and an AI agent would be served that cached page instead of the
+mirror. The failure is *safe* (nobody is cloaked, nothing breaks) but the
+product does not work. The rule on every provider since 0.6.0 is therefore the
+same: **the human page is never cached at the edge.** On Cloudflare and Fastly
+that is a property of the code; here it has to be a property of the pull zone.
 
 Bunny does have before-cache hooks — `onClientRequest` / `onClientResponse`,
 which run on every request — but they are a **preview** feature gated per pull
@@ -138,27 +153,50 @@ zone. This artifact therefore registers `onOriginRequest` only, and
 bundle. When before-cache execution becomes generally available, moving to
 `onClientRequest` removes this whole section.
 
-Until then the installer measures rather than assumes: it fetches your origin
-and reports its `Cache-Control`. If the HTML is uncacheable (`no-store`,
-`no-cache`, `private` or `max-age=0` — the normal case for a dynamic site) the
-router already runs on every request and there is nothing to do.
+### The default: one edge rule for HTML
 
-If it is cacheable, re-run with `CACHE_BYPASS=true`. **Understand the cost
-first.** Forcing the cache off is a pull-zone setting
-(`CacheControlMaxAgeOverride: 0`), and Bunny then rewrites the *client-facing*
-`Cache-Control` on **every** response, including your own. Measured on a live
-zone:
+The installer adds an edge rule — `OverrideCacheTime` with a value of `0`,
+triggered by a `Content-Type` response header matching `*text/html*` — so an
+HTML response is never stored at the edge while every asset keeps whatever
+cache time your origin gave it, and your own client-facing `Cache-Control`
+is left alone. The pull zone itself stays at "respect the origin" (`-1`). A
+second rule keeps `private, no-store` on NORG-generated responses.
 
-| | Without `CACHE_BYPASS` | With `CACHE_BYPASS=true` |
+**Not yet verified on a live zone from this repository.** The rule is written
+from Bunny's edge-rule API. Whether `OverrideCacheTime` `0` on a
+response-header trigger disables caching without rewriting the client-facing
+`Cache-Control` has not been measured here, so check it once DNS points at
+the zone:
+
+```bash
+curl -sI https://agents.example.com/ | grep -i 'cdn-cache\|cache-control'
+curl -sI https://agents.example.com/ | grep -i 'cdn-cache\|cache-control'
+```
+
+Both answers must read `cdn-cache: MISS` and your `Cache-Control` must be the
+one your origin sent. The installer also probes your origin and prints its
+`Cache-Control`, so you can see what the rule has to override: on a dynamic
+site whose HTML is already `no-store`, `no-cache`, `private` or `max-age=0`
+the rule changes nothing and the router already ran on every request.
+
+### The fallback: `CACHE_BYPASS=true`
+
+If a page comes back `cdn-cache: HIT`, re-run the installer with
+`CACHE_BYPASS=true`. **Understand the cost first.** This forces the cache off
+for the whole zone (`CacheControlMaxAgeOverride: 0`), and Bunny then rewrites
+the *client-facing* `Cache-Control` on **every** response, including your own.
+Measured on a live zone:
+
+| | Default (HTML rule) | With `CACHE_BYPASS=true` |
 |---|---|---|
-| Your HTML (`private, no-cache, no-store, …`) | unchanged | `public, max-age=0` |
+| Your HTML | not cached at the edge; header unchanged (unverified, see above) | not cached; `public, max-age=0` |
 | Your assets (`public, max-age=31536000, immutable`) | unchanged, cached (`cdn-cache: HIT`) | `public, max-age=0`, not cached |
-| A NORG mirror response | `private, no-store` | `private, no-store`, via an edge rule the installer adds |
+| A NORG mirror response | `private, no-store` | `private, no-store`, via the second edge rule |
 
 Losing `immutable` on a year-long asset is a real regression on your site, which
-is why this is opt-in rather than the default.
+is why this is the fallback rather than the default.
 
-Two narrower fixes were tried on Bunny and **do not work** — do not re-derive
+Two other fixes were tried on Bunny and **do not work** — do not re-derive
 them:
 
 - Stamping `CDN-Cache-Control: private, no-store` from the script in
@@ -166,7 +204,9 @@ them:
   HIT` on four consecutive requests).
 - An edge rule that bypasses the cache for everything *except* asset extensions
   is refused — `edgerule.invalid: Maximum 5 triggers are allowed per
-  condition`, and the asset list has about fifty entries.
+  condition`, and the asset list has about fifty entries. That is why the
+  default rule matches the one header that separates a page from an asset on
+  every site, rather than listing extensions.
 
 ---
 
@@ -182,7 +222,9 @@ CHROME='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTM
 #    so a cold one answers false — ask twice.
 curl -s -H "x-norg-edge-check: <your-site-key>" $HOST/ | jq
 
-# 2. A normal visitor is untouched — expect your full page and NO x-norg-edge.
+# 2. A normal visitor is untouched — expect your full page, NO x-norg-edge, and
+#    cdn-cache: MISS both times: the page is never cached at the edge.
+curl -s -D - -o /dev/null -w 'SIZE:%{size_download}\n' -A "$CHROME" $HOST/
 curl -s -D - -o /dev/null -w 'SIZE:%{size_download}\n' -A "$CHROME" $HOST/
 
 # 3. Force the mirror for a page NORG has rendered — expect a much smaller body
@@ -217,8 +259,10 @@ operator's range.
 
 | | Cloudflare | Fastly | **Bunny** | CloudFront |
 |---|---|---|---|---|
-| Runs before cache | ✅ | ✅ | ⚠️ **preview only** — MISS-only today | ⚠️ cache-miss only |
-| `waitUntil` | ✅ | ✅ | ✅ `Bunny.v1.waitUntil` | ❌ emulated by a deferred queue |
+| Runs before cache | ✅ | ✅ | ⚠️ **preview only** — MISS-only, so HTML is kept out of the cache by an edge rule | on every page request; the page is never cached |
+| `waitUntil` | ✅ | ✅ | ✅ `Bunny.v1.waitUntil`, for the opt-in passthrough event and feed refresh | ❌ none; nothing needs one |
+| Who records an agent visit | the worker | NORG's content service, from the visit header | **NORG's content service**, from the visit header | NORG's content service, from the visit header |
+| Human page cached at the edge | no | no | **no** (edge rule, unverified live) | no (`CachingDisabled`) |
 | Generated-response cap | none | none | **none** | 1 MB |
 | HTML rewriter | HTMLRewriter | same engine | **HTMLRewriter present** (unused — `core/strip.js` is provider-neutral) | hand-rolled |
 | Secret storage | Worker secret | write-only Secret Store | **write-only secret** | ⚠️ origin custom header |
@@ -228,8 +272,18 @@ operator's range.
 | Install shape | additive to your zone | needs a Compute service | **a pull zone in front of your origin** | additive to a distribution |
 
 **No cron.** Bunny isolates exist for the life of a request, so the 30-minute
-liveness beat is driven by NORG pinging the install. Traffic-driven heartbeats
-work normally.
+liveness beat is driven by NORG pinging the install. Traffic liveness comes
+from the visits NORG's content service records on the install's behalf.
+
+**The router reports no visit itself.** An agent visit — user agent,
+classification, what was served — travels as one `X-Norg-Visit` header on the
+mirror fetch the router awaits anyway, with `X-Norg-Lazy-Render: 1` asking for
+a render on a miss, and NORG's content service records the event after it has
+answered. A page served from your origin because NORG had no render is
+recorded as `stripped` (or `origin` if the strip fallback is off); the
+`origin_thin` distinction other platforms report is not made here. The one
+call the router still makes off the visitor's path is the opt-in human
+passthrough event, handed to `Bunny.v1.waitUntil`.
 
 **No verified-bot signal.** Bunny publishes the client IP, an ISO country
 (`cdn-requestcountrycode`), a state code, the answering PoP and a JA4 TLS
@@ -249,8 +303,9 @@ failure is the safe one.
 | `lib/request.js` rebuilds the **visitor's** URL from `cdn-host` | Bunny points `ctx.request.url` at the origin before the hook runs. Without this, every visit event, canonical Link and render request would carry the origin's hostname instead of the customer's. |
 | Blank environment values are treated as absent (`lib/config.js`) | Bunny declares variables up front, so an unset optional one arrives as `""`. Core's `binding()` only falls back on `undefined`, so `""` would defeat every baked default. |
 | Passthrough is a **sentinel**, not a fetch (`lib/origin.js`) | The hook returns either a `Response` or a `Request`; returning the request is how you say "carry on to the origin". Strictly better than CloudFront's version, because Bunny's own origin machinery — retries, host header, shield — still applies. |
-| `logEdgeEvent` reports null geo | `core/telemetry.js` reads `cloudfront-viewer-*` headers. Bunny publishes the same facts under `cdn-*` names, so `ip_country`, `asn`, `http_protocol` and `tls_version` are null on this provider, exactly as they are on Fastly. Fixing it means changing `core/`, which this port deliberately did not do. |
+| The visit header carries no geo | `core/visit.js` reads `cloudfront-viewer-*` headers. Bunny publishes the same facts under `cdn-*` names (`cdn-requestcountrycode`, `cdn-ja4`), so `ip_country`, `asn`, `http_protocol` and `tls_version` are recorded null on this provider, exactly as they are on Fastly. Fixing it means changing `core/`, which this port deliberately did not do. |
 | Only `onOriginRequest` is registered | See ["The cache is the hazard"](#the-cache-is-the-hazard). |
+| The page cache is an install-time property | On Cloudflare and Fastly the code runs before the cache; here the installer's HTML-only edge rule is what keeps every page request reaching the router. |
 
 ---
 
@@ -261,11 +316,13 @@ account: **$0.02 per 1,000 s of CPU time** and **$0.20 per million requests**.
 The floor is $0.22/month, which you pay from the first request. CDN bandwidth is
 billed separately at the normal rate.
 
-The script runs on **every cache MISS**, which includes static assets: the
-pipeline returns them to the origin at `isStaticAssetPath`, before any network
-call, but they still count as requests. On a cacheable origin without
-`CACHE_BYPASS` assets are served from cache and never reach the script at all.
-At 10 M requests/month and ~10 ms CPU each the bill is about $4.
+The script runs on **every cache MISS**, which with the HTML rule means every
+page request plus any asset your origin did not make cacheable: an asset is
+returned to the origin at `isStaticAssetPath`, before any network call, and a
+human page view leaves on the fast path with no lookup, but both still count
+as requests. Cacheable assets are served from Bunny's cache and never reach
+the script at all. At 10 M requests/month and ~10 ms CPU each the bill is
+about $4.
 
 Runtime limits that matter here: **30 s CPU** per request (the pipeline's own
 budgets are 3–5 s per network call, and a 15 s watchdog sits under it),
