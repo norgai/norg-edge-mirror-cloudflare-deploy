@@ -79,3 +79,10 @@ test("viewerAttributes keeps the event shape identical across providers", () => 
     tls_version: "TLSv1.2",
   });
 });
+
+test("the visit header is built without Node-only APIs", async () => {
+  // core/ runs on Fastly (no Buffer) and Bunny (Deno) as well as Lambda@Edge.
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(new URL("../../core/visit.js", import.meta.url), "utf8");
+  assert.equal(/\bBuffer\b/.test(source), false, "Buffer is not available on every provider runtime");
+});
