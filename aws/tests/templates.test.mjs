@@ -123,17 +123,36 @@ for (const file of TEMPLATES) {
     }
   });
 
-  test(`${file}: the inlined cache guard matches its source and stamps its digest`, () => {
-    // Same reasoning as the viewer function: a hand-edit here would ship a
-    // different guard than the one cache-guard.test.mjs covers. The digest in
-    // the Version description is what forces a new Lambda version on change.
-    const source = readFileSync(join(cfnDir, "..", "lambda", "cache-guard-lambda.cjs"), "utf8");
-    const embedded = /^ {8}ZipFile: \|\n((?: {10}.*\n| *\n)*)/m.exec(template);
-    assert.ok(embedded, "no inlined ZipFile block");
-    const dedented = embedded[1].split("\n").map((l) => l.replace(/^ {10}/, "")).join("\n").trimEnd();
-    assert.equal(dedented, source.trimEnd(), "run: npm run build:aws");
-    assert.ok(source.length <= 4096, "the guard must stay under CloudFormation's 4 KB ZipFile limit");
-    assert.match(template, /Description: "cache-guard sha256:[0-9a-f]{16}"/);
+  test(`${file}: no cache-partition artifact survives`, () => {
+    // 0.6.0 does not cache the human page at the edge, so the viewer-request
+    // stamp, the custom cache policy keyed on it and the origin-response guard
+    // are gone. Any of them coming back means a cache key to get wrong again.
+    for (const marker of ["ViewerClassifier", "CacheGuard", "x-norg-agent", "AWS::CloudFront::Function", "origin-response"]) {
+      assert.equal(template.includes(marker), false, `${file} still carries ${marker}`);
+    }
+  });
+
+  test(`${file}: the site key is replicated to every other Lambda@Edge region, behind a parameter`, () => {
+    assert.match(parameterBlock(template, "ReplicateSecret"), /Default: "true"/);
+    const secret = /^  SiteKeySecret:\n((?:    .*\n|\n)*)/m.exec(template);
+    assert.ok(secret, "no SiteKeySecret resource");
+    assert.match(secret[1], /ReplicaRegions: !If\n\s+- ReplicateSecret/);
+    const regions = [...secret[1].matchAll(/- Region: ([a-z0-9-]+)/g)].map((m) => m[1]);
+    assert.equal(regions.length, 12, "twelve replicas plus the us-east-1 primary make the thirteen edge regions");
+    assert.equal(regions.includes("us-east-1"), false, "the primary is not its own replica");
+  });
+
+  test(`${file}: the read policy allows the same secret in any region, and only that secret`, () => {
+    // A replica's ARN differs from the primary's only in the region segment.
+    // The role must reach it, and must still not be a way to read anything
+    // else: wildcard the REGION, never the name.
+    const policies = [...template.matchAll(/PolicyName: ReadSiteKey[\s\S]*?Resource: !Join\n([\s\S]*?)\n\n/g)];
+    assert.ok(policies.length >= 2, "both execution roles read the key");
+    for (const [, body] of policies) {
+      assert.match(body, /- secretsmanager\n\s+- "\*"\n/, "the region segment is the wildcard");
+      assert.match(body, /!Select \[6, !Split \[":"/, "the name segment comes from the ARN itself");
+      assert.equal(/secret:\*|secret\/\*/.test(body), false, "never a wildcard on the name");
+    }
   });
 
   test(`${file}: the kill switch is a parameter wired to the x-norg-disabled header`, () => {
@@ -146,21 +165,6 @@ for (const file of TEMPLATES) {
     assert.match(template, /HeartbeatErrorsAlarm:/);
     // Lambda@Edge metrics are published under the replicated name.
     assert.match(template, /Value: !Sub "us-east-1\.\$\{EdgeRouterFunction\}"/);
-  });
-
-  test(`${file}: the embedded CloudFront Function matches its source`, () => {
-    // build.mjs regenerates this; a hand-edit here would silently ship a
-    // different cache-key stamp than the one the tests cover.
-    const source = readFileSync(join(cfnDir, "..", "functions", "viewer-classifier.js"), "utf8");
-    const embedded = /^ {6}FunctionCode: \|\n((?: {8}.*\n| *\n)*)/m.exec(template);
-    assert.ok(embedded, "no inlined FunctionCode block");
-
-    const dedented = embedded[1]
-      .split("\n")
-      .map((line) => line.replace(/^ {8}/, ""))
-      .join("\n")
-      .trimEnd();
-    assert.equal(dedented, source.trimEnd(), "run: npm run build:aws");
   });
 }
 
@@ -223,14 +227,13 @@ test("the MCP behaviours are the ONLY place the request body is included", async
     if (mcp.has(pattern)) {
       assert.match(body, /IncludeBody: true/, `${pattern} must carry the body`);
       assert.match(body, /LambdaFunctionARN: !Ref EdgeRouterVersion/, `${pattern} must run the router`);
-      assert.match(body, /LambdaFunctionARN: !Ref CacheGuardVersion/, `${pattern} must run the guard`);
+      assert.equal((body.match(/EventType:/g) || []).length, 1, `${pattern} runs only the router`);
+      assert.match(body, /CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad/, `${pattern} is never cached`);
     } else {
       assert.equal(/LambdaFunctionAssociations/.test(body), false, `${pattern} must have no Lambda`);
       assert.equal(/FunctionAssociations/.test(body), false, `${pattern} must have no function`);
     }
   }
-  // And the default behaviour itself: body off, guard on.
-  assert.match(template, /IncludeBody: false\n {12}- EventType: origin-response\n {14}LambdaFunctionARN: !Ref CacheGuardVersion/);
   assert.equal((template.match(/IncludeBody: true/g) || []).length, MCP_PATH_PATTERNS.length);
 });
 
@@ -269,28 +272,32 @@ test("the behaviour count stays under CloudFront's quota with room for the custo
   assert.ok(count <= 65, `${count} behaviours leaves fewer than 10 of 75 for the customer`);
 });
 
-test("the carve-out cache policy does not split the cache by agent", () => {
-  // These bytes are identical for every caller; keying on x-norg-agent would
-  // double the entries for nothing.
+test("the asset carve-out policy is the only caching the distribution does", () => {
   const template = readFileSync(join(cfnDir, "new-distribution.yaml"), "utf8");
   const policy = /StaticCachePolicy:[\s\S]*?CookieBehavior: none/.exec(template);
   assert.ok(policy, "no StaticCachePolicy");
-  assert.equal(/x-norg-agent/.test(policy[0]), false);
   assert.match(policy[0], /HeaderBehavior: none/);
+  assert.equal((template.match(/AWS::CloudFront::CachePolicy/g) || []).length, 1, "one cache policy: assets");
 });
 
-test("the default behaviour runs the guard on origin-response with the body OFF", () => {
+test("the default behaviour is never cached and runs only the router, body OFF", () => {
+  // The human page is not cached at the edge: every page request reaches the
+  // router and the origin answers it. There is no cache key to get wrong.
   const template = readFileSync(join(cfnDir, "new-distribution.yaml"), "utf8");
   const dflt = /DefaultCacheBehavior:[\s\S]*?HeartbeatRole:/.exec(template)[0];
+  assert.match(dflt, /CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad/, "managed CachingDisabled");
   assert.match(dflt, /EventType: origin-request[\s\S]*?IncludeBody: false/);
-  assert.match(dflt, /EventType: origin-response\n\s+LambdaFunctionARN: !Ref CacheGuardVersion/);
+  assert.equal((dflt.match(/EventType:/g) || []).length, 1, "one association: the router");
+  assert.equal(/\n\s+FunctionAssociations:/.test(dflt), false, "no CloudFront Function on the default behaviour");
 });
 
-test("rate limiting is opt-in and off by default", () => {
-  // It costs money and a customer may already run WAF; enabling it silently
-  // is not the template's call.
+test("rate limiting is on by default, and can be switched off", () => {
+  // Every page request is an invocation against the regional concurrency
+  // quota, and past it CloudFront answers a 503. A customer who already runs
+  // WAF turns it off and adds the rule to their own ACL.
   const template = readFileSync(join(cfnDir, "new-distribution.yaml"), "utf8");
-  assert.match(parameterBlock(template, "EnableRateLimit"), /Default: "false"/);
+  assert.match(parameterBlock(template, "EnableRateLimit"), /Default: "true"/);
+  assert.match(parameterBlock(template, "EnableRateLimit"), /AllowedValues: \["true", "false"\]/);
   assert.match(template, /RateLimitWebAcl:\n\s+Type: AWS::WAFv2::WebACL\n\s+Condition: RateLimitEnabled/);
   assert.match(template, /WebACLId: !If \[RateLimitEnabled/);
 });

@@ -28,8 +28,7 @@ import { HEALTH_CHECK_HEADER } from "../../../core/constants.mjs";
  *
  * Versioned independently of the Cloudflare worker because it is a separate
  * deployable with its own SHA-256 pin; content-craft compares it against
- * EDGE_WORKER_VERSION_CLOUDFRONT, not EDGE_WORKER_VERSION. Behaviour tracks
- * edge-router-worker.js 0.11.6.
+ * EDGE_WORKER_VERSION_CLOUDFRONT, not EDGE_WORKER_VERSION.
  *
  * 0.2.0 — carve-out cache behaviours and a 192 MB router. No request-handling
  * change; the version moves because the deployed artifact and the distribution
@@ -57,8 +56,20 @@ import { HEALTH_CHECK_HEADER } from "../../../core/constants.mjs";
  * pre-redaction `pristine` clone, which forwarded the whole config header set
  * to the customer origin on any thrown exception or oversized response, and the
  * health-probe header, which carried the site key in a plain viewer request.
+ *
+ * 0.6.0 — two decisions, both simplifications. The human page is never cached
+ * at the edge: the default behaviour uses CloudFront's managed CachingDisabled
+ * policy, every page request reaches the router, and the viewer-request stamp,
+ * the custom cache policy and the origin-response cache guard are gone with
+ * the cache they protected. And the router makes no background call: an agent
+ * visit is recorded by the receptionist from a header on the mirror fetch
+ * (core/visit.js), a miss enqueues its render the same way, and the deferred
+ * telemetry queue, its flush and sweep budgets, and the per-container mirror
+ * cache are gone with it. Humans are answered before any lookup; the site key
+ * is read from the replica in the region that ran the function. Behaviour
+ * tracks edge-router-worker.js 0.11.7.
  */
-export const EDGE_SCRIPT_VERSION = "0.5.2";
+export const EDGE_SCRIPT_VERSION = "0.6.0";
 
 // Custom origin header -> binding name. Mirrors build_worker_bindings() in
 // content-craft's install_service.py; adding a binding there means adding it
@@ -102,12 +113,28 @@ const CONFIG_HEADERS = {
  * @returns {Object} The same request, for chaining at a return site.
  */
 export function scrubConfigHeaders(cfRequest) {
-  const customHeaders = cfRequest?.origin?.custom?.customHeaders;
+  const customHeaders = originCustomHeaders(cfRequest);
   if (customHeaders) {
     for (const header of Object.keys(CONFIG_HEADERS)) delete customHeaders[header];
   }
   if (cfRequest?.headers) delete cfRequest.headers[HEALTH_CHECK_HEADER];
   return cfRequest;
+}
+
+/**
+ * The custom-header map of whichever origin type backs this request.
+ *
+ * CloudFront attaches origin custom headers to custom origins AND to S3
+ * origins, under different keys in the event. Reading only `origin.custom`
+ * meant an S3-backed distribution installed cleanly and then did nothing,
+ * because the site id was never found.
+ *
+ * @param {Object} cfRequest CloudFront request object.
+ * @returns {?Object} The live header map, or null when the origin has none.
+ */
+export function originCustomHeaders(cfRequest) {
+  const origin = cfRequest?.origin;
+  return origin?.custom?.customHeaders || origin?.s3?.customHeaders || null;
 }
 
 /**
@@ -123,7 +150,7 @@ export function scrubConfigHeaders(cfRequest) {
  * @returns {Object} Binding-shaped config object.
  */
 export function readConfig(cfRequest) {
-  const customHeaders = cfRequest.origin?.custom?.customHeaders;
+  const customHeaders = originCustomHeaders(cfRequest);
   // Captured before the scrub below removes it. The probe arrives as an
   // ordinary viewer request header, so it is read here rather than left on the
   // request: a FAILING probe used to carry it all the way to the origin.

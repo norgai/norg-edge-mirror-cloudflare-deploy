@@ -42,7 +42,7 @@ Three rules are built in and have no off switch:
 | Use | [`attach-existing.yaml`](cloudformation/attach-existing.yaml) + the attach CLI | [`new-distribution.yaml`](cloudformation/new-distribution.yaml) |
 | DNS change | None | Yes — you repoint to the new distribution when ready |
 | Touches production | Yes, it modifies your live distribution | No, until you cut DNS |
-| Who chooses your caching | You (we refuse to guess) | The template, until you tune it |
+| Page caching | **None** — the CLI switches your default behaviour to CloudFront's managed `CachingDisabled` | None; only assets are cached |
 
 Both require **us-east-1**. Lambda@Edge functions can only live there; the
 distribution itself is global either way.
@@ -67,9 +67,14 @@ distribution itself is global either way.
       bucket NORG names is one they own, or mirror the objects into your own
       bucket and point the parameters at that — which is fully supported and the
       right call if your policy forbids deploying third-party code.
-- [ ] For the attach path: **no other origin-request Lambda@Edge function or
-      viewer-request CloudFront Function on the behaviour you're attaching to.**
-      The installer refuses rather than replacing someone else's routing.
+- [ ] For the attach path: **no other origin-request Lambda@Edge function on
+      the behaviour you're attaching to.** The installer refuses rather than
+      replacing someone else's routing. Your own viewer-request, viewer-response
+      and origin-response functions are left exactly as they are.
+- [ ] For the attach path: **you are content for CloudFront to stop caching
+      your HTML.** Every page request will reach the router and your origin
+      will answer it, as it did before you had a CDN. Assets stay cached. The
+      dry run states this before you confirm.
 
 ---
 
@@ -93,63 +98,45 @@ node aws/install/attach.mjs \
   --distribution-id EXXXXXXXXXXXX \
   --stack norg-edge
 
-# 3. Apply it, after choosing what happens to your cache key (see below).
+# 3. Apply it.
 node aws/install/attach.mjs \
   --distribution-id EXXXXXXXXXXXX \
   --stack norg-edge \
-  --cache-policy=replace \
   --apply
 ```
 
 To remove it: the same command with `--detach --apply`.
 
-### The cache-key decision you have to make
+### What attaching changes about your caching
 
-The router runs on **origin-request**, which CloudFront only fires on a cache
-**miss**. So once a human has warmed the cache for a page, the next AI agent
-asking for that URL is a cache *hit* — the router never runs, and the agent
-quietly gets your ordinary page. The install looks healthy and does nothing, on
-exactly your most popular pages.
+One thing, and the dry run says it in these words: your default behaviour's
+cache policy becomes CloudFront's managed `CachingDisabled`, so **HTML is no
+longer cached at the edge**. Every page request reaches the router; the router
+answers an ordinary browser before making any lookup, and CloudFront fetches
+your origin exactly as it would without us. Assets, framework prefixes and the
+dynamic routes keep their own carve-out behaviours and are not affected.
 
-The fix is the `x-norg-agent` header in your cache key, stamped by a
-viewer-request CloudFront Function. Because your cache policy is tuned to your
-application — and may be shared with other distributions — the installer will
-not change it silently. Choose:
+Why not cache the human page and keep agents out of the cache? Because that
+takes a cache key you can get wrong, a guard to keep origin bytes out of the
+agent bucket, and an install-time decision about *your* policy's minimum TTL —
+and a mistake in any of them serves the wrong page to the wrong visitor,
+silently. Not caching the page removes the whole class of failure. What it
+costs is one Lambda@Edge invocation per page request, priced below, and one
+side effect worth knowing: CloudFront only compresses responses on a
+behaviour whose cache policy enables it, and `CachingDisabled` does not, so
+your origin's own compression is what reaches the browser (the viewer's
+`Accept-Encoding` is forwarded) and a NORG mirror is served uncompressed.
 
-- **`--cache-policy=replace`** — use the stack's policy. It has `DefaultTTL 0`,
-  so CloudFront honours the `Cache-Control` your origin already sends, and its
-  cache key carries **only** `x-norg-agent`, the `agent` query string and the
-  encoding. **The CLI refuses `replace` if your current policy keys on cookies,
-  headers or query strings** — collapsing a session cache or a per-variant
-  cache into one entry would serve one visitor's page to the next, and that is
-  not a warning, it is a stop. Use `keep`.
-- **`--cache-policy=keep`** — keep yours, and add `x-norg-agent` to its cache
-  key yourself. A CloudFront **managed** policy cannot be edited, so "keep"
-  means copying it to a custom policy first.
+### The quota the dry run prints
 
-This splits your cache into at most two variants per URL. Diverted responses are
-`private, no-store` and are never cached at all.
-
-### The cache guard, and why only humans may cache
-
-The `x-norg-agent` stamp is a deliberate **superset** of the agents the router
-will divert: a spoofed `curl -A GPTBot`, a crawler NORG has marked
-`never_divert`, and a headless browser all land in the `agent=1` bucket. On a
-cache miss they reach the router, fail verification, and are passed through to
-your origin. Without anything else, CloudFront would then cache **your origin
-page** under `(url, agent=1)` for whatever TTL your origin declares — and every
-later, genuinely verified crawler would be a cache *hit* on that entry. The
-router would never run, and the mirror would be suppressed for the TTL by the
-first bot-shaped request to arrive. Anyone could force it.
-
-So the install carries a second, tiny Lambda@Edge function on
-**origin-response**: it marks every response in a non-human bucket
-`private, no-store` unless NORG served it. Only the confidently-human `agent=0`
-bucket may ever cache origin bytes. The router itself cannot do this —
-origin-request functions cannot touch the response — which is why it is a
-separate function. It runs only when the origin is actually fetched for a
-non-human bucket, at 128 MB for a few milliseconds; a mirror served by the
-router never triggers it.
+Every page request is an invocation, and Lambda@Edge concurrency is a
+per-region quota shared with every other Lambda in your account. Past it,
+CloudFront answers **every page request in that region with a 503**. The
+attach CLI reads the quota in all thirteen regions Lambda@Edge runs in and
+prints them; a region under 100 is flagged, because each instance serves ten
+requests a second, so 100 is a ceiling of a thousand page requests a second.
+New accounts often start at 10. Request an increase for quota `L-B99A9384`
+(service `lambda`) in the flagged regions before attaching a busy site.
 
 ---
 
@@ -176,6 +163,10 @@ its access logs — on every path, including the failure ones.
 fetches it at the edge, so it is not readable from your distribution's
 configuration, and rotating it is one operation rather than two. What the
 distribution carries is the secret's ARN, which is an address, not a credential.
+The stack replicates the secret to the twelve other regions Lambda@Edge runs in
+(`ReplicateSecret`, default on), and the router reads the replica in the region
+that ran it rather than round-tripping to Virginia; an install without replicas
+falls back to the primary. A human request never fetches it at all.
 
 | Header | Default | Meaning |
 |---|---|---|
@@ -195,8 +186,9 @@ distribution carries is the secret's ARN, which is an address, not a credential.
 There are now three groups of generated behaviours, matched in this order:
 
 1. **MCP paths** (`/.well-known/mcp.json`, `*/mcp`, `*/sse`) — the full router,
-   and the **only** behaviours with `IncludeBody: true`. Everywhere else the
-   router receives no request body at all (see Operational notes).
+   never cached, and the **only** behaviours with `IncludeBody: true`.
+   Everywhere else the router receives no request body at all (see
+   Operational notes).
 2. **Dynamic paths** (`/api/*`, `/wp-json/*`, `/wp-admin/*`, `/wp-login.php`,
    `/cart`, `/cart/*`, `/checkout`, `/checkout/*`) — no Lambda and **no cache**:
    CloudFront's managed `CachingDisabled` + `AllViewerExceptHostHeader`, every
@@ -305,9 +297,8 @@ curl -sI -A "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 
   https://your-domain.com/some-page/ | grep -i x-norg-edge
 ```
 
-Expect **no output at all**. Run it twice — once cold, once against a warmed
-cache — because the warm case is exactly what the cache-key stamp exists to get
-right.
+Expect **no output at all**, and `x-cache: Miss from cloudfront` both times you
+run it: a page is never cached at the edge, so your origin answered both.
 
 ### 3. The router is alive and entitled
 
@@ -316,7 +307,7 @@ curl -s -H "x-norg-edge-check: <your-probe-token>" https://your-domain.com/ | jq
 ```
 
 ```json
-{ "site_id": "…", "version": "0.1.0", "env": "production",
+{ "site_id": "…", "version": "0.6.0", "env": "production",
   "disabled": false, "platform": "cloudfront", "entitled": true, "ts": 1730000000000 }
 ```
 
@@ -328,19 +319,20 @@ is deliberately inert.
 
 ## Differences from the Cloudflare install
 
-These are platform constraints, not choices, and two of them change behaviour
-you can observe.
+These are platform constraints or deliberate choices, and three of them change
+behaviour you can observe.
 
 | | Cloudflare | CloudFront |
 |---|---|---|
 | **Bot verification** | Operator CIDR ranges, falling back to Cloudflare's verified-bot signal | **CIDR ranges only** |
-| **Where it runs** | Before the cache, on every request | On a cache **miss**, so the cache key must separate agents from humans |
-| **Mirror response cache** | Cached in-colo under a tenant-unique key | **None** — see below |
+| **Where it runs** | Before the cache, on every request | On **every page request**; the page is never cached at the edge |
+| **Mirror cache** | In-colo, keyed per tenant | Held by NORG's content service; **none in the function** |
+| **Who records an agent visit** | The worker, through `ctx.waitUntil` | **NORG's content service**, from a header on the mirror fetch; the router makes no call of its own |
+| **Passthrough events** | Every visit | Off unless `x-norg-events-verbose=true`, and then best-effort |
 | **Config** | Worker bindings | Origin custom headers |
 | **Liveness cron** | Worker cron trigger | A separate scheduled Lambda |
-| **Passthrough events** | Every visit | Diverted traffic only, unless `x-norg-events-verbose=true` |
 | **Rollback speed** | Delete a route — seconds | 5–15 min propagation; a Lambda@Edge replica takes ~30 min to become deletable |
-| **Install-size cliff** | Workers free plan: 100k requests/day | None — per-request Lambda@Edge cost instead |
+| **The one cliff** | Workers free plan: 100k requests/day, fails closed by default | The regional Lambda concurrency quota: past it, **503** on every page request in that region |
 
 **Bot verification is genuinely weaker here.** CloudFront exposes no
 verified-bot signal (AWS's equivalent is AWS WAF Bot Control, a separate
@@ -349,25 +341,25 @@ diverted on CloudFront where it would be on Cloudflare. The failure direction is
 the safe one — it under-serves agents rather than over-serving humans — but it
 means fewer diverts on some crawlers.
 
-**There is no mirror response cache.** Not because the cache key is too coarse
-— it does include `x-norg-agent`, so agent and human traffic already occupy
-different entries. The reason is what that header can mean: it is stamped by a
-viewer-request function that has no network access, so it cannot check the
-authenticated feed or verify a source IP, and it is deliberately a *superset* of
-what actually gets diverted. A spoofed `curl -A GPTBot` from any address lands
-in the same bucket as a real, verified GPTBot.
+**The router makes no call to report a visit.** Lambda@Edge freezes the moment
+the handler returns, so a background call is lost and an awaited one is a wait
+the visitor pays. Instead the details of the visit — user agent, classification,
+what was served, and the viewer country, city, ASN, protocol and TLS version
+CloudFront supplies — travel as one request header on the mirror fetch the
+router was going to make anyway. NORG's content service, which runs on
+Cloudflare and has a deferred-work primitive, records the event after it has
+answered, and on a miss enqueues the render the same way. Two consequences: a
+page served from your origin because NORG had no render is recorded as
+`stripped` (or `origin`, if the strip fallback is off) without the `origin_thin`
+distinction other platforms report; and a human passthrough is recorded only if
+you opt in, and then by an un-awaited call that a freezing container may drop.
 
-That is harmless today, because everything in that bucket still reaches the
-router, which then applies classification, serving policy and IP verification.
-Caching a mirror there would not be: a cache hit skips the router entirely, and
-the spoofer would be served a mirror a genuine crawler had warmed.
-
-Making it cacheable needs exact classification at viewer-request, which means
-putting the bot feed in a CloudFront KeyValueStore — possible, but it places a
-local copy of the patterns at the edge and means a revoked site key stops
-diverting only when entries expire rather than at once. NORG's edge-content
-service caches behind its own auth check regardless, so what is lost today is a
-hop, not correctness.
+**There is no page cache at the edge, and no mirror cache in the function.**
+The human page is served by your origin on every request, so there is no cache
+key that could serve an agent's page to a person or a person's page to an
+agent, and no guard needed to keep one out. Mirrors are cached by NORG's
+content service behind its own authentication; a copy inside the function would
+be a visit nobody recorded.
 
 ---
 
@@ -380,18 +372,28 @@ hop, not correctness.
   [CloudFront continuous-deployment](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/continuous-deployment.html)
   staging distribution first and shift traffic gradually. "Degrades safely" and
   "reverts quickly" are not the same property, and this install has the first.
-- **Cost.** Every cache miss invokes Lambda@Edge, which has **no free tier**
-  (unlike CloudFront requests and Functions). Measured on a live install over a
-  week — mean 126 ms, peak 116 MB — at the 192 MB this ships with:
+- **Cost.** Every page request invokes Lambda@Edge, which has **no free tier**
+  (unlike CloudFront requests). A human page view is answered in a few
+  milliseconds with no lookup; an agent visit pays for the mirror fetch.
+  Measured on a live install over a week — mean 126 ms on agent traffic, peak
+  116 MB — at the 192 MB this ships with:
 
-  | | per 1M router invocations |
+  | | per 1M page requests |
   |---|---|
-  | Lambda@Edge (192 MB) | ~$1.80 |
+  | Lambda@Edge (192 MB), human page views | ~$0.65 |
+  | Lambda@Edge (192 MB), agent visits | ~$1.80 |
   | CloudFront requests | $1.00 (first 10M/month free) |
-  | CloudFront Functions | $0.10 (first 2M/month free) |
 
   The install keeps that number small by **not invoking the router for static
-  assets at all** — see below.
+  assets at all** — see below. Assets are 90–95% of a typical page's requests.
+- **The concurrency quota is the cliff.** Lambda@Edge concurrency is a
+  per-region quota (`L-B99A9384`, default 1,000, often 10 on newer accounts),
+  shared by every Lambda in the account in that region, and each instance
+  serves ten requests a second. Past it CloudFront answers every page request
+  in that region with a 503. The attach CLI prints the quota per region and
+  flags any under 100; the new-distribution template enables a per-IP rate
+  limit by default (`EnableRateLimit`), because a scraper on unique paths is
+  the way to reach the quota.
 - **Request bodies never reach the router except on MCP paths.** `IncludeBody`
   is set per association, and on the default behaviour it delivered every
   cache-miss POST body on your site — logins, checkouts, forms — into the
@@ -440,21 +442,20 @@ hop, not correctness.
   The stack creates two alarms — router errors (a 502 to a visitor) and
   heartbeat failures (NORG rejected the install) — give them somewhere to go
   with the `AlarmTopicArn` parameter.
-- **Rate limiting is available and off by default.** Every cache miss on the
-  default behaviour is a Lambda invocation on your bill, and unique paths never
-  hit the cache, so a scraper can run the meter: roughly $1.80 per million
-  invocations plus CloudFront's own fees. Set `EnableRateLimit=true` for a
-  single per-IP rate-based WAF rule (`RateLimitPerFiveMinutes`, default 2000).
-  It costs about $6/month; if you already run WAF, add the rule to your own ACL
-  instead.
+- **Rate limiting is on by default on a new distribution.** Every page request
+  is a Lambda invocation on your bill and against the regional quota above, so
+  a scraper can run the meter and then the 503s. `EnableRateLimit` attaches a
+  single per-IP rate-based WAF rule (`RateLimitPerFiveMinutes`, default 2000)
+  for about $6/month; set it to `false` if you already run WAF and add the rule
+  to your own ACL instead. The attach path does not create a WAF; add the rule
+  to yours.
 - **Verify what you deployed.** Every deployable artifact is digested in full
   in [`aws/src/DIGESTS.json`](../aws/src/DIGESTS.json), committed alongside the
   source it was built from, so you can check what you are about to run against
   what this repository publishes:
 
   ```bash
-  sha256sum aws/src/edge-router-lambda.cjs aws/src/heartbeat-lambda.cjs \
-    aws/src/cache-guard-lambda.cjs aws/src/viewer-classifier.js
+  sha256sum aws/src/edge-router-lambda.cjs aws/src/heartbeat-lambda.cjs
   cat aws/src/DIGESTS.json
   ```
 
@@ -475,7 +476,8 @@ hop, not correctness.
 |---|---|
 | No `X-Norg-Edge` header on any request, health probe also silent | The functions aren't associated with the behaviour serving that path, or the distribution hasn't finished deploying |
 | Health probe works, agents still get the origin | `entitled: false` (NORG hasn't authenticated the install), or the agent's source IP isn't in the operator's published ranges |
-| Works on a fresh URL, not on a popular one | `x-norg-agent` is missing from the cache key — a warm human entry is being served to agents |
+| Every page request in one region answers 503 | The Lambda concurrency quota in that region is exhausted — re-run the attach CLI's dry run for the table, and request an increase for `L-B99A9384` |
+| An S3-backed distribution | Config is read from the S3 origin's custom headers too; the strip fallback is not available there (the function cannot read an OAC bucket directly), so a render miss is served by passthrough |
 | `X-Norg-Edge: stripped` forever | NORG hasn't rendered that page yet; check for `x-norg-lazy-render=false` |
 | 502 from CloudFront | Should not happen — every router failure path ends at your origin. Check the function's CloudWatch logs in the region nearest the failing viewer, and tell NORG |
 | Heartbeat never arrives at NORG | The scheduled function's `SITE_ID`/`NORG_SITE_KEY` env vars, or its CloudWatch error metric |
@@ -494,8 +496,7 @@ npm run build:aws    # rebuild aws/src/ and re-embed the function in the templat
 
 `aws/src/` holds committed build artifacts: the templates and the attach CLI
 deploy exactly those files and NORG pins them by SHA-256, so CI rebuilds them
-and fails on any diff. The CloudFront Function is embedded into both templates
-by the build for the same reason — an inlined copy would otherwise drift.
+and fails on any diff.
 
 Source layout:
 
@@ -507,10 +508,9 @@ CloudFront-specific.
 
 | Path | What it is |
 |---|---|
-| `core/` | **Provider-neutral.** strip, agent, paths, feed, telemetry, deferred, norg, constants, exclusions, config helpers |
+| `core/` | **Provider-neutral.** strip, agent, paths, feed, visit, telemetry, deferred, norg, constants, exclusions, config helpers |
 | `lambda/edge-router-lambda.js` | The router pipeline, same order as `workers/edge-router-worker.js` |
-| `lambda/lib/` | **CloudFront adapters only** — `event.js`, `origin.js`, `config.js` |
-| `functions/viewer-classifier.js` | Viewer-request cache-key stamp (CloudFront Function) |
+| `lambda/lib/` | **CloudFront adapters only** — `event.js`, `origin.js`, `config.js`, `secret.js` |
 | `lambda/heartbeat-lambda.js` | Scheduled liveness beat |
 | `cloudformation/` | The two install templates |
 | `install/attach.mjs` | Attach/detach against an existing distribution |

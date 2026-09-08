@@ -17,19 +17,45 @@
  *    so a mirror of any realistic size is returned inline and always carries
  *    its X-Norg-Edge headers. The whole origin-switch fallback that CloudFront
  *    needed does not exist here.
+ *
+ * THE PAGE IS NEVER CACHED AT THE EDGE. A Compute `fetch` to a backend goes
+ * through Fastly's cache by default, so a cacheable origin page would be
+ * stored and replayed — and every replay is a request this code never saw. The
+ * adapter therefore fetches every page with a pass override (a `CacheOverride`
+ * the entry point builds, because the `fastly:` modules cannot be imported
+ * under Node), so the origin answers every page request exactly as it would
+ * without a CDN. Static assets are the one exception and keep Fastly's normal
+ * caching: they are never a mirrorable document, and un-caching them would
+ * cost the customer for nothing.
  */
 
 import { LOOP_GUARD_HEADER } from "../../../core/constants.mjs";
+import { isStaticAssetPath } from "../../../core/paths.js";
 
 /** Backend name for the customer's own origin, defined in fastly.toml. */
 export const ORIGIN_BACKEND = "customer_origin";
 
 /**
- * Fetch the customer's origin.
+ * Fetch options for a request to the origin: the backend, and no cache for a
+ * page.
+ *
+ * @param {Request} request The request being sent.
+ * @param {Object} env Install config, which may carry EDGE_PASS_CACHE.
+ * @returns {Object} RequestInit for fetch.
+ */
+export function originFetchInit(request, env) {
+  const init = { backend: ORIGIN_BACKEND };
+  const pass = env && env.EDGE_PASS_CACHE;
+  if (pass && !isStaticAssetPath(new URL(request.url).pathname)) init.cacheOverride = pass;
+  return init;
+}
+
+/**
+ * Fetch the customer's origin, for a branch that must read the body.
  *
  * Carries the viewer's headers so the origin sees the request it would have
  * seen anyway, plus the loop guard so a misconfigured service cannot recurse
- * into this code.
+ * into this code. Never cached: the bytes are measured and re-served here.
  *
  * Deliberately does NOT rewrite the Host header. Fastly sends the request's own
  * Host to the backend, which is what a host-aware origin needs — absolute URLs,
@@ -38,12 +64,13 @@ export const ORIGIN_BACKEND = "customer_origin";
  * the CDN domain until we understood why.)
  *
  * @param {Request} request Incoming request.
+ * @param {Object} env Install config.
  * @returns {Promise<Response>} Origin response.
  */
-export function fetchOrigin(request) {
+export function fetchOrigin(request, env) {
   const headers = new Headers(request.headers);
   headers.set(LOOP_GUARD_HEADER, "1");
-  return fetch(new Request(request, { headers }), { backend: ORIGIN_BACKEND });
+  return fetch(new Request(request, { headers }), originFetchInit(request, env));
 }
 
 /**
@@ -54,10 +81,11 @@ export function fetchOrigin(request) {
  * before treating it as infallible.
  *
  * @param {Request} request Incoming request.
+ * @param {Object} env Install config.
  * @returns {Promise<Response>} Origin response.
  */
-export function passthrough(request) {
-  return fetch(request, { backend: ORIGIN_BACKEND });
+export function passthrough(request, env) {
+  return fetch(request, originFetchInit(request, env));
 }
 
 /**
@@ -78,12 +106,13 @@ export function passthrough(request) {
  * platform would have returned anyway, never one we invented.
  *
  * @param {Request} request Incoming request.
+ * @param {Object} env Install config.
  * @returns {Promise<Response>} Origin response, or a 503 matching the
  *   platform's own behaviour when the origin cannot be reached.
  */
-export async function safePassthrough(request) {
+export async function safePassthrough(request, env) {
   try {
-    return await passthrough(request);
+    return await passthrough(request, env);
   } catch (e) {
     console.error("norg edge origin unreachable", e);
     return new Response("Service Unavailable", {
