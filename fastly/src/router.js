@@ -362,7 +362,12 @@ async function serveNorgOwnedSurface(request, env, url) {
  * @returns {Promise<Response>} Response for the visitor.
  */
 export async function handleRequest(request, env, clientIp) {
-  if (isHealthProbe(request, env)) return healthResponse(env, isEntitled());
+  if (isHealthProbe(request, env)) {
+    // Fetch before answering: the cached verdict starts unentitled, so a probe
+    // on a cold isolate reported entitled:false for a site NORG would serve.
+    await getBotFeed(env);
+    return healthResponse(env, isEntitled());
+  }
   if (isPassthrough(request, env)) return passthrough(request, env);
 
   const url = new URL(request.url);
