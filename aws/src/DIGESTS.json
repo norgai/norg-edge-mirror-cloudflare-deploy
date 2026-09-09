@@ -1,8 +1,8 @@
 {
-  "version": "0.6.1",
+  "version": "0.6.2",
   "algorithm": "sha256",
   "files": {
-    "edge-router-lambda.cjs": "90ecbf4656de9501183a9466ce81b9cb6bbef70422967174b46105648b7c4124",
-    "heartbeat-lambda.cjs": "f6889a64c96fd9ac745de0b652d02869c79a1a6901cd1a7270a1040e1f4b600b"
+    "edge-router-lambda.cjs": "12a95d554682729b750df5d52e929ccd3b6fda4b572e7f22476bd17b3c9a8996",
+    "heartbeat-lambda.cjs": "d8fb79fae2b424ed577e1c22789fe27411eca12600a96746cfdde0bd555cf2c5"
   }
 }

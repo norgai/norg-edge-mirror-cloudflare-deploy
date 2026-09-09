@@ -270,7 +270,7 @@ var STATIC_ASSET_SUFFIXES = /* @__PURE__ */ new Set([
 ]);
 
 // aws/lambda/lib/config.js
-var EDGE_SCRIPT_VERSION = "0.6.1";
+var EDGE_SCRIPT_VERSION = "0.6.2";
 var CONFIG_HEADERS = {
   "x-norg-site-id": "SITE_ID",
   "x-norg-secret-arn": "NORG_SECRET_ARN",
@@ -1456,7 +1456,10 @@ function reportHumanPassthrough(env, request) {
 }
 async function handleRequest(cfRequest, env) {
   const request = toRequest(cfRequest);
-  if (isHealthProbe(request, env)) return healthResponse(env, isEntitled());
+  if (isHealthProbe(request, env)) {
+    await getBotFeed(env);
+    return healthResponse(env, isEntitled());
+  }
   if (isPassthrough(request, env)) return PASSTHROUGH;
   const url = new URL(request.url);
   const userAgent = request.headers.get("user-agent") || "";
