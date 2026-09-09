@@ -40,7 +40,7 @@ import { SecretStore } from "fastly:secret-store";
  * before the feed is touched. Background work that remains — the stale-feed
  * refresh and the opt-in passthrough event — goes to event.waitUntil.
  */
-export const EDGE_SCRIPT_VERSION = "0.2.0";
+export const EDGE_SCRIPT_VERSION = "0.2.1";
 
 /** Names of the two stores this install expects. */
 export const CONFIG_STORE_NAME = "norg_edge_config";
