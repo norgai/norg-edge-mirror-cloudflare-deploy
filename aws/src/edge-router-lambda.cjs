@@ -270,7 +270,7 @@ var STATIC_ASSET_SUFFIXES = /* @__PURE__ */ new Set([
 ]);
 
 // aws/lambda/lib/config.js
-var EDGE_SCRIPT_VERSION = "0.6.0";
+var EDGE_SCRIPT_VERSION = "0.6.1";
 var CONFIG_HEADERS = {
   "x-norg-site-id": "SITE_ID",
   "x-norg-secret-arn": "NORG_SECRET_ARN",
@@ -1496,7 +1496,7 @@ async function handler(event) {
   try {
     scrubConfigHeaders(pristine = structuredClone(cfRequest));
     const env = readConfig(cfRequest);
-    if (!env.SITE_ID || !env.NORG_SECRET_ARN) return cfRequest;
+    if (!env.SITE_ID || !env.NORG_SECRET_ARN) return alignHostToOrigin(cfRequest);
     let watchdog;
     const result = await Promise.race([
       handleRequest(cfRequest, env),
@@ -1509,7 +1509,7 @@ async function handler(event) {
     return response || passthrough(alignHostToOrigin(scrubConfigHeaders(pristine)));
   } catch (e) {
     console.error("norg edge router error", e);
-    return scrubConfigHeaders(pristine);
+    return alignHostToOrigin(scrubConfigHeaders(pristine));
   }
 }
 var edge_router_lambda_default = handler;
