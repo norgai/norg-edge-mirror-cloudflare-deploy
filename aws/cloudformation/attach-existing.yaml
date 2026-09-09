@@ -162,6 +162,9 @@ Resources:
     Type: AWS::SecretsManager::Secret
     Condition: CreateSiteKeySecret
     Properties:
+      # Named under the stack so an installer policy scoped to norg-edge-*
+      # covers it; CloudFormation's default "SiteKeySecret-<random>" did not.
+      Name: !Sub "${AWS::StackName}-site-key"
       Description: !Sub "NORG edge router site key for ${SiteId}"
       SecretString: !Ref SiteKey
       # A replica keeps the primary's ARN with only the region changed, which
