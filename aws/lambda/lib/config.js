@@ -57,6 +57,9 @@ import { HEALTH_CHECK_HEADER } from "../../../core/constants.mjs";
  * to the customer origin on any thrown exception or oversized response, and the
  * health-probe header, which carried the site key in a plain viewer request.
  *
+ * 0.6.3 — the probe reads the site key before that fetch; 0.6.2 fetched
+ * unauthenticated on this platform and still reported false.
+ *
  * 0.6.2 — the keyed health probe fetches the feed before reporting
  * entitlement; a cold isolate answered entitled:false for a served site.
  *
@@ -80,7 +83,7 @@ import { HEALTH_CHECK_HEADER } from "../../../core/constants.mjs";
  * is read from the replica in the region that ran the function. Behaviour
  * tracks edge-router-worker.js 0.11.7.
  */
-export const EDGE_SCRIPT_VERSION = "0.6.2";
+export const EDGE_SCRIPT_VERSION = "0.6.3";
 
 // Custom origin header -> binding name. Mirrors build_worker_bindings() in
 // content-craft's install_service.py; adding a binding there means adding it

@@ -537,6 +537,10 @@ export async function handleRequest(cfRequest, env) {
   if (isHealthProbe(request, env)) {
     // Fetch before answering: the cached verdict starts unentitled, so a probe
     // on a cold isolate reported entitled:false for a site NORG would serve.
+    // The feed is authenticated, and on this platform the key is read lazily
+    // below — so it has to be read here first, or the fetch is a 401 and the
+    // probe reports false for a site NORG serves (0.6.2 did exactly that).
+    env.NORG_SITE_KEY = await getSiteKey(env);
     await getBotFeed(env);
     return healthResponse(env, isEntitled());
   }
