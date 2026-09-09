@@ -36,7 +36,7 @@
  * gone; and the installer keeps HTML out of the pull zone's cache by default
  * with an HTML-only edge rule rather than the zone-wide bypass.
  */
-export const EDGE_SCRIPT_VERSION = "0.2.0";
+export const EDGE_SCRIPT_VERSION = "0.2.1";
 
 // Environment names this install reads. Mirrors build_worker_bindings() in
 // content-craft's install_service.py; adding a binding there means adding it

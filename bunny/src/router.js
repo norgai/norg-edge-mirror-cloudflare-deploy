@@ -482,7 +482,12 @@ export async function handleRequest(originRequest, env) {
   const url = visitorUrl(originRequest);
   const request = toVisitorRequest(originRequest, url);
 
-  if (isHealthProbe(request, env)) return healthResponse(env, isEntitled());
+  if (isHealthProbe(request, env)) {
+    // Fetch before answering: the cached verdict starts unentitled, so a probe
+    // on a cold isolate reported entitled:false for a site NORG would serve.
+    await getBotFeed(env);
+    return healthResponse(env, isEntitled());
+  }
   if (isPassthrough(originRequest, url, env)) return PASSTHROUGH;
 
   // The human fast path: no feed, no NORG. A passthrough event is sent only
