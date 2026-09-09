@@ -534,7 +534,12 @@ function reportHumanPassthrough(env, request) {
  */
 export async function handleRequest(cfRequest, env) {
   const request = toRequest(cfRequest);
-  if (isHealthProbe(request, env)) return healthResponse(env, isEntitled());
+  if (isHealthProbe(request, env)) {
+    // Fetch before answering: the cached verdict starts unentitled, so a probe
+    // on a cold isolate reported entitled:false for a site NORG would serve.
+    await getBotFeed(env);
+    return healthResponse(env, isEntitled());
+  }
   if (isPassthrough(request, env)) return PASSTHROUGH;
 
   const url = new URL(request.url);
