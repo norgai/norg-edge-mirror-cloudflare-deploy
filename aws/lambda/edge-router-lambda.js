@@ -654,7 +654,11 @@ export async function handler(event) {
     // env, but on this provider the key is not in the config at all — the ARN
     // that leads to it is. Without both, every NORG call would be refused, so
     // the correct behaviour is to do nothing rather than fail slowly on each.
-    if (!env.SITE_ID || !env.NORG_SECRET_ARN) return cfRequest;
+    // Even when doing nothing, the Host header must name the origin: the
+    // origin-request policy forwards the viewer's Host, and a virtual-hosted
+    // origin (a Cloudflare-fronted site, say) proxies an unknown Host straight
+    // back into CloudFront — a loop that ends in a 403 on the whole site.
+    if (!env.SITE_ID || !env.NORG_SECRET_ARN) return alignHostToOrigin(cfRequest);
 
     let watchdog;
     const result = await Promise.race([
@@ -677,7 +681,9 @@ export async function handler(event) {
     return response || toPassthrough(alignHostToOrigin(scrubConfigHeaders(pristine)));
   } catch (e) {
     console.error("norg edge router error", e);
-    return scrubConfigHeaders(pristine);
+    // Same reasoning as the unconfigured exit above: the untouched request
+    // still needs the origin's Host, or the safety net itself breaks the site.
+    return alignHostToOrigin(scrubConfigHeaders(pristine));
   }
 }
 

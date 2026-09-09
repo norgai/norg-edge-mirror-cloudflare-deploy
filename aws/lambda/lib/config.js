@@ -57,6 +57,14 @@ import { HEALTH_CHECK_HEADER } from "../../../core/constants.mjs";
  * to the customer origin on any thrown exception or oversized response, and the
  * health-probe header, which carried the site key in a plain viewer request.
  *
+ * 0.6.1 — the Host header is aligned to the origin on EVERY exit, including
+ * the unconfigured early return and the catch: the origin-request policy
+ * forwards the viewer's Host, and a virtual-hosted origin proxies an unknown
+ * Host straight back into CloudFront (seen as a 403 on a whole site whose
+ * distribution carried an empty x-norg-secret-arn). The site-key secret is
+ * named under the stack (norg-edge-<site>-site-key) so a least-privilege
+ * installer policy scoped to norg-edge-* covers it.
+ *
  * 0.6.0 — two decisions, both simplifications. The human page is never cached
  * at the edge: the default behaviour uses CloudFront's managed CachingDisabled
  * policy, every page request reaches the router, and the viewer-request stamp,
@@ -69,7 +77,7 @@ import { HEALTH_CHECK_HEADER } from "../../../core/constants.mjs";
  * is read from the replica in the region that ran the function. Behaviour
  * tracks edge-router-worker.js 0.11.7.
  */
-export const EDGE_SCRIPT_VERSION = "0.6.0";
+export const EDGE_SCRIPT_VERSION = "0.6.1";
 
 // Custom origin header -> binding name. Mirrors build_worker_bindings() in
 // content-craft's install_service.py; adding a binding there means adding it
