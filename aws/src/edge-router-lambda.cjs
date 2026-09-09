@@ -270,7 +270,7 @@ var STATIC_ASSET_SUFFIXES = /* @__PURE__ */ new Set([
 ]);
 
 // aws/lambda/lib/config.js
-var EDGE_SCRIPT_VERSION = "0.6.2";
+var EDGE_SCRIPT_VERSION = "0.6.3";
 var CONFIG_HEADERS = {
   "x-norg-site-id": "SITE_ID",
   "x-norg-secret-arn": "NORG_SECRET_ARN",
@@ -1457,6 +1457,7 @@ function reportHumanPassthrough(env, request) {
 async function handleRequest(cfRequest, env) {
   const request = toRequest(cfRequest);
   if (isHealthProbe(request, env)) {
+    env.NORG_SITE_KEY = await getSiteKey(env);
     await getBotFeed(env);
     return healthResponse(env, isEntitled());
   }
