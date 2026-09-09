@@ -197,7 +197,7 @@ function isConfigured(env) {
 }
 
 // bunny/src/lib/config.js
-var EDGE_SCRIPT_VERSION = "0.2.0";
+var EDGE_SCRIPT_VERSION = "0.2.1";
 var ENV_NAMES = [
   "SITE_ID",
   "NORG_SITE_KEY",
@@ -1209,7 +1209,10 @@ async function serveClassified(originRequest, request, env, url, feed) {
 async function handleRequest(originRequest, env) {
   const url = visitorUrl(originRequest);
   const request = toVisitorRequest(originRequest, url);
-  if (isHealthProbe(request, env)) return healthResponse(env, isEntitled());
+  if (isHealthProbe(request, env)) {
+    await getBotFeed(env);
+    return healthResponse(env, isEntitled());
+  }
   if (isPassthrough(originRequest, url, env)) return PASSTHROUGH;
   const exit = fastPathExit(request, url, request.headers.get("user-agent") || "");
   if (exit) {
