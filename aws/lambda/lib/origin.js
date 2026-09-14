@@ -23,7 +23,7 @@
  *    and streams the mirror with no size limit at all.
  */
 
-import { LOOP_GUARD_HEADER } from "../../../core/constants.mjs";
+import { LOOP_GUARD_HEADER, PUBLIC_HOST_HEADER } from "../../../core/constants.mjs";
 
 /**
  * Sentinel meaning "hand the request back to CloudFront untouched".
@@ -77,6 +77,10 @@ export async function fetchOrigin(cfRequest, request, timeoutMs) {
   headers.set(LOOP_GUARD_HEADER, "1");
   // The origin is addressed by its own hostname; leaving the viewer's Host
   // header on a fetch to a different host is what breaks virtual-hosted origins.
+  // The viewer's hostname still travels, in the header the origin can read
+  // without CloudFront refusing the request.
+  const viewerHost = request.headers.get("host");
+  if (viewerHost) headers.set(PUBLIC_HOST_HEADER, viewerHost);
   headers.delete("host");
 
   try {
@@ -125,7 +129,15 @@ export async function fetchOrigin(cfRequest, request, timeoutMs) {
  */
 export function alignHostToOrigin(cfRequest) {
   const domainName = cfRequest.origin?.custom?.domainName;
-  if (domainName) cfRequest.headers.host = [{ key: "Host", value: domainName }];
+  if (!domainName) return cfRequest;
+  const viewerHost = cfRequest.headers.host?.[0]?.value;
+  // Set once, from the viewer's Host as it arrived: a second alignment would
+  // otherwise read the origin's own name back and stamp that instead. The
+  // viewer's value always wins over anything they sent in this header.
+  if (viewerHost && viewerHost !== domainName) {
+    cfRequest.headers[PUBLIC_HOST_HEADER] = [{ key: "X-Norg-Public-Host", value: viewerHost }];
+  }
+  cfRequest.headers.host = [{ key: "Host", value: domainName }];
   return cfRequest;
 }
 
