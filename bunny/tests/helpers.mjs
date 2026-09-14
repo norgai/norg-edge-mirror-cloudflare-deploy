@@ -125,7 +125,10 @@ export function stubNetwork({ feed, mirror, origin, control } = {}) {
   const calls = [];
   globalThis.fetch = async (input, init = {}) => {
     const url = typeof input === "string" ? input : input.url;
-    calls.push({ url, init, method: (input && input.method) || init.method || "GET" });
+    // The origin adapter builds a Request, so its headers live on `input`, not
+    // `init`; record whichever carries them so tests can inspect either shape.
+    const headers = new Headers(typeof input === "string" ? init.headers : input.headers);
+    calls.push({ url, init, headers, method: (input && input.method) || init.method || "GET" });
 
     if (url.includes("/api/v1/edge/bot-patterns")) {
       if (feed) return feed(url, init);

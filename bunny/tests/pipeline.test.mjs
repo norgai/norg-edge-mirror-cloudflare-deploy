@@ -360,3 +360,27 @@ test("our own subrequest cannot recurse into the router", async () => {
   );
   assert.ok(isPassthrough(result));
 });
+
+// --- The public host, which OriginHostHeader hides from the origin ----------
+
+test("the strip fetch tells the origin which public hostname the visitor used", async () => {
+  // Bunny addresses the origin by the pull zone's OriginHostHeader, so a
+  // host-aware origin would otherwise build every absolute URL on the origin
+  // domain. The visitor's hostname (cdn-host) travels in a header instead.
+  const { calls } = await run(
+    { headers: { "user-agent": GPTBOT_UA } },
+    { mirror: () => new Response("", { status: 404 }) },
+  );
+  const originCall = calls.find((c) => c.url.includes("origin.example.com"));
+  assert.ok(originCall, "the strip path must fetch the origin itself");
+  assert.equal(originCall.headers.get("x-norg-public-host"), "shop.example.com");
+});
+
+test("an inbound x-norg-public-host is replaced, never trusted", async () => {
+  const { calls } = await run(
+    { headers: { "user-agent": GPTBOT_UA, "x-norg-public-host": "evil.example" } },
+    { mirror: () => new Response("", { status: 404 }) },
+  );
+  const originCall = calls.find((c) => c.url.includes("origin.example.com"));
+  assert.equal(originCall.headers.get("x-norg-public-host"), "shop.example.com");
+});

@@ -18,7 +18,8 @@
  * Bunny hands the hook is already pointed at the origin URL.
  */
 
-import { LOOP_GUARD_HEADER } from "../../../core/constants.mjs";
+import { LOOP_GUARD_HEADER, PUBLIC_HOST_HEADER } from "../../../core/constants.mjs";
+import { visitorHost } from "./request.js";
 
 /**
  * Sentinel meaning "let Bunny fetch the origin, unchanged".
@@ -44,6 +45,11 @@ export async function fetchOrigin(request, timeoutMs) {
   try {
     const headers = new Headers(request.headers);
     headers.set(LOOP_GUARD_HEADER, "1");
+    // request.url already points at the origin, so its Host is the origin's
+    // own; the visitor's hostname travels in the header instead. Set here
+    // unconditionally so an inbound value can never be trusted.
+    const host = visitorHost(request);
+    if (host) headers.set(PUBLIC_HOST_HEADER, host);
     return await fetch(new Request(request.url, { method: request.method, headers }), {
       signal: AbortSignal.timeout(timeoutMs),
     });
