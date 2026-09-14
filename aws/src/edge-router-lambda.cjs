@@ -113,6 +113,7 @@ var BINDING_DEFAULTS = {
 var RESERVED_NORG_PREFIX = "/.norg/";
 var RESERVED_ASSET_CACHE_CONTROL = "public, max-age=60, s-maxage=30, stale-while-revalidate=300";
 var LOOP_GUARD_HEADER = "x-norg-edge";
+var PUBLIC_HOST_HEADER = "x-norg-public-host";
 var HEALTH_CHECK_HEADER = "x-norg-edge-check";
 var MIRROR_FETCH_TIMEOUT_MS = 4e3;
 var PATTERN_FETCH_TIMEOUT_MS = 5e3;
@@ -245,7 +246,7 @@ var STATIC_ASSET_SUFFIXES = /* @__PURE__ */ new Set([
 ]);
 
 // aws/lambda/lib/config.js
-var EDGE_SCRIPT_VERSION = "0.5.2";
+var EDGE_SCRIPT_VERSION = "0.5.3";
 var CONFIG_HEADERS = {
   "x-norg-site-id": "SITE_ID",
   "x-norg-secret-arn": "NORG_SECRET_ARN",
@@ -798,6 +799,8 @@ async function fetchOrigin(cfRequest, request, timeoutMs) {
   if (!target) return null;
   const headers = new Headers(request.headers);
   headers.set(LOOP_GUARD_HEADER, "1");
+  const viewerHost = request.headers.get("host");
+  if (viewerHost) headers.set(PUBLIC_HOST_HEADER, viewerHost);
   headers.delete("host");
   try {
     return await fetch(target, {
@@ -813,7 +816,12 @@ async function fetchOrigin(cfRequest, request, timeoutMs) {
 }
 function alignHostToOrigin(cfRequest) {
   const domainName = cfRequest.origin?.custom?.domainName;
-  if (domainName) cfRequest.headers.host = [{ key: "Host", value: domainName }];
+  if (!domainName) return cfRequest;
+  const viewerHost = cfRequest.headers.host?.[0]?.value;
+  if (viewerHost && viewerHost !== domainName) {
+    cfRequest.headers[PUBLIC_HOST_HEADER] = [{ key: "X-Norg-Public-Host", value: viewerHost }];
+  }
+  cfRequest.headers.host = [{ key: "Host", value: domainName }];
   return cfRequest;
 }
 function switchOriginToNorg(cfRequest, contentStemUrl, keySuffix, authHeaders) {

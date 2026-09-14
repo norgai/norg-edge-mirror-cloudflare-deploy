@@ -824,3 +824,37 @@ test("a cached mirror is still marked unstorable by any shared cache", async () 
   assert.equal(result.headers["cdn-cache-control"][0].value, "private, no-store");
   __resetResponseCache();
 });
+
+// --- The public host, which the origin Host rule hides from the origin -------
+
+test("a passthrough tells the origin which public hostname the viewer used", async () => {
+  // CloudFront forces Host to the origin's own name (see above), so a
+  // host-aware origin would otherwise build every absolute URL on the origin
+  // domain. The viewer's hostname travels in a header CloudFront lets through.
+  const { result } = await run({ headers: { "user-agent": CHROME_UA } });
+
+  assert.ok(isPassthroughResult(result));
+  assert.equal(result.headers.host[0].value, "origin.example.com");
+  assert.equal(result.headers["x-norg-public-host"][0].value, "shop.example.com");
+});
+
+test("a viewer cannot forge the public host", async () => {
+  const { result } = await run({
+    headers: { "user-agent": CHROME_UA, "x-norg-public-host": "evil.example" },
+  });
+
+  assert.equal(result.headers["x-norg-public-host"][0].value, "shop.example.com");
+});
+
+test("the strip fetch carries the public host and no viewer Host", async () => {
+  const { calls } = await run(
+    { headers: { "user-agent": GPTBOT_UA } },
+    { mirror: () => new Response("", { status: 404 }) },
+  );
+
+  const originCall = calls.find((c) => c.url.includes("origin.example.com"));
+  assert.ok(originCall, "the strip path must fetch the origin itself");
+  const headers = new Headers(originCall.init.headers);
+  assert.equal(headers.get("x-norg-public-host"), "shop.example.com");
+  assert.equal(headers.get("host"), null);
+});
