@@ -19,7 +19,7 @@
  *    needed does not exist here.
  */
 
-import { LOOP_GUARD_HEADER } from "../../../core/constants.mjs";
+import { LOOP_GUARD_HEADER, PUBLIC_HOST_HEADER } from "../../../core/constants.mjs";
 
 /** Backend name for the customer's own origin, defined in fastly.toml. */
 export const ORIGIN_BACKEND = "customer_origin";
@@ -41,9 +41,25 @@ export const ORIGIN_BACKEND = "customer_origin";
  * @returns {Promise<Response>} Origin response.
  */
 export function fetchOrigin(request) {
-  const headers = new Headers(request.headers);
+  const headers = publicHostHeaders(request);
   headers.set(LOOP_GUARD_HEADER, "1");
   return fetch(new Request(request, { headers }), { backend: ORIGIN_BACKEND });
+}
+
+/**
+ * The request's headers plus the visitor's hostname for the origin.
+ *
+ * The backend's `override_host` replaces Host with the origin's own name, so
+ * this is the only way a host-aware origin learns which public hostname the
+ * visitor used. The visitor's value always wins over anything inbound.
+ *
+ * @param {Request} request The incoming request.
+ * @returns {Headers} Headers to send to the origin.
+ */
+function publicHostHeaders(request) {
+  const headers = new Headers(request.headers);
+  headers.set(PUBLIC_HOST_HEADER, new URL(request.url).host);
+  return headers;
 }
 
 /**
@@ -57,7 +73,9 @@ export function fetchOrigin(request) {
  * @returns {Promise<Response>} Origin response.
  */
 export function passthrough(request) {
-  return fetch(request, { backend: ORIGIN_BACKEND });
+  return fetch(new Request(request, { headers: publicHostHeaders(request) }), {
+    backend: ORIGIN_BACKEND,
+  });
 }
 
 /**
