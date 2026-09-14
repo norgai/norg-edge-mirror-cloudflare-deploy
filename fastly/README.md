@@ -119,6 +119,7 @@ spoofed user-agent from an arbitrary address is refused.
 | HTML rewriter | HTMLRewriter (lol-html) | **same engine available** | hand-rolled |
 | Secret storage | Worker secret | **write-only Secret Store** | ⚠️ origin custom header |
 | Host sent to origin | the visitor's | **the visitor's** | ⚠️ forced to the origin's own |
+| Public host told to origin | (Host) | **`x-norg-public-host`** | `x-norg-public-host` |
 | Scheduled heartbeat | cron trigger | ❌ external ping | ❌ separate scheduled Lambda |
 | Install shape | additive to your zone | **needs a Compute service** | additive to a distribution |
 
