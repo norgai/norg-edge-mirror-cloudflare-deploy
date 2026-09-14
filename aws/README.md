@@ -203,7 +203,11 @@ There are now three groups of generated behaviours, matched in this order:
    method allowed. Your origin sees exactly what it would have without the
    router — including its *own* `Host`, which is why it is not plain
    `AllViewer`: that forwards the viewer's `Host`, and a host-routed origin
-   (Vercel, API Gateway) answers it with 403. A 24-hour
+   (Vercel, API Gateway) answers it with 403. On the paths the router does
+   handle, the origin is still addressed by its own `Host`, and the viewer's
+   hostname travels alongside it in `x-norg-public-host` — so a host-aware
+   origin (a sitemap, a canonical link) can build its URLs on the public
+   domain rather than the origin's. A 24-hour
    default TTL on `/cart` would serve one visitor's page to the next, which is
    why these do not share the static policy. `/account*` and `/login*` are
    deliberately absent — they also match marketing slugs like `/accounting`.
