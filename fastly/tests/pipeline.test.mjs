@@ -44,6 +44,7 @@ const FEED = {
 
 const realFetch = globalThis.fetch;
 let calls = [];
+let originRequests = [];
 
 /**
  * Build an install config with a stubbed backend-aware fetch.
@@ -54,6 +55,7 @@ let calls = [];
  */
 function makeEnv(overrides = {}, { mirror, origin } = {}) {
   calls = [];
+  originRequests = [];
   const env = {
     SITE_ID,
     NORG_SITE_KEY: KEY,
@@ -75,6 +77,7 @@ function makeEnv(overrides = {}, { mirror, origin } = {}) {
   globalThis.fetch = async (input) => {
     const url = typeof input === "string" ? input : input.url;
     calls.push(String(url));
+    if (typeof input !== "string") originRequests.push(input);
     return origin
       ? origin()
       : new Response(ORIGIN_HTML, { status: 200, headers: { "content-type": "text/html" } });
@@ -244,4 +247,39 @@ test("an IPv6 client outside the operator's IPv6 range is not diverted", async (
 
   assert.equal(response.headers.get("x-norg-edge"), null);
   assert.equal(calls.some((u) => u.startsWith(CONTENT)), false, "no mirror lookup for an unverified source");
+});
+
+// --- The public host, which override_host hides from the origin -------------
+
+test("a passthrough tells the origin which public hostname the visitor used", async () => {
+  // The backend's override_host makes the origin see its own name, so a
+  // host-aware origin (a sitemap, a canonical link) would otherwise build every
+  // URL on the origin domain.
+  __test_setFeed(FEED);
+  await run("/widgets/", CHROME, makeEnv());
+
+  assert.equal(originRequests.length, 1, "a human is exactly one origin fetch");
+  assert.equal(originRequests[0].headers.get("x-norg-public-host"), "shop.example.com");
+});
+
+test("the strip fetch carries the public host too", async () => {
+  __test_setFeed(FEED);
+  await run("/widgets/", GPTBOT, makeEnv());
+
+  const origin = originRequests.find((r) => r.headers.get("x-norg-edge") === "1");
+  assert.ok(origin, "the strip path must fetch the origin itself");
+  assert.equal(origin.headers.get("x-norg-public-host"), "shop.example.com");
+});
+
+test("an inbound x-norg-public-host is replaced, never trusted", async () => {
+  __test_setFeed(FEED);
+  await handleRequest(
+    new Request("https://shop.example.com/widgets/", {
+      headers: { "user-agent": CHROME, "x-norg-public-host": "evil.example" },
+    }),
+    makeEnv(),
+    VERIFIED_IP,
+  );
+
+  assert.equal(originRequests[0].headers.get("x-norg-public-host"), "shop.example.com");
 });
