@@ -16,6 +16,7 @@ var BINDING_DEFAULTS = {
 var RESERVED_NORG_PREFIX = "/.norg/";
 var RESERVED_ASSET_CACHE_CONTROL = "public, max-age=60, s-maxage=30, stale-while-revalidate=300";
 var LOOP_GUARD_HEADER = "x-norg-edge";
+var PUBLIC_HOST_HEADER = "x-norg-public-host";
 var HEALTH_CHECK_HEADER = "x-norg-edge-check";
 var MIRROR_FETCH_TIMEOUT_MS = 4e3;
 var PATTERN_FETCH_TIMEOUT_MS = 5e3;
@@ -198,7 +199,7 @@ async function sweepDeferred() {
 }
 
 // bunny/src/lib/config.js
-var EDGE_SCRIPT_VERSION = "0.1.2";
+var EDGE_SCRIPT_VERSION = "0.1.3";
 var ENV_NAMES = [
   "SITE_ID",
   "NORG_SITE_KEY",
@@ -225,12 +226,38 @@ function readConfig(table) {
   return env;
 }
 
+// bunny/src/lib/request.js
+function clientIp(request) {
+  const real = (request.headers.get("x-real-ip") || "").trim();
+  if (real) return real;
+  const forwarded = request.headers.get("x-forwarded-for") || "";
+  const parts = forwarded.split(",").map((p) => p.trim()).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : "";
+}
+function visitorHost(request) {
+  const cdnHost = (request.headers.get("cdn-host") || "").trim();
+  if (cdnHost) return cdnHost;
+  const host = (request.headers.get("host") || "").trim();
+  return host || null;
+}
+function visitorUrl(request) {
+  const url = new URL(request.url);
+  const host = visitorHost(request);
+  if (host) {
+    url.host = host;
+    url.protocol = "https:";
+  }
+  return url;
+}
+
 // bunny/src/lib/origin.js
 var PASSTHROUGH = Object.freeze({ norgEdge: "passthrough" });
 async function fetchOrigin(request, timeoutMs) {
   try {
     const headers = new Headers(request.headers);
     headers.set(LOOP_GUARD_HEADER, "1");
+    const host = visitorHost(request);
+    if (host) headers.set(PUBLIC_HOST_HEADER, host);
     return await fetch(new Request(request.url, { method: request.method, headers }), {
       signal: AbortSignal.timeout(timeoutMs)
     });
@@ -987,30 +1014,6 @@ function requestRender(env, url) {
       reason: "bot_miss"
     })
   );
-}
-
-// bunny/src/lib/request.js
-function clientIp(request) {
-  const real = (request.headers.get("x-real-ip") || "").trim();
-  if (real) return real;
-  const forwarded = request.headers.get("x-forwarded-for") || "";
-  const parts = forwarded.split(",").map((p) => p.trim()).filter(Boolean);
-  return parts.length ? parts[parts.length - 1] : "";
-}
-function visitorHost(request) {
-  const cdnHost = (request.headers.get("cdn-host") || "").trim();
-  if (cdnHost) return cdnHost;
-  const host = (request.headers.get("host") || "").trim();
-  return host || null;
-}
-function visitorUrl(request) {
-  const url = new URL(request.url);
-  const host = visitorHost(request);
-  if (host) {
-    url.host = host;
-    url.protocol = "https:";
-  }
-  return url;
 }
 
 // bunny/src/router.js

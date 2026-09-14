@@ -45,6 +45,14 @@ export const RESERVED_ASSET_CACHE_CONTROL =
 // Marks our own subrequests so a misconfigured route can't recurse into us.
 export const LOOP_GUARD_HEADER = "x-norg-edge";
 
+// Names the hostname the VISITOR asked for, on every request that reaches the
+// customer's origin. Providers that must address the origin by its own
+// hostname (Fastly override_host, Bunny OriginHostHeader, CloudFront's
+// origin-request Host rule) otherwise leave a host-aware origin — one that
+// builds absolute URLs for a sitemap or canonical link — believing every
+// visitor arrived on the origin domain.
+export const PUBLIC_HOST_HEADER = "x-norg-public-host";
+
 // Health probes present the site key in this header; without it the path is
 // left alone, so we never shadow a real customer URL.
 export const HEALTH_CHECK_HEADER = "x-norg-edge-check";

@@ -73,7 +73,10 @@ What it creates:
 2. Environment **variables** for the plain configuration and an environment
    **secret** for `NORG_SITE_KEY`.
 3. A pull zone pointed at your origin, with `OriginHostHeader` set to the
-   origin's own host, and the script linked as its middleware.
+   origin's own host, and the script linked as its middleware. When
+   `EDGE_HOSTNAME` is given, an edge rule also sends that hostname to the
+   origin in `X-Norg-Public-Host` on every request, so a host-aware origin
+   can build its absolute URLs on the public domain.
 4. The hostname, a Let's Encrypt certificate, and Force SSL.
 
 ---
@@ -223,6 +226,7 @@ operator's range.
 | HTML rewriter | HTMLRewriter | same engine | **HTMLRewriter present** (unused — `core/strip.js` is provider-neutral) | hand-rolled |
 | Secret storage | Worker secret | write-only Secret Store | **write-only secret** | ⚠️ origin custom header |
 | Host sent to origin | the visitor's | the visitor's | the pull zone's `OriginHostHeader` | ⚠️ forced to the origin's own |
+| Public host told to origin | (Host) | `x-norg-public-host` | **`x-norg-public-host`, set by an edge rule** | `x-norg-public-host` |
 | Verified-bot signal | `cf.verifiedBotCategory` | ❌ CIDR only | ❌ **CIDR only** | ❌ CIDR only |
 | Scheduled heartbeat | cron trigger | ❌ external ping | ❌ **external ping** | ❌ separate scheduled Lambda |
 | Install shape | additive to your zone | needs a Compute service | **a pull zone in front of your origin** | additive to a distribution |
