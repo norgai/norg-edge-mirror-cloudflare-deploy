@@ -113,6 +113,8 @@ var BINDING_DEFAULTS = {
 var RESERVED_NORG_PREFIX = "/.norg/";
 var RESERVED_ASSET_CACHE_CONTROL = "public, max-age=60, s-maxage=30, stale-while-revalidate=300";
 var LOOP_GUARD_HEADER = "x-norg-edge";
+var PUBLIC_HOST_HEADER = "x-norg-public-host";
+var HOSTNAME_PATTERN = /^[a-z0-9.-]+(:\d+)?$/i;
 var HEALTH_CHECK_HEADER = "x-norg-edge-check";
 var MIRROR_FETCH_TIMEOUT_MS = 4e3;
 var PATTERN_FETCH_TIMEOUT_MS = 5e3;
@@ -270,7 +272,7 @@ var STATIC_ASSET_SUFFIXES = /* @__PURE__ */ new Set([
 ]);
 
 // aws/lambda/lib/config.js
-var EDGE_SCRIPT_VERSION = "0.6.3";
+var EDGE_SCRIPT_VERSION = "0.6.4";
 var CONFIG_HEADERS = {
   "x-norg-site-id": "SITE_ID",
   "x-norg-secret-arn": "NORG_SECRET_ARN",
@@ -295,7 +297,10 @@ function scrubConfigHeaders(cfRequest) {
   if (customHeaders) {
     for (const header of Object.keys(CONFIG_HEADERS)) delete customHeaders[header];
   }
-  if (cfRequest?.headers) delete cfRequest.headers[HEALTH_CHECK_HEADER];
+  if (cfRequest?.headers) {
+    delete cfRequest.headers[HEALTH_CHECK_HEADER];
+    delete cfRequest.headers[PUBLIC_HOST_HEADER];
+  }
   return cfRequest;
 }
 function originCustomHeaders(cfRequest) {
@@ -867,6 +872,18 @@ function passthrough(cfRequest) {
 
 // aws/lambda/lib/origin.js
 var PASSTHROUGH = Object.freeze({ norgEdge: "passthrough" });
+function viewerHost(cfRequest) {
+  const host = cfRequest?.headers?.host?.[0]?.value;
+  return host && HOSTNAME_PATTERN.test(host) ? host : null;
+}
+function setPublicHost(cfRequest, publicHost) {
+  if (!cfRequest.headers) return;
+  if (publicHost) {
+    cfRequest.headers[PUBLIC_HOST_HEADER] = [{ key: "X-Norg-Public-Host", value: publicHost }];
+  } else {
+    delete cfRequest.headers[PUBLIC_HOST_HEADER];
+  }
+}
 function originUrl(cfRequest) {
   const custom = cfRequest.origin?.custom;
   if (!custom) return null;
@@ -886,6 +903,9 @@ async function fetchOrigin(cfRequest, request, timeoutMs) {
   }
   headers.set(LOOP_GUARD_HEADER, "1");
   headers.delete("host");
+  const publicHost = viewerHost(cfRequest);
+  if (publicHost) headers.set(PUBLIC_HOST_HEADER, publicHost);
+  else headers.delete(PUBLIC_HOST_HEADER);
   headers.set("accept-encoding", "identity");
   try {
     return await fetch(target, {
@@ -899,7 +919,8 @@ async function fetchOrigin(cfRequest, request, timeoutMs) {
     return null;
   }
 }
-function alignHostToOrigin(cfRequest) {
+function alignHostToOrigin(cfRequest, publicHost) {
+  setPublicHost(cfRequest, publicHost);
   const domainName = cfRequest.origin?.custom?.domainName;
   if (domainName) cfRequest.headers.host = [{ key: "Host", value: domainName }];
   return cfRequest;
@@ -1498,9 +1519,10 @@ async function handler(event) {
   const cfRequest = event.Records[0].cf.request;
   let pristine = cfRequest;
   try {
+    const publicHost = viewerHost(cfRequest);
     scrubConfigHeaders(pristine = structuredClone(cfRequest));
     const env = readConfig(cfRequest);
-    if (!env.SITE_ID || !env.NORG_SECRET_ARN) return alignHostToOrigin(cfRequest);
+    if (!env.SITE_ID || !env.NORG_SECRET_ARN) return alignHostToOrigin(cfRequest, publicHost);
     let watchdog;
     const result = await Promise.race([
       handleRequest(cfRequest, env),
@@ -1508,9 +1530,9 @@ async function handler(event) {
         watchdog = setTimeout(() => resolve(PASSTHROUGH), WATCHDOG_MS);
       })
     ]).finally(() => clearTimeout(watchdog));
-    if (result === PASSTHROUGH) return passthrough(alignHostToOrigin(cfRequest));
+    if (result === PASSTHROUGH) return passthrough(alignHostToOrigin(cfRequest, publicHost));
     const response = await toCloudFrontResponse(result);
-    return response || passthrough(alignHostToOrigin(scrubConfigHeaders(pristine)));
+    return response || passthrough(alignHostToOrigin(scrubConfigHeaders(pristine), publicHost));
   } catch (e) {
     console.error("norg edge router error", e);
     return alignHostToOrigin(scrubConfigHeaders(pristine));

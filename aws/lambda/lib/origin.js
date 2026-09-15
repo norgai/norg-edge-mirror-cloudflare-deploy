@@ -23,7 +23,11 @@
  *    and streams the mirror with no size limit at all.
  */
 
-import { LOOP_GUARD_HEADER } from "../../../core/constants.mjs";
+import {
+  HOSTNAME_PATTERN,
+  LOOP_GUARD_HEADER,
+  PUBLIC_HOST_HEADER,
+} from "../../../core/constants.mjs";
 import { originCustomHeaders } from "./config.js";
 
 /**
@@ -33,6 +37,45 @@ import { originCustomHeaders } from "./config.js";
  * compares by identity in tests.
  */
 export const PASSTHROUGH = Object.freeze({ norgEdge: "passthrough" });
+
+/**
+ * The hostname the visitor actually asked for.
+ *
+ * Read from the viewer's own Host header, which the install's origin-request
+ * policy forwards verbatim (`allViewerAndWhitelistCloudFront`). Must be read
+ * BEFORE the pipeline runs: alignHostToOrigin and switchOriginToNorg both
+ * replace this header on their way out.
+ *
+ * Returns null for anything that is not a bare hostname, so a malformed Host
+ * is dropped rather than handed to the origin as fact.
+ *
+ * @param {Object} cfRequest CloudFront request object.
+ * @returns {?string} The public hostname, or null when there is none to trust.
+ */
+export function viewerHost(cfRequest) {
+  const host = cfRequest?.headers?.host?.[0]?.value;
+  return host && HOSTNAME_PATTERN.test(host) ? host : null;
+}
+
+/**
+ * Tell the origin which public hostname this request arrived on.
+ *
+ * Always authoritative: the header is SET from the viewer's real Host, or
+ * DELETED when there is none to trust. A viewer's own copy is never forwarded,
+ * or anyone could make the origin advertise a sitemap full of foreign URLs.
+ *
+ * @param {Object} cfRequest CloudFront request object, mutated in place.
+ * @param {?string} publicHost Hostname from viewerHost, read before the pipeline.
+ * @returns {void}
+ */
+function setPublicHost(cfRequest, publicHost) {
+  if (!cfRequest.headers) return;
+  if (publicHost) {
+    cfRequest.headers[PUBLIC_HOST_HEADER] = [{ key: "X-Norg-Public-Host", value: publicHost }];
+  } else {
+    delete cfRequest.headers[PUBLIC_HOST_HEADER];
+  }
+}
 
 /**
  * Absolute URL of the customer's origin for this request.
@@ -86,6 +129,12 @@ export async function fetchOrigin(cfRequest, request, timeoutMs) {
   // The origin is addressed by its own hostname; leaving the viewer's Host
   // header on a fetch to a different host is what breaks virtual-hosted origins.
   headers.delete("host");
+  // Which is exactly why the public host has to travel separately: this read is
+  // re-served to the caller, so absolute URLs in it must name the site the
+  // visitor is on. Set or dropped, never relayed from the viewer.
+  const publicHost = viewerHost(cfRequest);
+  if (publicHost) headers.set(PUBLIC_HOST_HEADER, publicHost);
+  else headers.delete(PUBLIC_HOST_HEADER);
   // The body is read and re-served by this function, so it must arrive as
   // bytes the strip can read: fetch would decode a compressed body but leave
   // the content-encoding header behind.
@@ -132,10 +181,19 @@ export async function fetchOrigin(cfRequest, request, timeoutMs) {
  * origin switch too: switchOriginToNorg has already repointed that field at the
  * receptionist by the time this runs.
  *
+ * What CAN be fixed here is the origin's BLINDNESS to the public name: the
+ * viewer's host is forwarded alongside, in PUBLIC_HOST_HEADER, so a host-aware
+ * origin can build its absolute URLs from the name the visitor typed while the
+ * Host header keeps CloudFront happy. That is the supported half of the fix,
+ * and the sitemap the mirror serves depends on it.
+ *
  * @param {Object} cfRequest CloudFront request object, mutated in place.
+ * @param {?string} publicHost Hostname from viewerHost, read before the pipeline
+ *   mutated the Host header.
  * @returns {Object} The same request object.
  */
-export function alignHostToOrigin(cfRequest) {
+export function alignHostToOrigin(cfRequest, publicHost) {
+  setPublicHost(cfRequest, publicHost);
   const domainName = cfRequest.origin?.custom?.domainName;
   if (domainName) cfRequest.headers.host = [{ key: "Host", value: domainName }];
   return cfRequest;

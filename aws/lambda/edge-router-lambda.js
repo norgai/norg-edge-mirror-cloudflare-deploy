@@ -104,6 +104,7 @@ import { clientIp, passthrough as toPassthrough, toCloudFrontResponse, toRequest
 import {
   PASSTHROUGH,
   alignHostToOrigin,
+  viewerHost,
   fetchOrigin,
   switchOriginToNorg,
 } from "./lib/origin.js";
@@ -656,6 +657,10 @@ export async function handler(event) {
   let pristine = cfRequest;
 
   try {
+    // Read before anything can overwrite it: an origin switch replaces the Host
+    // header with the receptionist's name, and every passthrough replaces it
+    // with the origin's. The origin is told the real one separately.
+    const publicHost = viewerHost(cfRequest);
     scrubConfigHeaders((pristine = structuredClone(cfRequest)));
 
     const env = readConfig(cfRequest);
@@ -667,7 +672,10 @@ export async function handler(event) {
     // origin-request policy forwards the viewer's Host, and a virtual-hosted
     // origin (a Cloudflare-fronted site, say) proxies an unknown Host straight
     // back into CloudFront — a loop that ends in a 403 on the whole site.
-    if (!env.SITE_ID || !env.NORG_SECRET_ARN) return alignHostToOrigin(cfRequest);
+    // The public host rides along even here: this exit still replaces the Host,
+    // so an origin that builds absolute URLs from it would advertise the wrong
+    // domain for an install that is merely misconfigured.
+    if (!env.SITE_ID || !env.NORG_SECRET_ARN) return alignHostToOrigin(cfRequest, publicHost);
 
     let watchdog;
     const result = await Promise.race([
@@ -681,13 +689,15 @@ export async function handler(event) {
     // receptionist records each agent visit from the header on the mirror
     // fetch — so there is no background work to flush and no wait a visitor
     // could pay for it. Lambda@Edge freezes the instant this returns.
-    if (result === PASSTHROUGH) return toPassthrough(alignHostToOrigin(cfRequest));
+    if (result === PASSTHROUGH) return toPassthrough(alignHostToOrigin(cfRequest, publicHost));
 
     const response = await toCloudFrontResponse(result);
     // Null means the body will not fit CloudFront's generated-response cap.
     // Degrading to the origin is the correct answer: the visitor gets the
     // customer's real page instead of a 502.
-    return response || toPassthrough(alignHostToOrigin(scrubConfigHeaders(pristine)));
+    return (
+      response || toPassthrough(alignHostToOrigin(scrubConfigHeaders(pristine), publicHost))
+    );
   } catch (e) {
     console.error("norg edge router error", e);
     // Same reasoning as the unconfigured exit above: the untouched request

@@ -24,6 +24,8 @@ import {
   SITE_KEY,
   PROBE_TOKEN,
   SECRET_ARN,
+  ORIGIN_HOST,
+  PUBLIC_HOST,
   UNVERIFIED_IP,
   UNVERIFIED_IPV6,
   VERIFIED_IPV6,
@@ -709,6 +711,105 @@ test("EVERY passthrough aligns the Host, including the early exits", async () =>
       `Host not aligned for ${JSON.stringify(options)}`,
     );
   }
+});
+
+test("a passthrough tells the origin which hostname the visitor asked for", async () => {
+  // The mirror's sitemap regression. The origin is reached under its OWN name
+  // (above), so a host-aware origin building absolute URLs — sitemap.xml,
+  // robots.txt, canonical tags — advertised origin.example.com to every crawler
+  // that found the site through the CDN, and a crawler scoped to the public
+  // host drops every one of those URLs.
+  const { result } = await run({ headers: { "user-agent": CHROME_UA } });
+
+  assert.ok(isPassthroughResult(result));
+  assert.equal(result.headers.host[0].value, ORIGIN_HOST, "Host still names the origin");
+  assert.equal(
+    header(result, "x-norg-public-host"),
+    PUBLIC_HOST,
+    "the origin must be told the public hostname it is being served under",
+  );
+});
+
+test("EVERY passthrough carries the public host, including the early exits", async () => {
+  // Same exits as the Host-alignment sweep above: one that misses is one class
+  // of request whose sitemap points at the wrong domain.
+  for (const options of [
+    { config: { "x-norg-disabled": "true" } },
+    { headers: { "x-norg-edge": "1" } },
+    { headers: { upgrade: "websocket" } },
+    { method: "PUT" },
+    { uri: "/assets/app.css" },
+    { uri: "/sitemap.xml" },
+    { uri: "/checkout", headers: { "user-agent": GPTBOT_UA } },
+    { headers: { "user-agent": GOOGLEBOT_UA } },
+  ]) {
+    const { result } = await run(options);
+    assert.ok(isPassthroughResult(result), `not a passthrough: ${JSON.stringify(options)}`);
+    assert.equal(
+      header(result, "x-norg-public-host"),
+      PUBLIC_HOST,
+      `public host missing for ${JSON.stringify(options)}`,
+    );
+  }
+});
+
+test("an unconfigured install still names the public host", async () => {
+  // This exit returns before the pipeline, but it aligns the Host just the same
+  // — so without the public host an install missing its site id has exactly the
+  // sitemap problem this header exists to prevent.
+  const { result } = await run({ config: { "x-norg-site-id": undefined } });
+
+  assert.ok(isPassthroughResult(result));
+  assert.equal(header(result, "x-norg-public-host"), PUBLIC_HOST);
+});
+
+test("a viewer cannot name the public host itself", async () => {
+  // The header is trusted by the origin, so a relayed copy would let any caller
+  // choose the hostname the origin advertises in its sitemap.
+  const { result } = await run({
+    headers: { "user-agent": CHROME_UA, "x-norg-public-host": "evil.example" },
+  });
+
+  assert.equal(
+    header(result, "x-norg-public-host"),
+    PUBLIC_HOST,
+    "a viewer's own value must be overwritten, never forwarded",
+  );
+});
+
+test("a spoofed public host does not survive the failure path either", async () => {
+  // An unparseable Host reaches handler()'s catch, which returns the pristine
+  // clone rather than an aligned request — so the overwrite above never runs
+  // and the scrub is the only thing standing between the viewer and the origin.
+  const event = cloudFrontEvent({
+    headers: { "user-agent": GPTBOT_UA, "x-norg-public-host": "evil.example" },
+  });
+  event.Records[0].cf.request.headers.host = [{ key: "Host", value: "not a host" }];
+  stubNetwork({ mirror: () => mirrorHit() });
+
+  const result = await handler(event);
+
+  assert.equal(typeof result.status, "undefined", "an error must still serve the origin");
+  assert.equal(
+    header(result, "x-norg-public-host"),
+    null,
+    "no viewer-supplied public host may reach the origin",
+  );
+});
+
+test("a direct origin read carries the public host too", async () => {
+  // llms.txt is served origin-first: the router reads the origin itself and
+  // re-serves those bytes, so anything absolute in them must name the public
+  // host as well. This read drops the Host header, which is precisely why the
+  // public name has to travel in its own header.
+  const { calls } = await run(
+    { uri: "/llms.txt", headers: { "user-agent": GPTBOT_UA } },
+    { origin: () => new Response("# llms", { status: 200, headers: { "content-type": "text/plain" } }) },
+  );
+
+  const read = calls.find((call) => call.url.includes(ORIGIN_HOST));
+  assert.ok(read, "the origin-first artifact must actually read the origin");
+  assert.equal(new Headers(read.init.headers).get("x-norg-public-host"), PUBLIC_HOST);
 });
 
 test("an origin switch addresses the receptionist by name", async () => {

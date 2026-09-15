@@ -251,9 +251,31 @@ before your origin is contacted.
 It matters if your origin is host-aware. Absolute URLs, canonical tags, cookie
 domains and especially **auth middleware** will be built from the origin's
 hostname. An auth layer that redirects to its own host will bounce visitors off
-the CloudFront domain entirely. If that affects you, the fix is at the origin —
-have it serve the CloudFront-facing hostname directly, or stop emitting
-host-absolute redirects.
+the CloudFront domain entirely.
+
+**So the router forwards the visitor's hostname separately**, as
+`X-Norg-Public-Host`, on every request it hands to your origin:
+
+```
+Host:                origin.example.com     <- required by CloudFront
+X-Norg-Public-Host:  www.example.com        <- what the visitor actually typed
+```
+
+Read that header wherever you build an absolute URL and the problem goes away
+without changing how you are addressed. It matters most for `sitemap.xml` and
+`robots.txt`: a sitemap built from the origin's hostname advertises URLs on a
+domain the crawler did not ask for, and a crawler scoped to your public host
+discards every one of them — leaving it with your homepage alone.
+
+The router always sets this header itself, so a value sent by a visitor is
+overwritten and never reaches you. Treat it as trustworthy for that reason,
+and only for requests that arrive through the distribution. Vercel-hosted
+origins in particular need it, because Vercel overwrites `X-Forwarded-Host`
+when the `Host` it receives differs from the TLS SNI.
+
+Auth redirects are the one case this does not solve by itself: the fix there is
+still at the origin — serve the CloudFront-facing hostname directly, or stop
+emitting host-absolute redirects.
 
 > **Where the site key is visible.** In Secrets Manager, and nowhere else in
 > your account. Reading it needs `secretsmanager:GetSecretValue` on that one

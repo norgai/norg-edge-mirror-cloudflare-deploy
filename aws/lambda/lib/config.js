@@ -21,7 +21,7 @@
  * every provider.
  */
 
-import { HEALTH_CHECK_HEADER } from "../../../core/constants.mjs";
+import { HEALTH_CHECK_HEADER, PUBLIC_HOST_HEADER } from "../../../core/constants.mjs";
 
 /**
  * Version of this artifact, reported on every control call and heartbeat.
@@ -83,7 +83,7 @@ import { HEALTH_CHECK_HEADER } from "../../../core/constants.mjs";
  * is read from the replica in the region that ran the function. Behaviour
  * tracks edge-router-worker.js 0.11.7.
  */
-export const EDGE_SCRIPT_VERSION = "0.6.3";
+export const EDGE_SCRIPT_VERSION = "0.6.4";
 
 // Custom origin header -> binding name. Mirrors build_worker_bindings() in
 // content-craft's install_service.py; adding a binding there means adding it
@@ -131,7 +131,13 @@ export function scrubConfigHeaders(cfRequest) {
   if (customHeaders) {
     for (const header of Object.keys(CONFIG_HEADERS)) delete customHeaders[header];
   }
-  if (cfRequest?.headers) delete cfRequest.headers[HEALTH_CHECK_HEADER];
+  if (cfRequest?.headers) {
+    delete cfRequest.headers[HEALTH_CHECK_HEADER];
+    // No viewer gets to name the public host. The paths that legitimately set
+    // it do so after this runs; on the failure path nobody does, and a relayed
+    // copy would let a caller choose the hostname the origin advertises.
+    delete cfRequest.headers[PUBLIC_HOST_HEADER];
+  }
   return cfRequest;
 }
 

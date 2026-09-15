@@ -45,6 +45,17 @@ export const RESERVED_ASSET_CACHE_CONTROL =
 // Marks our own subrequests so a misconfigured route can't recurse into us.
 export const LOOP_GUARD_HEADER = "x-norg-edge";
 
+// Names the hostname the visitor actually asked for, for a provider that cannot
+// forward the viewer's Host. CloudFront REQUIRES the Host it returns to name the
+// origin (see alignHostToOrigin), so an origin that builds absolute URLs — a
+// sitemap, robots.txt, a canonical tag — otherwise has no way to learn the
+// public name of the site it is serving and advertises its own instead.
+export const PUBLIC_HOST_HEADER = "x-norg-public-host";
+
+// A bare hostname, optionally with a port. Anything else is a viewer trying to
+// name the public host itself, and is dropped rather than forwarded.
+export const HOSTNAME_PATTERN = /^[a-z0-9.-]+(:\d+)?$/i;
+
 // Health probes present the site key in this header; without it the path is
 // left alone, so we never shadow a real customer URL.
 export const HEALTH_CHECK_HEADER = "x-norg-edge-check";
