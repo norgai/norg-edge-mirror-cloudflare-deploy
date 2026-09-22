@@ -356,7 +356,7 @@ available.
 
 ```bash
 npm install
-cp .dev.vars.example .dev.vars   # fill in your own SITE_ID / NORG_SITE_KEY, never commit this file
+cp .dev.vars.example .dev.vars   # fill in NORG_SITE_KEY, add SITE_ID=... yourself, never commit this file
 npm run dev                       # wrangler dev
 ```
 
