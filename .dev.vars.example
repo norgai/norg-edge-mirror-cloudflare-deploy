@@ -1,9 +1,4 @@
 # Copy to .dev.vars for local `wrangler dev` testing only.
 # .dev.vars is gitignored — never commit real values.
-#
-# SITE_ID is NOT listed here on purpose: it's already a plain var in
-# wrangler.jsonc, and every line in THIS file is prompted for as a required
-# secret by the Cloudflare "Deploy to Cloudflare" button — duplicating it
-# here makes the button ask for SITE_ID twice (once plain, once masked).
-# For local dev, add SITE_ID=... to your own .dev.vars manually.
+SITE_ID=REPLACE_WITH_SITE_ID
 NORG_SITE_KEY=REPLACE_WITH_SITE_KEY
