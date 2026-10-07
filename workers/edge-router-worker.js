@@ -70,7 +70,7 @@ import { withAlternateFormatHeaders } from "./lib/alternate-format.mjs";
 import { cidrContains, cidrVerdictFor } from "./lib/cidr.mjs";
 import { mcpForwardHeaders } from "./lib/mcp-forward.mjs";
 
-export const EDGE_SCRIPT_VERSION = "0.11.7";
+export const EDGE_SCRIPT_VERSION = "0.11.8";
 
 // Baked binding defaults (EDGEPAR 04). Five bindings never vary across manual
 // and deploy-button installs, so they default here and a hand install only
@@ -1129,12 +1129,18 @@ async function serveOpenAiFeed(request, env, url) {
 
 /**
  * Is this an MCP surface path?
+ *
+ * Any path ending in "/mcp.json" counts, not just "/.well-known/mcp.json":
+ * the manifest is published next to every render, so "/mcp.json" at the root
+ * and "<page>/mcp.json" are real surfaces too and used to fall through to the
+ * origin as a 404.
+ *
  * @param {string} pathname Request pathname.
  * @returns {boolean} True for MCP endpoints.
  */
 function isMcpPath(pathname) {
   return (
-    pathname === "/.well-known/mcp.json" ||
+    pathname.endsWith("/mcp.json") ||
     pathname.endsWith("/mcp") ||
     pathname.endsWith("/sse")
   );
@@ -1160,10 +1166,14 @@ async function handleMcp(request, env, url) {
   // for HEAD, so both report the same status and headers.
   if (request.method !== "GET" && request.method !== "HEAD") return null;
 
-  // "/products/x/mcp" -> "/products/x/mcp.json"; "/mcp" -> "/mcp.json".
+  // A path that already names the manifest maps to ITSELF; only the "/mcp"
+  // and "/sse" aliases get the suffix swapped. Comparing against the single
+  // well-known path sent "<page>/mcp.json" down the alias branch, which
+  // appended a second "/mcp.json" and 404'd.
+  // "/products/x/mcp" -> "/products/x/mcp.json"; "/mcp.json" -> "/mcp.json".
   const suffix =
-    url.pathname === "/.well-known/mcp.json"
-      ? "/.well-known/mcp.json"
+    url.pathname.endsWith("/mcp.json")
+      ? url.pathname
       : `${url.pathname.replace(/\/(mcp|sse)$/, "")}/mcp.json`;
 
   const { response } = await fetchFromNorg(env, suffix);
