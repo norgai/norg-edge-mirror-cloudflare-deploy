@@ -171,7 +171,19 @@ test("AC3: a served .json sibling carries canonical Link + noindex", async () =>
 test("AC3: a served per-page mcp.json is EXEMPT from canonical/noindex", async () => {
   const response = await handleRequest(req("/about/mcp.json"), env, ctx);
   await drain();
-  assert.equal(response.headers.get("X-Norg-Edge"), "mirror"); // still served
+  // Since 0.11.8 the MCP branch claims every "*/mcp.json", so this manifest is
+  // served by handleMcp rather than the sibling mirror. That is the point of
+  // the change: the mirror only answers a CLASSIFIED agent (this helper
+  // defaults to GPTBot), so an ordinary visitor used to fall through to the
+  // origin and 404. The object served is the same one, from the same NORG
+  // render namespace — only the branch that serves it moved.
+  assert.equal(response.headers.get("X-Norg-Edge"), "mcp"); // still served
+  const norgHit = calls.find((c) => c.url.includes("/about/mcp.json"));
+  assert.ok(
+    norgHit && norgHit.url.startsWith("https://r2.norg.test/site-123/"),
+    "per-page manifest still fetched from the NORG content stem",
+  );
+  // The AC itself is unchanged: the manifest carries neither header.
   assert.equal(response.headers.get("X-Robots-Tag"), null);
   assert.equal(response.headers.get("Link"), null);
 });

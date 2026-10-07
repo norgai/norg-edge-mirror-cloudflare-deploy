@@ -213,7 +213,7 @@ function mcpForwardHeaders(source) {
 }
 
 // workers/edge-router-worker.js
-var EDGE_SCRIPT_VERSION = "0.11.7";
+var EDGE_SCRIPT_VERSION = "0.11.8";
 var BINDING_DEFAULTS = {
   NORG_API_URL: "https://content-craft-api.norg.ai",
   NORG_CONTENT_BASE: "https://edge-content.norg.ai",
@@ -739,12 +739,12 @@ async function serveOpenAiFeed(request, env, url) {
   return new Response(response.body, { status: 200, headers });
 }
 function isMcpPath(pathname) {
-  return pathname === "/.well-known/mcp.json" || pathname.endsWith("/mcp") || pathname.endsWith("/sse");
+  return pathname.endsWith("/mcp.json") || pathname.endsWith("/mcp") || pathname.endsWith("/sse");
 }
 async function handleMcp(request, env, url) {
   if (request.method === "POST") return forwardMcpToNorg(request.clone(), env, url);
   if (request.method !== "GET" && request.method !== "HEAD") return null;
-  const suffix = url.pathname === "/.well-known/mcp.json" ? "/.well-known/mcp.json" : `${url.pathname.replace(/\/(mcp|sse)$/, "")}/mcp.json`;
+  const suffix = url.pathname.endsWith("/mcp.json") ? url.pathname : `${url.pathname.replace(/\/(mcp|sse)$/, "")}/mcp.json`;
   const { response } = await fetchFromNorg(env, suffix);
   if (!response) return null;
   const headers = new Headers();
