@@ -213,7 +213,7 @@ function mcpForwardHeaders(source) {
 }
 
 // workers/edge-router-worker.js
-var EDGE_SCRIPT_VERSION = "0.12.0";
+var EDGE_SCRIPT_VERSION = "0.13.0";
 var BINDING_DEFAULTS = {
   NORG_API_URL: "https://content-craft-api.norg.ai",
   NORG_CONTENT_BASE: "https://edge-content.norg.ai",

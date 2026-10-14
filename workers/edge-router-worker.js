@@ -70,7 +70,7 @@ import { withAlternateFormatHeaders } from "./lib/alternate-format.mjs";
 import { cidrContains, cidrVerdictFor } from "./lib/cidr.mjs";
 import { mcpForwardHeaders } from "./lib/mcp-forward.mjs";
 
-export const EDGE_SCRIPT_VERSION = "0.12.0";
+export const EDGE_SCRIPT_VERSION = "0.13.0";
 
 // Baked binding defaults (EDGEPAR 04). Five bindings never vary across manual
 // and deploy-button installs, so they default here and a hand install only
