@@ -77,7 +77,7 @@ import { mcpForwardHeaders } from "./lib/mcp-forward.mjs";
 import { detectCitationReferral } from "./lib/referral.mjs";
 import { buildPageViewPayload } from "./lib/page-view.mjs";
 
-export const EDGE_SCRIPT_VERSION = "0.14.0";
+export const EDGE_SCRIPT_VERSION = "0.14.1";
 
 // Baked binding defaults (EDGEPAR 04). Five bindings never vary across manual
 // and deploy-button installs, so they default here and a hand install only
@@ -148,6 +148,23 @@ const RESPONSE_CACHE_DEFAULT_TTL_SECONDS = 300;
 // Bot patterns are admin-managed in NORG and change rarely, so they are cached
 // hard: in-isolate, then in the colo's Cache API, then served stale on error.
 const PATTERN_CACHE_KEY = "https://norg-edge.internal/bot-patterns";
+
+/**
+ * The colo Cache API key for THIS site's feed.
+ *
+ * caches.default is shared by every worker on the zone, and one zone can carry
+ * several NORG sites (one script each). A fixed key let one site read another's
+ * feed — its capture_only, skip paths, content version, even its entitlement —
+ * so the key folds SITE_ID, like the response-cache key does. An install with
+ * no SITE_ID keeps the legacy key (it has no other site to collide with).
+ *
+ * @param {Object} env Worker bindings.
+ * @returns {string} Synthetic cache URL for this site's feed.
+ */
+function feedCacheKey(env) {
+  const site = env && env.SITE_ID ? encodeURIComponent(env.SITE_ID) : "";
+  return site ? `${PATTERN_CACHE_KEY}/${site}` : PATTERN_CACHE_KEY;
+}
 const PATTERN_DEFAULT_TTL_MS = 3600 * 1000;
 const PATTERN_CACHE_RETENTION_SECONDS = 86400;
 
@@ -365,9 +382,9 @@ async function postControl(env, path, body) {
  * @param {Object} cache Cache API instance.
  * @returns {Promise<?Object>} Verdict entry, or null when absent/unusable.
  */
-async function readCachedFeed(cache) {
+async function readCachedFeed(cache, key) {
   try {
-    const hit = await cache.match(new Request(PATTERN_CACHE_KEY));
+    const hit = await cache.match(new Request(key));
     if (!hit) return null;
     const payload = await hit.json();
     if (!payload || typeof payload.entitled !== "boolean") return null;
@@ -426,10 +443,10 @@ async function readFeedBody(response) {
  * @param {Object} entry Feed entry to store.
  * @returns {Promise<void>}
  */
-async function writeFeedCache(cache, entry) {
+async function writeFeedCache(cache, entry, key) {
   try {
     await cache.put(
-      new Request(PATTERN_CACHE_KEY),
+      new Request(key),
       new Response(JSON.stringify(entry), {
         headers: {
           "Content-Type": "application/json",
@@ -461,12 +478,12 @@ function negativeVerdict() {
  * @param {Object} cache Cache API instance.
  * @returns {Promise<void>}
  */
-async function stampNegativeFeed(cache) {
+async function stampNegativeFeed(cache, key) {
   const entry = negativeVerdict();
   feedCache = entry;
   try {
     await cache.put(
-      new Request(PATTERN_CACHE_KEY),
+      new Request(key),
       new Response(JSON.stringify(entry), {
         headers: {
           "Content-Type": "application/json",
@@ -477,7 +494,7 @@ async function stampNegativeFeed(cache) {
   } catch (e) {
     console.error("norg edge negative feed cache write failed", e);
     try {
-      await cache.delete(new Request(PATTERN_CACHE_KEY));
+      await cache.delete(new Request(key));
     } catch (e2) {
       console.error("norg edge feed cache purge failed", e2);
     }
@@ -494,8 +511,8 @@ async function stampNegativeFeed(cache) {
  * @param {Object} cache Cache API instance.
  * @returns {Promise<void>}
  */
-async function revokeFeed(cache) {
-  await stampNegativeFeed(cache);
+async function revokeFeed(cache, key) {
+  await stampNegativeFeed(cache, key);
 }
 
 /**
@@ -528,7 +545,7 @@ async function refreshFeed(env, cache) {
   }
 
   if (REFUSAL_STATUSES.has(response.status)) {
-    await revokeFeed(cache);
+    await revokeFeed(cache, feedCacheKey(env));
     return { outcome: "refused", entry: null };
   }
   if (!response.ok) return { outcome: "unreachable", entry: null };
@@ -536,7 +553,7 @@ async function refreshFeed(env, cache) {
   const entry = await readFeedBody(response);
   if (!entry) return { outcome: "unreachable", entry: null };
   feedCache = entry;
-  await writeFeedCache(cache, entry);
+  await writeFeedCache(cache, entry, feedCacheKey(env));
   return { outcome: "ok", entry };
 }
 
@@ -564,7 +581,7 @@ async function getBotFeed(env, ctx) {
   }
 
   const cache = caches.default;
-  const cached = await readCachedFeed(cache);
+  const cached = await readCachedFeed(cache, feedCacheKey(env));
   if (cached) {
     feedCache = cached;
     // A fresh entry — entitled or negative — is honoured with no probe.
@@ -582,7 +599,7 @@ async function getBotFeed(env, ctx) {
   // A refusal already stamped the negative verdict inside refreshFeed; an
   // unreachable probe with nothing usable cached stamps it here so the next
   // request (and cold colo-mates) skip the blocking fetch for the window.
-  if (outcome === "unreachable") await stampNegativeFeed(cache);
+  if (outcome === "unreachable") await stampNegativeFeed(cache, feedCacheKey(env));
   return feedCache;
 }
 
