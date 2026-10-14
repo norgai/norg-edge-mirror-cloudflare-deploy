@@ -353,7 +353,7 @@ async function buildPageViewPayload(request, url, requestHost, detection, served
 }
 
 // workers/edge-router-worker.js
-var EDGE_SCRIPT_VERSION = "0.14.1";
+var EDGE_SCRIPT_VERSION = "0.14.2";
 var BINDING_DEFAULTS = {
   NORG_API_URL: "https://content-craft-api.norg.ai",
   NORG_CONTENT_BASE: "https://edge-content.norg.ai",
@@ -379,7 +379,8 @@ var RESPONSE_CACHE_DEFAULT_TTL_SECONDS = 300;
 var PATTERN_CACHE_KEY = "https://norg-edge.internal/bot-patterns";
 function feedCacheKey(env) {
   const site = env && env.SITE_ID ? encodeURIComponent(env.SITE_ID) : "";
-  return site ? `${PATTERN_CACHE_KEY}/${site}` : PATTERN_CACHE_KEY;
+  const capture = binding(env, "CAPTURE_ONLY") === "true" ? "/capture" : "";
+  return site ? `${PATTERN_CACHE_KEY}/${site}${capture}` : PATTERN_CACHE_KEY;
 }
 var PATTERN_DEFAULT_TTL_MS = 3600 * 1e3;
 var PATTERN_CACHE_RETENTION_SECONDS = 86400;

@@ -77,7 +77,7 @@ import { mcpForwardHeaders } from "./lib/mcp-forward.mjs";
 import { detectCitationReferral } from "./lib/referral.mjs";
 import { buildPageViewPayload } from "./lib/page-view.mjs";
 
-export const EDGE_SCRIPT_VERSION = "0.14.1";
+export const EDGE_SCRIPT_VERSION = "0.14.2";
 
 // Baked binding defaults (EDGEPAR 04). Five bindings never vary across manual
 // and deploy-button installs, so they default here and a hand install only
@@ -163,7 +163,12 @@ const PATTERN_CACHE_KEY = "https://norg-edge.internal/bot-patterns";
  */
 function feedCacheKey(env) {
   const site = env && env.SITE_ID ? encodeURIComponent(env.SITE_ID) : "";
-  return site ? `${PATTERN_CACHE_KEY}/${site}` : PATTERN_CACHE_KEY;
+  // The capture binding is part of the key: a capture→mirror conversion
+  // re-pushes CAPTURE_ONLY=false, and must not keep reading the feed cached
+  // while the site was capturing (capture_only=true, fresh for the feed TTL),
+  // or a paying customer gets no mirror for up to an hour.
+  const capture = binding(env, "CAPTURE_ONLY") === "true" ? "/capture" : "";
+  return site ? `${PATTERN_CACHE_KEY}/${site}${capture}` : PATTERN_CACHE_KEY;
 }
 const PATTERN_DEFAULT_TTL_MS = 3600 * 1000;
 const PATTERN_CACHE_RETENTION_SECONDS = 86400;
