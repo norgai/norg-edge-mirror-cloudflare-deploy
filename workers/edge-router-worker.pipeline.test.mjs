@@ -266,6 +266,12 @@ test("isMcpPath recognises the MCP surface only", () => {
   assert.equal(isMcpPath("/products/x/sse"), true);
   assert.equal(isMcpPath("/products/mcpx"), false);
   assert.equal(isMcpPath("/about/"), false);
+  // The manifest is published next to every render, so a plain *.json path is
+  // a real surface — not only the well-known one.
+  assert.equal(isMcpPath("/mcp.json"), true);
+  assert.equal(isMcpPath("/products/x/mcp.json"), true);
+  // Still anchored on the separator: a lookalike filename is not a surface.
+  assert.equal(isMcpPath("/products/notmcp.json"), false);
 });
 
 test("isPassthrough short-circuits the cases that must never be touched", () => {
@@ -721,6 +727,64 @@ test("a page's MCP manifest is served from the render namespace", async () => {
 
   assert.equal(response.headers.get("X-Norg-Edge"), "mcp");
   assert.equal(response.headers.get("Content-Type"), "application/json");
+});
+
+test("a plain <page>/mcp.json maps to itself, not a doubled suffix", async () => {
+  // The alias branch appends "/mcp.json" after stripping a trailing "/mcp" or
+  // "/sse". A path that already names the manifest matches neither, so it used
+  // to be rewritten to "<page>/mcp.json/mcp.json" and 404 at the origin.
+  installFetch([
+    patternsRoute(),
+    [
+      "r2.norg.test",
+      async (url) => {
+        assert.ok(url.endsWith("/site-123/products/widget/mcp.json"), url);
+        return new Response('{"tools":[]}', { status: 200 });
+      },
+    ],
+  ]);
+
+  const response = await handleRequest(req("/products/widget/mcp.json", BROWSER), env, ctx);
+  await drain();
+
+  assert.equal(response.headers.get("X-Norg-Edge"), "mcp");
+  assert.equal(response.headers.get("Content-Type"), "application/json");
+});
+
+test("the root /mcp.json is served from the render namespace", async () => {
+  installFetch([
+    patternsRoute(),
+    [
+      "r2.norg.test",
+      async (url) => {
+        assert.ok(url.endsWith("/site-123/mcp.json"), url);
+        return new Response('{"tools":[]}', { status: 200 });
+      },
+    ],
+  ]);
+
+  const response = await handleRequest(req("/mcp.json", BROWSER), env, ctx);
+  await drain();
+
+  assert.equal(response.headers.get("X-Norg-Edge"), "mcp");
+});
+
+test("the well-known manifest keeps its own path", async () => {
+  installFetch([
+    patternsRoute(),
+    [
+      "r2.norg.test",
+      async (url) => {
+        assert.ok(url.endsWith("/site-123/.well-known/mcp.json"), url);
+        return new Response('{"tools":[]}', { status: 200 });
+      },
+    ],
+  ]);
+
+  const response = await handleRequest(req("/.well-known/mcp.json", BROWSER), env, ctx);
+  await drain();
+
+  assert.equal(response.headers.get("X-Norg-Edge"), "mcp");
 });
 
 test("an MCP JSON-RPC POST reaches NORG instead of the origin", async () => {
@@ -2393,4 +2457,78 @@ test("MCP POST: cookies and authorization never reach NORG; JSON-RPC headers do"
   assert.equal(forwarded.get("mcp-session-id"), "sess-1");
   assert.equal(forwarded.get("X-Norg-Site-Id"), env.SITE_ID);
   assert.equal(forwarded.get("X-Norg-Site-Key"), env.NORG_SITE_KEY);
+});
+
+// --- divert_unverified: per-pattern opt-in without source verification ------
+
+const DEEPSEEKBOT = "Mozilla/5.0 (compatible; DeepSeekBot/1.0; +https://www.deepseek.com/)";
+
+function unverifiedPatternsRoute() {
+  return patternsRoute([
+    { pattern: "gptbot", company: "openai", purpose: "training", serving_policy: "divert" },
+    { pattern: "deepseekbot", company: "deepseek", purpose: "training", serving_policy: "divert_unverified" },
+  ]);
+}
+
+test("divert_unverified serves the mirror with no verified source, tagged mirror_unverified", async () => {
+  installFetch([
+    unverifiedPatternsRoute(),
+    ["r2.norg.test", async () => new Response("<html>norg render</html>", { status: 200 })],
+  ]);
+
+  const response = await handleRequest(req("/products/widget/", DEEPSEEKBOT, { cf: {} }), env, ctx);
+  await drain();
+
+  assert.equal(await response.text(), "<html>norg render</html>");
+  const event = calls.find((c) => c.url.includes("/edge/events"));
+  const body = JSON.parse(event.init.body);
+  assert.equal(body.served, "mirror_unverified");
+  assert.equal(body.bot_name, "deepseekbot");
+});
+
+test("a divert_unverified miss serves the untouched origin and enqueues NO render", async () => {
+  installFetch([
+    unverifiedPatternsRoute(),
+    ["r2.norg.test", async () => new Response("nope", { status: 404 })],
+  ]);
+
+  const response = await handleRequest(req("/no-render/", DEEPSEEKBOT, { cf: {} }), env, ctx);
+  await drain();
+
+  assert.equal(await response.text(), "origin body");
+  assert.equal(response.headers.get("X-Norg-Edge"), null);
+  const event = calls.find((c) => c.url.includes("/edge/events"));
+  assert.equal(JSON.parse(event.init.body).served, "mirror_unverified_miss");
+  assert.equal(
+    calls.filter((c) => c.url.includes("/edge/render-requests")).length,
+    0,
+    "an unverified agent must never trigger a render",
+  );
+});
+
+test("plain divert still requires a verified source (no regression)", async () => {
+  installFetch([
+    unverifiedPatternsRoute(),
+    ["r2.norg.test", async () => new Response("<html>norg render</html>", { status: 200 })],
+  ]);
+
+  const response = await handleRequest(req("/products/widget/", GPTBOT, { cf: {} }), env, ctx);
+  await drain();
+
+  assert.equal(await response.text(), "origin body");
+  assert.ok(!calls.find((c) => c.url.includes("r2.norg.test")), "unverified GPTBot must not reach the mirror");
+});
+
+test("a search engine UA carrying a divert_unverified token is still never diverted", async () => {
+  installFetch([
+    unverifiedPatternsRoute(),
+    ["r2.norg.test", async () => new Response("<html>norg render</html>", { status: 200 })],
+  ]);
+
+  const ua = `${GOOGLEBOT} DeepSeekBot/1.0`;
+  const response = await handleRequest(req("/products/widget/", ua, { cf: {} }), env, ctx);
+  await drain();
+
+  assert.equal(await response.text(), "origin body");
+  assert.ok(!calls.find((c) => c.url.includes("r2.norg.test")), "the search-engine floor wins");
 });
