@@ -103,7 +103,7 @@ import { getBotFeed, isEntitled } from "../../core/feed.js";
 import { clientIp, passthrough as toPassthrough, toCloudFrontResponse, toRequest } from "./lib/event.js";
 import {
   PASSTHROUGH,
-  alignHostToOrigin,
+  toOrigin,
   viewerHost,
   fetchOrigin,
   switchOriginToNorg,
@@ -658,8 +658,8 @@ export async function handler(event) {
 
   try {
     // Read before anything can overwrite it: an origin switch replaces the Host
-    // header with the receptionist's name, and every passthrough replaces it
-    // with the origin's. The origin is told the real one separately.
+    // header with the receptionist's name. Every passthrough leaves Host as the
+    // distribution delivered it and adds the public host alongside.
     const publicHost = viewerHost(cfRequest);
     scrubConfigHeaders((pristine = structuredClone(cfRequest)));
 
@@ -668,14 +668,9 @@ export async function handler(event) {
     // env, but on this provider the key is not in the config at all — the ARN
     // that leads to it is. Without both, every NORG call would be refused, so
     // the correct behaviour is to do nothing rather than fail slowly on each.
-    // Even when doing nothing, the Host header must name the origin: the
-    // origin-request policy forwards the viewer's Host, and a virtual-hosted
-    // origin (a Cloudflare-fronted site, say) proxies an unknown Host straight
-    // back into CloudFront — a loop that ends in a 403 on the whole site.
-    // The public host rides along even here: this exit still replaces the Host,
-    // so an origin that builds absolute URLs from it would advertise the wrong
-    // domain for an install that is merely misconfigured.
-    if (!env.SITE_ID || !env.NORG_SECRET_ARN) return alignHostToOrigin(cfRequest, publicHost);
+    // Doing nothing means the Host the distribution delivered, untouched (see
+    // toOrigin), with the public host alongside as on every other exit.
+    if (!env.SITE_ID || !env.NORG_SECRET_ARN) return toOrigin(cfRequest, publicHost);
 
     let watchdog;
     const result = await Promise.race([
@@ -689,20 +684,21 @@ export async function handler(event) {
     // receptionist records each agent visit from the header on the mirror
     // fetch — so there is no background work to flush and no wait a visitor
     // could pay for it. Lambda@Edge freezes the instant this returns.
-    if (result === PASSTHROUGH) return toPassthrough(alignHostToOrigin(cfRequest, publicHost));
+    if (result === PASSTHROUGH) return toPassthrough(toOrigin(cfRequest, publicHost));
 
     const response = await toCloudFrontResponse(result);
     // Null means the body will not fit CloudFront's generated-response cap.
     // Degrading to the origin is the correct answer: the visitor gets the
     // customer's real page instead of a 502.
     return (
-      response || toPassthrough(alignHostToOrigin(scrubConfigHeaders(pristine), publicHost))
+      response || toPassthrough(toOrigin(scrubConfigHeaders(pristine), publicHost))
     );
   } catch (e) {
     console.error("norg edge router error", e);
-    // Same reasoning as the unconfigured exit above: the untouched request
-    // still needs the origin's Host, or the safety net itself breaks the site.
-    return alignHostToOrigin(scrubConfigHeaders(pristine));
+    // The untouched request, Host included: the safety net must hand the origin
+    // exactly what it would have received without us. No public host here — the
+    // Host that failed to parse is not one the origin should be told to trust.
+    return toOrigin(scrubConfigHeaders(pristine));
   }
 }
 

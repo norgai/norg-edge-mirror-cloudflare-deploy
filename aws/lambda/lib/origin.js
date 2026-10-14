@@ -41,10 +41,9 @@ export const PASSTHROUGH = Object.freeze({ norgEdge: "passthrough" });
 /**
  * The hostname the visitor actually asked for.
  *
- * Read from the viewer's own Host header, which the install's origin-request
- * policy forwards verbatim (`allViewerAndWhitelistCloudFront`). Must be read
- * BEFORE the pipeline runs: alignHostToOrigin and switchOriginToNorg both
- * replace this header on their way out.
+ * Read from the Host header as the customer's own origin request policy
+ * delivers it. Must be read BEFORE the pipeline runs: switchOriginToNorg
+ * replaces this header on its way out.
  *
  * Returns null for anything that is not a bare hostname, so a malformed Host
  * is dropped rather than handed to the origin as fact.
@@ -154,48 +153,41 @@ export async function fetchOrigin(cfRequest, request, timeoutMs) {
 }
 
 /**
- * Point the Host header at the origin this request is bound for.
+ * Hand a request on to the origin with its Host header exactly as delivered.
  *
- * THIS IS A PLATFORM REQUIREMENT, NOT A CHOICE. When an origin-request function
- * returns a request for a custom origin, CloudFront requires the Host header to
- * match `request.origin.custom.domainName`. A mismatch is rejected before the
- * origin is contacted: the viewer gets a CloudFront 403 "Bad request" and
- * NOTHING is written to the function's log, because the function did not fail —
- * its output was refused. AWS's own origin-modification helpers set Host to the
- * origin domain for exactly this reason.
+ * The Host the origin receives is the customer's own distribution's decision,
+ * not ours: an origin request policy that forwards the viewer's Host delivers
+ * the public hostname, one that does not delivers the origin's own name. The
+ * router used to overwrite it with `origin.custom.domainName` on every exit
+ * (0.6.1 to 0.6.4). That broke every origin that is reached under the public
+ * hostname: a WordPress staging site on EC2 saw its own EC2 name, redirected
+ * the homepage to itself in a loop and sent slash-less URLs to the unreachable
+ * EC2 hostname (2026-10-15, the first customer CloudFront install).
  *
- * DO NOT make this conditional to "preserve the viewer's Host". That was tried,
- * shipped, and took the site down with a blanket 403 within minutes. The
- * motivation was real — see the consequence below — but this is not where it
- * can be fixed.
+ * Overwriting was believed to be a CloudFront requirement. It is not: on a
+ * test distribution (E2YX4EGQFD2LKC, origin httpbin.org, managed AllViewer
+ * policy, 2026-10-15) an origin-request function that returned the request
+ * untouched delivered the viewer's Host to the origin with a 200, and the same
+ * function rewriting Host delivered the origin's. The blanket 403 behind the
+ * old rule was the origin looping, not CloudFront refusing: a Cloudflare-fronted
+ * origin was sent a viewer Host its own setup never forwarded, and proxied it
+ * straight back into CloudFront. The install now keeps the customer's origin
+ * request policy, so an untouched Host is what that origin always received.
  *
- * The consequence, which is a property of putting Lambda@Edge on origin-request
- * at all: the origin always sees ITS OWN hostname, never the one the visitor
- * typed. A host-aware origin therefore builds absolute URLs, canonical tags,
- * cookie domains and auth redirects from the origin's name. An auth layer that
- * redirects to its own host will bounce visitors off the CloudFront domain.
- * The fix for that lives at the origin (serve the CloudFront-facing hostname
- * directly, or stop emitting host-absolute redirects), not here.
+ * Two paths still set Host themselves, because they change WHERE the request
+ * goes: switchOriginToNorg (the receptionist) and fetchOrigin (a direct read).
  *
- * Reading the value from origin.custom.domainName keeps it correct after an
- * origin switch too: switchOriginToNorg has already repointed that field at the
- * receptionist by the time this runs.
- *
- * What CAN be fixed here is the origin's BLINDNESS to the public name: the
- * viewer's host is forwarded alongside, in PUBLIC_HOST_HEADER, so a host-aware
- * origin can build its absolute URLs from the name the visitor typed while the
- * Host header keeps CloudFront happy. That is the supported half of the fix,
- * and the sitemap the mirror serves depends on it.
+ * The public hostname still travels in PUBLIC_HOST_HEADER, so an origin that is
+ * reached under its own name can build absolute URLs from the one the visitor
+ * typed.
  *
  * @param {Object} cfRequest CloudFront request object, mutated in place.
  * @param {?string} publicHost Hostname from viewerHost, read before the pipeline
- *   mutated the Host header.
+ *   could mutate the Host header.
  * @returns {Object} The same request object.
  */
-export function alignHostToOrigin(cfRequest, publicHost) {
+export function toOrigin(cfRequest, publicHost) {
   setPublicHost(cfRequest, publicHost);
-  const domainName = cfRequest.origin?.custom?.domainName;
-  if (domainName) cfRequest.headers.host = [{ key: "Host", value: domainName }];
   return cfRequest;
 }
 

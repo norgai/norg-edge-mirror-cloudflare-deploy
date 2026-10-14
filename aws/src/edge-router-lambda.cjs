@@ -272,7 +272,7 @@ var STATIC_ASSET_SUFFIXES = /* @__PURE__ */ new Set([
 ]);
 
 // aws/lambda/lib/config.js
-var EDGE_SCRIPT_VERSION = "0.6.4";
+var EDGE_SCRIPT_VERSION = "0.6.5";
 var CONFIG_HEADERS = {
   "x-norg-site-id": "SITE_ID",
   "x-norg-secret-arn": "NORG_SECRET_ARN",
@@ -919,10 +919,8 @@ async function fetchOrigin(cfRequest, request, timeoutMs) {
     return null;
   }
 }
-function alignHostToOrigin(cfRequest, publicHost) {
+function toOrigin(cfRequest, publicHost) {
   setPublicHost(cfRequest, publicHost);
-  const domainName = cfRequest.origin?.custom?.domainName;
-  if (domainName) cfRequest.headers.host = [{ key: "Host", value: domainName }];
   return cfRequest;
 }
 function switchOriginToNorg(cfRequest, contentStemUrl, keySuffix, authHeaders) {
@@ -1522,7 +1520,7 @@ async function handler(event) {
     const publicHost = viewerHost(cfRequest);
     scrubConfigHeaders(pristine = structuredClone(cfRequest));
     const env = readConfig(cfRequest);
-    if (!env.SITE_ID || !env.NORG_SECRET_ARN) return alignHostToOrigin(cfRequest, publicHost);
+    if (!env.SITE_ID || !env.NORG_SECRET_ARN) return toOrigin(cfRequest, publicHost);
     let watchdog;
     const result = await Promise.race([
       handleRequest(cfRequest, env),
@@ -1530,12 +1528,12 @@ async function handler(event) {
         watchdog = setTimeout(() => resolve(PASSTHROUGH), WATCHDOG_MS);
       })
     ]).finally(() => clearTimeout(watchdog));
-    if (result === PASSTHROUGH) return passthrough(alignHostToOrigin(cfRequest, publicHost));
+    if (result === PASSTHROUGH) return passthrough(toOrigin(cfRequest, publicHost));
     const response = await toCloudFrontResponse(result);
-    return response || passthrough(alignHostToOrigin(scrubConfigHeaders(pristine), publicHost));
+    return response || passthrough(toOrigin(scrubConfigHeaders(pristine), publicHost));
   } catch (e) {
     console.error("norg edge router error", e);
-    return alignHostToOrigin(scrubConfigHeaders(pristine));
+    return toOrigin(scrubConfigHeaders(pristine));
   }
 }
 var edge_router_lambda_default = handler;

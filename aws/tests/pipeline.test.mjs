@@ -681,19 +681,20 @@ test("?agent=true forces the mirror for a browser but enqueues no render", async
 
 // --- The Host header on passthrough ----------------------------------------
 
-test("a passthrough asks the origin for the hostname the ORIGIN serves", async () => {
-  // Required by CloudFront, not a preference: an origin-request function whose
-  // returned Host does not match origin.custom.domainName is refused outright —
-  // the viewer gets a 403 "Bad request" and the function logs nothing, because
-  // it did not fail. Making this conditional took a live site down.
+test("a passthrough leaves the Host exactly as the distribution delivered it", async () => {
+  // 0.6.1-0.6.4 overwrote it with origin.custom.domainName, which sent a
+  // WordPress origin reached under its public name into a redirect loop. A test
+  // distribution proved CloudFront delivers an untouched viewer Host with a 200
+  // (see toOrigin), so the origin now gets what its own policy forwards.
   const { result } = await run({ headers: { "user-agent": CHROME_UA } });
 
   assert.ok(isPassthroughResult(result));
-  assert.equal(result.headers.host[0].value, "origin.example.com");
+  assert.equal(result.headers.host[0].value, PUBLIC_HOST);
 });
 
-test("EVERY passthrough aligns the Host, including the early exits", async () => {
-  // One unaligned exit is one blanket 403 on that class of request.
+test("EVERY passthrough exit leaves the Host untouched, including the early exits", async () => {
+  // One exit that still rewrites is one class of request the origin sees under
+  // the wrong name.
   for (const options of [
     { config: { "x-norg-disabled": "true" } },
     { headers: { "x-norg-edge": "1" } },
@@ -702,27 +703,41 @@ test("EVERY passthrough aligns the Host, including the early exits", async () =>
     { uri: "/assets/app.css" },
     { uri: "/checkout", headers: { "user-agent": GPTBOT_UA } },
     { headers: { "user-agent": GOOGLEBOT_UA } },
+    { config: { "x-norg-site-id": undefined } },
   ]) {
     const { result } = await run(options);
     assert.ok(isPassthroughResult(result), `not a passthrough: ${JSON.stringify(options)}`);
     assert.equal(
       result.headers.host[0].value,
-      "origin.example.com",
-      `Host not aligned for ${JSON.stringify(options)}`,
+      PUBLIC_HOST,
+      `Host rewritten for ${JSON.stringify(options)}`,
     );
   }
 });
 
+test("a distribution that sends the origin's own Host keeps sending it", async () => {
+  // A policy that does not forward the viewer's Host delivers the origin's name
+  // to the function. Returning it untouched is what keeps a Cloudflare-fronted
+  // origin out of the loop that produced the old rule.
+  const event = cloudFrontEvent({ headers: { "user-agent": CHROME_UA } });
+  event.Records[0].cf.request.headers.host = [{ key: "Host", value: ORIGIN_HOST }];
+
+  const result = await handler(event);
+
+  assert.ok(isPassthroughResult(result));
+  assert.equal(result.headers.host[0].value, ORIGIN_HOST);
+});
+
 test("a passthrough tells the origin which hostname the visitor asked for", async () => {
-  // The mirror's sitemap regression. The origin is reached under its OWN name
-  // (above), so a host-aware origin building absolute URLs — sitemap.xml,
+  // The mirror's sitemap regression. An origin reached under its OWN name
+  // (a policy that does not forward Host), so a host-aware origin building absolute URLs — sitemap.xml,
   // robots.txt, canonical tags — advertised origin.example.com to every crawler
   // that found the site through the CDN, and a crawler scoped to the public
   // host drops every one of those URLs.
   const { result } = await run({ headers: { "user-agent": CHROME_UA } });
 
   assert.ok(isPassthroughResult(result));
-  assert.equal(result.headers.host[0].value, ORIGIN_HOST, "Host still names the origin");
+  assert.equal(result.headers.host[0].value, PUBLIC_HOST, "Host left as delivered");
   assert.equal(
     header(result, "x-norg-public-host"),
     PUBLIC_HOST,
@@ -731,7 +746,7 @@ test("a passthrough tells the origin which hostname the visitor asked for", asyn
 });
 
 test("EVERY passthrough carries the public host, including the early exits", async () => {
-  // Same exits as the Host-alignment sweep above: one that misses is one class
+  // Same exits as the Host sweep above: one that misses is one class
   // of request whose sitemap points at the wrong domain.
   for (const options of [
     { config: { "x-norg-disabled": "true" } },
@@ -754,9 +769,9 @@ test("EVERY passthrough carries the public host, including the early exits", asy
 });
 
 test("an unconfigured install still names the public host", async () => {
-  // This exit returns before the pipeline, but it aligns the Host just the same
-  // — so without the public host an install missing its site id has exactly the
-  // sitemap problem this header exists to prevent.
+  // This exit returns before the pipeline, but an origin reached under its own
+  // name still needs the public host — without it an install missing its site
+  // id has exactly the sitemap problem this header exists to prevent.
   const { result } = await run({ config: { "x-norg-site-id": undefined } });
 
   assert.ok(isPassthroughResult(result));
@@ -779,7 +794,7 @@ test("a viewer cannot name the public host itself", async () => {
 
 test("a spoofed public host does not survive the failure path either", async () => {
   // An unparseable Host reaches handler()'s catch, which returns the pristine
-  // clone rather than an aligned request — so the overwrite above never runs
+  // clone rather than the pipeline's request — so the overwrite above never runs
   // and the scrub is the only thing standing between the viewer and the origin.
   const event = cloudFrontEvent({
     headers: { "user-agent": GPTBOT_UA, "x-norg-public-host": "evil.example" },
