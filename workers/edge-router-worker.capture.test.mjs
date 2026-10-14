@@ -300,3 +300,23 @@ test("two NORG sites on one zone never read each other's cached feed", async () 
     "https://norg-edge.internal/bot-patterns/site-b",
   ]);
 });
+
+test("capture→mirror conversion is not held back by the feed cached while capturing", async () => {
+  // While capturing, the binding is on and NORG's feed says capture_only=true;
+  // that entry is cached at the colo for the feed TTL. Payment re-pushes the
+  // worker with CAPTURE_ONLY=false and the feed flips — the new deploy must
+  // serve the mirror at once, not keep capturing from the stale colo entry.
+  const capturing = await loadColdIsolate();
+  installFetch({ feed: feedBody({ capture_only: true }) });
+  await capturing.__test_handleRequest(req(), captureEnv, ctx);
+  await drain();
+
+  const converted = await loadColdIsolate();
+  calls = [];
+  waitUntilTasks = [];
+  installFetch({ feed: feedBody() });
+  await converted.__test_handleRequest(req("/products/widget/"), baseEnv, ctx);
+  await drain();
+  assert.ok(calls.some((c) => c.url.includes("r2.norg.test")), "mirror looked up after conversion");
+  assert.ok(!posted("/api/v1/edge/events").some((e) => e.served === "capture"));
+});
