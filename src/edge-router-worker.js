@@ -353,7 +353,7 @@ async function buildPageViewPayload(request, url, requestHost, detection, served
 }
 
 // workers/edge-router-worker.js
-var EDGE_SCRIPT_VERSION = "0.14.0";
+var EDGE_SCRIPT_VERSION = "0.14.1";
 var BINDING_DEFAULTS = {
   NORG_API_URL: "https://content-craft-api.norg.ai",
   NORG_CONTENT_BASE: "https://edge-content.norg.ai",
@@ -377,6 +377,10 @@ var MCP_FORWARD_TIMEOUT_MS = 3e3;
 var RESPONSE_CACHE_KEY_PREFIX = "https://norg-edge.internal/rc/";
 var RESPONSE_CACHE_DEFAULT_TTL_SECONDS = 300;
 var PATTERN_CACHE_KEY = "https://norg-edge.internal/bot-patterns";
+function feedCacheKey(env) {
+  const site = env && env.SITE_ID ? encodeURIComponent(env.SITE_ID) : "";
+  return site ? `${PATTERN_CACHE_KEY}/${site}` : PATTERN_CACHE_KEY;
+}
 var PATTERN_DEFAULT_TTL_MS = 3600 * 1e3;
 var PATTERN_CACHE_RETENTION_SECONDS = 86400;
 var UNENTITLED_TTL_MS = 60 * 1e3;
@@ -479,9 +483,9 @@ async function postControl(env, path, body) {
     return null;
   }
 }
-async function readCachedFeed(cache) {
+async function readCachedFeed(cache, key) {
   try {
-    const hit = await cache.match(new Request(PATTERN_CACHE_KEY));
+    const hit = await cache.match(new Request(key));
     if (!hit) return null;
     const payload = await hit.json();
     if (!payload || typeof payload.entitled !== "boolean") return null;
@@ -524,10 +528,10 @@ async function readFeedBody(response) {
     return null;
   }
 }
-async function writeFeedCache(cache, entry) {
+async function writeFeedCache(cache, entry, key) {
   try {
     await cache.put(
-      new Request(PATTERN_CACHE_KEY),
+      new Request(key),
       new Response(JSON.stringify(entry), {
         headers: {
           "Content-Type": "application/json",
@@ -542,12 +546,12 @@ async function writeFeedCache(cache, entry) {
 function negativeVerdict() {
   return { ...UNENTITLED, fetchedAt: Date.now(), ttl: UNENTITLED_TTL_MS };
 }
-async function stampNegativeFeed(cache) {
+async function stampNegativeFeed(cache, key) {
   const entry = negativeVerdict();
   feedCache = entry;
   try {
     await cache.put(
-      new Request(PATTERN_CACHE_KEY),
+      new Request(key),
       new Response(JSON.stringify(entry), {
         headers: {
           "Content-Type": "application/json",
@@ -558,14 +562,14 @@ async function stampNegativeFeed(cache) {
   } catch (e) {
     console.error("norg edge negative feed cache write failed", e);
     try {
-      await cache.delete(new Request(PATTERN_CACHE_KEY));
+      await cache.delete(new Request(key));
     } catch (e2) {
       console.error("norg edge feed cache purge failed", e2);
     }
   }
 }
-async function revokeFeed(cache) {
-  await stampNegativeFeed(cache);
+async function revokeFeed(cache, key) {
+  await stampNegativeFeed(cache, key);
 }
 async function refreshFeed(env, cache) {
   let response;
@@ -583,14 +587,14 @@ async function refreshFeed(env, cache) {
     return { outcome: "unreachable", entry: null };
   }
   if (REFUSAL_STATUSES.has(response.status)) {
-    await revokeFeed(cache);
+    await revokeFeed(cache, feedCacheKey(env));
     return { outcome: "refused", entry: null };
   }
   if (!response.ok) return { outcome: "unreachable", entry: null };
   const entry = await readFeedBody(response);
   if (!entry) return { outcome: "unreachable", entry: null };
   feedCache = entry;
-  await writeFeedCache(cache, entry);
+  await writeFeedCache(cache, entry, feedCacheKey(env));
   return { outcome: "ok", entry };
 }
 async function getBotFeed(env, ctx) {
@@ -600,7 +604,7 @@ async function getBotFeed(env, ctx) {
     return feedCache;
   }
   const cache = caches.default;
-  const cached = await readCachedFeed(cache);
+  const cached = await readCachedFeed(cache, feedCacheKey(env));
   if (cached) {
     feedCache = cached;
     if (now - cached.fetchedAt < cached.ttl) return cached;
@@ -611,7 +615,7 @@ async function getBotFeed(env, ctx) {
   }
   const { outcome, entry } = await refreshFeed(env, cache);
   if (outcome === "ok") return entry;
-  if (outcome === "unreachable") await stampNegativeFeed(cache);
+  if (outcome === "unreachable") await stampNegativeFeed(cache, feedCacheKey(env));
   return feedCache;
 }
 async function logEdgeEvent(env, request, classification, served, rawWordCount = null, responseStatus = null, extra = {}) {

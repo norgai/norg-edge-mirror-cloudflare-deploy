@@ -274,3 +274,29 @@ test("origin failure in capture mode still ends at the origin, never a NORG erro
   const res = await mod.default.fetch(req("/x/"), captureEnv, ctx);
   assert.equal(res.status, 200);
 });
+
+test("two NORG sites on one zone never read each other's cached feed", async () => {
+  // caches.default is per zone, shared by every NORG worker on it. Site A
+  // (mirror) caches its feed first; site B is a feed-only capture install. With
+  // a shared key B read A's capture_only=false and served the mirror path.
+  const siteA = await loadColdIsolate();
+  installFetch({ feed: feedBody() });
+  await siteA.__test_handleRequest(req(), { ...baseEnv, SITE_ID: "site-a" }, ctx);
+  await drain();
+
+  const siteB = await loadColdIsolate();
+  calls = [];
+  waitUntilTasks = [];
+  installFetch({ feed: feedBody({ capture_only: true }) });
+  const envB = { ...baseEnv, SITE_ID: "site-b" };
+  const res = await siteB.__test_handleRequest(req(), envB, ctx);
+  assert.equal(await res.text(), "origin body");
+  assert.ok(!calls.some((c) => c.url.includes("r2.norg.test")), "B served no mirror");
+  await drain();
+  assert.equal(posted("/api/v1/edge/events")[0].served, "capture");
+  const keys = [...globalThis.caches.default.store.keys()].filter((k) => k.includes("bot-patterns"));
+  assert.deepEqual(keys.sort(), [
+    "https://norg-edge.internal/bot-patterns/site-a",
+    "https://norg-edge.internal/bot-patterns/site-b",
+  ]);
+});
