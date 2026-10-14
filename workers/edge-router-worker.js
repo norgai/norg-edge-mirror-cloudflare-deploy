@@ -70,7 +70,7 @@ import { withAlternateFormatHeaders } from "./lib/alternate-format.mjs";
 import { cidrContains, cidrVerdictFor } from "./lib/cidr.mjs";
 import { mcpForwardHeaders } from "./lib/mcp-forward.mjs";
 
-export const EDGE_SCRIPT_VERSION = "0.11.8";
+export const EDGE_SCRIPT_VERSION = "0.13.0";
 
 // Baked binding defaults (EDGEPAR 04). Five bindings never vary across manual
 // and deploy-button installs, so they default here and a hand install only
@@ -1398,6 +1398,23 @@ function mayDivert(classification) {
 }
 
 /**
+ * Has NORG authorised diverting this agent WITHOUT source verification?
+ *
+ * For operators that publish no IP ranges and that Cloudflare does not verify
+ * (e.g. DeepSeekBot), so verifiedSource() could never pass. A per-pattern
+ * opt-in, never a default: such a request is served like ?agent=true — a hit
+ * is tagged mirror_unverified so analytics keep it apart from verified mirror
+ * traffic, and a miss never enqueues a render, so a spoofed UA can neither
+ * inflate the verified numbers nor drive render cost.
+ *
+ * @param {Object} classification Classification from classifyAgent.
+ * @returns {boolean} True only when the published policy is "divert_unverified".
+ */
+function mayDivertUnverified(classification) {
+  return classification.serving_policy === "divert_unverified";
+}
+
+/**
  * Verify the source against the operator's published CIDR set.
  *
  * Family-aware (lib/cidr.mjs): an IPv6 client is measured against the
@@ -1764,14 +1781,30 @@ function agentOverrideClassification() {
  * @returns {Promise<Response>} Response for the visitor.
  */
 async function serveAgentOverride(request, env, ctx, url) {
-  const classification = agentOverrideClassification();
+  return serveMirrorOrOrigin(request, env, ctx, url, agentOverrideClassification(), "agent_param_override");
+}
+
+/**
+ * Serve the NORG render if one exists, else the untouched origin — never a
+ * render request. Shared by the two unverified paths (?agent=true and
+ * divert_unverified): a hit is tagged `label`, a miss `${label}_miss`.
+ *
+ * @param {Request} request Incoming request.
+ * @param {Object} env Worker bindings.
+ * @param {Object} ctx Execution context.
+ * @param {URL} url Parsed request URL.
+ * @param {Object} classification Classification logged with the event.
+ * @param {string} label served tag for a hit.
+ * @returns {Promise<Response>} Response for the visitor.
+ */
+async function serveMirrorOrOrigin(request, env, ctx, url, classification, label) {
   const { response } = await fetchFromNorg(env, pathToKeySuffix(url.pathname));
   if (response) {
-    ctx.waitUntil(logEdgeEvent(env, request, classification, "agent_param_override", null, response.status));
+    ctx.waitUntil(logEdgeEvent(env, request, classification, label, null, response.status));
     return withAlternateFormatHeaders(mirrorResponse(response, env), url, url.pathname);
   }
   const passthrough = await fetch(request);
-  ctx.waitUntil(logEdgeEvent(env, request, classification, "agent_param_override_miss", null, passthrough.status));
+  ctx.waitUntil(logEdgeEvent(env, request, classification, `${label}_miss`, null, passthrough.status));
   return passthrough;
 }
 
@@ -1894,6 +1927,14 @@ async function handleRequest(request, env, ctx) {
   const classification = classifyAgent(userAgent, feed.patterns);
   if (!classification.is_ai_bot) return fetch(request);
 
+  // Operators with no verifiable source (no published ranges, not
+  // Cloudflare-verified) can be opted in per pattern. Mirror-or-origin only:
+  // tagged apart from verified traffic, and a miss never triggers a render.
+  if (mayDivertUnverified(classification)) {
+    ctx.waitUntil(maybeHeartbeat(env, "traffic"));
+    return serveMirrorOrOrigin(request, env, ctx, url, classification, "mirror_unverified");
+  }
+
   // NORG decides which crawlers may be served differently, not this file.
   if (!mayDivert(classification)) return fetch(request);
 
@@ -1958,6 +1999,7 @@ export {
   hasAgentOverride as __test_hasAgentOverride,
   getBotFeed as __test_getBotFeed,
   mayDivert as __test_mayDivert,
+  mayDivertUnverified as __test_mayDivertUnverified,
   verifiedSource as __test_verifiedSource,
   cidrContains as __test_cidrContains,
   cidrVerdict as __test_cidrVerdict,

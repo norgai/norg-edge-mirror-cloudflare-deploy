@@ -2458,3 +2458,77 @@ test("MCP POST: cookies and authorization never reach NORG; JSON-RPC headers do"
   assert.equal(forwarded.get("X-Norg-Site-Id"), env.SITE_ID);
   assert.equal(forwarded.get("X-Norg-Site-Key"), env.NORG_SITE_KEY);
 });
+
+// --- divert_unverified: per-pattern opt-in without source verification ------
+
+const DEEPSEEKBOT = "Mozilla/5.0 (compatible; DeepSeekBot/1.0; +https://www.deepseek.com/)";
+
+function unverifiedPatternsRoute() {
+  return patternsRoute([
+    { pattern: "gptbot", company: "openai", purpose: "training", serving_policy: "divert" },
+    { pattern: "deepseekbot", company: "deepseek", purpose: "training", serving_policy: "divert_unverified" },
+  ]);
+}
+
+test("divert_unverified serves the mirror with no verified source, tagged mirror_unverified", async () => {
+  installFetch([
+    unverifiedPatternsRoute(),
+    ["r2.norg.test", async () => new Response("<html>norg render</html>", { status: 200 })],
+  ]);
+
+  const response = await handleRequest(req("/products/widget/", DEEPSEEKBOT, { cf: {} }), env, ctx);
+  await drain();
+
+  assert.equal(await response.text(), "<html>norg render</html>");
+  const event = calls.find((c) => c.url.includes("/edge/events"));
+  const body = JSON.parse(event.init.body);
+  assert.equal(body.served, "mirror_unverified");
+  assert.equal(body.bot_name, "deepseekbot");
+});
+
+test("a divert_unverified miss serves the untouched origin and enqueues NO render", async () => {
+  installFetch([
+    unverifiedPatternsRoute(),
+    ["r2.norg.test", async () => new Response("nope", { status: 404 })],
+  ]);
+
+  const response = await handleRequest(req("/no-render/", DEEPSEEKBOT, { cf: {} }), env, ctx);
+  await drain();
+
+  assert.equal(await response.text(), "origin body");
+  assert.equal(response.headers.get("X-Norg-Edge"), null);
+  const event = calls.find((c) => c.url.includes("/edge/events"));
+  assert.equal(JSON.parse(event.init.body).served, "mirror_unverified_miss");
+  assert.equal(
+    calls.filter((c) => c.url.includes("/edge/render-requests")).length,
+    0,
+    "an unverified agent must never trigger a render",
+  );
+});
+
+test("plain divert still requires a verified source (no regression)", async () => {
+  installFetch([
+    unverifiedPatternsRoute(),
+    ["r2.norg.test", async () => new Response("<html>norg render</html>", { status: 200 })],
+  ]);
+
+  const response = await handleRequest(req("/products/widget/", GPTBOT, { cf: {} }), env, ctx);
+  await drain();
+
+  assert.equal(await response.text(), "origin body");
+  assert.ok(!calls.find((c) => c.url.includes("r2.norg.test")), "unverified GPTBot must not reach the mirror");
+});
+
+test("a search engine UA carrying a divert_unverified token is still never diverted", async () => {
+  installFetch([
+    unverifiedPatternsRoute(),
+    ["r2.norg.test", async () => new Response("<html>norg render</html>", { status: 200 })],
+  ]);
+
+  const ua = `${GOOGLEBOT} DeepSeekBot/1.0`;
+  const response = await handleRequest(req("/products/widget/", ua, { cf: {} }), env, ctx);
+  await drain();
+
+  assert.equal(await response.text(), "origin body");
+  assert.ok(!calls.find((c) => c.url.includes("r2.norg.test")), "the search-engine floor wins");
+});
