@@ -57,6 +57,14 @@ import { HEALTH_CHECK_HEADER, PUBLIC_HOST_HEADER } from "../../../core/constants
  * to the customer origin on any thrown exception or oversized response, and the
  * health-probe header, which carried the site key in a plain viewer request.
  *
+ * 0.6.5 — passthrough leaves the Host header exactly as the distribution
+ * delivered it (toOrigin). 0.6.1-0.6.4 overwrote it with the origin's own
+ * name on every exit, which sent a WordPress origin reached under its public
+ * name into a redirect loop. The public host still travels in
+ * X-Norg-Public-Host (0.6.4).
+ *
+ * 0.6.4 — X-Norg-Public-Host carries the visitor's hostname to the origin.
+ *
  * 0.6.3 — the probe reads the site key before that fetch; 0.6.2 fetched
  * unauthenticated on this platform and still reported false.
  *
@@ -83,7 +91,7 @@ import { HEALTH_CHECK_HEADER, PUBLIC_HOST_HEADER } from "../../../core/constants
  * is read from the replica in the region that ran the function. Behaviour
  * tracks edge-router-worker.js 0.11.7.
  */
-export const EDGE_SCRIPT_VERSION = "0.6.4";
+export const EDGE_SCRIPT_VERSION = "0.6.5";
 
 // Custom origin header -> binding name. Mirrors build_worker_bindings() in
 // content-craft's install_service.py; adding a binding there means adding it
