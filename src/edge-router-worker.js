@@ -212,14 +212,155 @@ function mcpForwardHeaders(source) {
   return out;
 }
 
+// workers/lib/referral.mjs
+var SOURCE_REGISTRY = {
+  "chatgpt.com": { source: "chatgpt", category: "ai_assistant" },
+  "chat.openai.com": { source: "chatgpt", category: "ai_assistant" },
+  "perplexity.ai": { source: "perplexity", category: "ai_search" },
+  "claude.ai": { source: "claude", category: "ai_assistant" },
+  "gemini.google.com": { source: "gemini", category: "ai_assistant" },
+  "copilot.microsoft.com": { source: "copilot", category: "ai_assistant" },
+  "google.com": { source: "google", category: "search" },
+  "bing.com": { source: "bing", category: "search" }
+};
+var AI_UTM_SOURCE_MAP = {
+  openai: { source: "chatgpt", category: "ai_assistant" },
+  "chatgpt.com": { source: "chatgpt", category: "ai_assistant" },
+  "chat.openai.com": { source: "chatgpt", category: "ai_assistant" },
+  perplexity: { source: "perplexity", category: "ai_search" },
+  "perplexity.ai": { source: "perplexity", category: "ai_search" },
+  claude: { source: "claude", category: "ai_assistant" },
+  "claude.ai": { source: "claude", category: "ai_assistant" },
+  gemini: { source: "gemini", category: "ai_assistant" },
+  "gemini.google.com": { source: "gemini", category: "ai_assistant" },
+  copilot: { source: "copilot", category: "ai_assistant" },
+  "copilot.microsoft.com": { source: "copilot", category: "ai_assistant" },
+  "copilot.com": { source: "copilot", category: "ai_assistant" }
+};
+function _referrerHost(request) {
+  const referrer = request.headers.get("referer");
+  if (!referrer) return null;
+  try {
+    return new URL(referrer).hostname.toLowerCase() || null;
+  } catch {
+    return null;
+  }
+}
+function _registrableDomain(host) {
+  return host.split(".").slice(-2).join(".");
+}
+function _lookupSource(host) {
+  if (Object.prototype.hasOwnProperty.call(SOURCE_REGISTRY, host)) {
+    return SOURCE_REGISTRY[host];
+  }
+  for (const key of Object.keys(SOURCE_REGISTRY)) {
+    if (!host.endsWith(`.${key}`)) continue;
+    const entry = SOURCE_REGISTRY[key];
+    if (entry.category !== "search" || host === `www.${key}`) return entry;
+  }
+  return null;
+}
+function _utmEntry(url) {
+  const utm = (url.searchParams.get("utm_source") || "").toLowerCase();
+  return utm ? AI_UTM_SOURCE_MAP[utm] || null : null;
+}
+function _result(source, category, host, detection) {
+  return {
+    citation_source: source,
+    citation_category: category,
+    citation_source_host: host,
+    citation_detection: detection
+  };
+}
+function _classifyHost(hostEntry, referrerHost, utmEntry) {
+  if (hostEntry.category === "search") {
+    if (utmEntry) return _result(hostEntry.source, "ai_search", referrerHost, "both");
+    return _result(hostEntry.source, "search", referrerHost, "referer");
+  }
+  const agree = Boolean(utmEntry) && utmEntry.source === hostEntry.source;
+  return _result(
+    hostEntry.source,
+    hostEntry.category,
+    referrerHost,
+    agree ? "both" : "referer"
+  );
+}
+function _classifyNoHost(referrerHost, utmEntry) {
+  if (!utmEntry) return null;
+  if (referrerHost) {
+    return _result("other_ai", "ai_assistant", referrerHost, "utm");
+  }
+  return _result(utmEntry.source, utmEntry.category, "", "utm");
+}
+function detectCitationReferral(request, url, requestHost) {
+  const referrerHost = _referrerHost(request);
+  const utmEntry = _utmEntry(url);
+  if (referrerHost && _registrableDomain(referrerHost) === _registrableDomain(requestHost.toLowerCase())) {
+    return null;
+  }
+  const hostEntry = referrerHost ? _lookupSource(referrerHost) : null;
+  if (hostEntry) return _classifyHost(hostEntry, referrerHost, utmEntry);
+  return _classifyNoHost(referrerHost, utmEntry);
+}
+
+// workers/lib/page-view.mjs
+function _utcDateSalt(now) {
+  return now.toISOString().slice(0, 10);
+}
+async function generateVisitorId(request, now = /* @__PURE__ */ new Date()) {
+  const ip = request.headers.get("cf-connecting-ip") || "";
+  const ua = request.headers.get("user-agent") || "";
+  const lang = request.headers.get("accept-language") || "";
+  const data = `${ip}:${ua}:${lang}:${_utcDateSalt(now)}`;
+  const hashBuffer = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(data)
+  );
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.slice(0, 16).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+function detectDeviceType(userAgent) {
+  if (!userAgent) return "desktop";
+  const ua = userAgent.toLowerCase();
+  if (ua.includes("ipad") || ua.includes("tablet") || ua.includes("android") && !ua.includes("mobile")) {
+    return "tablet";
+  }
+  if (ua.includes("mobile") || ua.includes("iphone") || ua.includes("ipod") || ua.includes("android")) {
+    return "mobile";
+  }
+  return "desktop";
+}
+function _country(request) {
+  return request.cf && request.cf.country || request.headers.get("cf-ipcountry") || null;
+}
+async function buildPageViewPayload(request, url, requestHost, detection, servedSurface, isFirstTouch) {
+  return {
+    domain: requestHost,
+    path: url.pathname,
+    visitor_id: await generateVisitorId(request),
+    viewed_at: (/* @__PURE__ */ new Date()).toISOString(),
+    referrer: request.headers.get("referer"),
+    utm_source: url.searchParams.get("utm_source"),
+    utm_medium: url.searchParams.get("utm_medium"),
+    utm_campaign: url.searchParams.get("utm_campaign"),
+    country: _country(request),
+    device_type: detectDeviceType(request.headers.get("user-agent")),
+    user_agent: request.headers.get("user-agent"),
+    ...detection,
+    served_surface: servedSurface,
+    is_first_touch: isFirstTouch
+  };
+}
+
 // workers/edge-router-worker.js
-var EDGE_SCRIPT_VERSION = "0.13.0";
+var EDGE_SCRIPT_VERSION = "0.14.0";
 var BINDING_DEFAULTS = {
   NORG_API_URL: "https://content-craft-api.norg.ai",
   NORG_CONTENT_BASE: "https://edge-content.norg.ai",
   STRIP_FALLBACK_ENABLED: "true",
   EDGE_DISABLED: "false",
-  LAZY_RENDER_ENABLED: "true"
+  LAZY_RENDER_ENABLED: "true",
+  CAPTURE_ONLY: "false"
 };
 function binding(env, name) {
   const value = env[name];
@@ -304,6 +445,7 @@ var feedCache = {
   ttl: PATTERN_DEFAULT_TTL_MS
 };
 var lastHeartbeatAt = 0;
+var eventsDropped = 0;
 var renderDedup = /* @__PURE__ */ new Map();
 function shouldKeepAttribute(name) {
   return STRIP_KEEP_ATTRIBUTES.has(name);
@@ -361,6 +503,10 @@ async function readFeedBody(response) {
       // Per-route mirror skip (NOR-2849172819): paths an operator marked to
       // pass through to origin. An array of normalised EdgeRoute paths.
       skipPaths: Array.isArray(data.skip_paths) ? data.skip_paths : [],
+      // Record-only switch and the AI-referral (citation) toggle, both per site
+      // and both column flips on NORG's side — no redeploy to change either.
+      captureOnly: data.capture_only === true,
+      citationTrackingEnabled: data.citation_tracking_enabled === true,
       // Per-site content version (a publish bumps it) and the disabled-by-default
       // response-cache config both ride this feed — no extra round trip.
       contentVersion: data.content_version || "",
@@ -468,10 +614,10 @@ async function getBotFeed(env, ctx) {
   if (outcome === "unreachable") await stampNegativeFeed(cache);
   return feedCache;
 }
-async function logEdgeEvent(env, request, classification, served, rawWordCount = null, responseStatus = null) {
+async function logEdgeEvent(env, request, classification, served, rawWordCount = null, responseStatus = null, extra = {}) {
   const url = new URL(request.url);
   const cf = request.cf || {};
-  await postControl(env, "/api/v1/edge/events", {
+  return postControl(env, "/api/v1/edge/events", {
     domain: url.hostname,
     path: url.pathname,
     user_agent: request.headers.get("user-agent") || null,
@@ -488,7 +634,8 @@ async function logEdgeEvent(env, request, classification, served, rawWordCount =
     as_organization: cf.asOrganization || null,
     colo: cf.colo || null,
     http_protocol: cf.httpProtocol || null,
-    tls_version: cf.tlsVersion || null
+    tls_version: cf.tlsVersion || null,
+    ...extra
   });
 }
 async function maybeHeartbeat(env, trigger) {
@@ -497,14 +644,64 @@ async function maybeHeartbeat(env, trigger) {
     return;
   }
   lastHeartbeatAt = now;
-  await postControl(env, "/api/v1/edge/heartbeat", {
+  const body = {
     script_version: EDGE_SCRIPT_VERSION,
     trigger,
     // The environment this worker believes it is bound to (edgeEnv's
     // "unknown" when EDGE_ENV is absent). NORG warns when this disagrees with
     // the environment it can confirm, surfacing a wrong-env manual install.
     env: edgeEnv(env)
-  });
+  };
+  const capture = captureState(env);
+  if (capture.active) {
+    body.events_dropped = eventsDropped;
+    body.capture_mismatch = capture.mismatch;
+  }
+  const sent = body.events_dropped || 0;
+  const response = await postControl(env, "/api/v1/edge/heartbeat", body);
+  if (sent && response && response.ok) eventsDropped = Math.max(0, eventsDropped - sent);
+}
+function captureState(env) {
+  const byBinding = binding(env, "CAPTURE_ONLY") === "true";
+  const byFeed = feedCache.entitled && feedCache.captureOnly === true;
+  const mismatch = feedCache.entitled ? byBinding !== (feedCache.captureOnly === true) : null;
+  return { active: byBinding || byFeed, mismatch };
+}
+async function countDropped(sending) {
+  const response = await sending;
+  if (!response || !response.ok) eventsDropped += 1;
+}
+async function handleCapture(request, env, ctx) {
+  const response = await fetch(request);
+  ctx.waitUntil(recordCapture(request, env, ctx, response.status));
+  return response;
+}
+async function recordCapture(request, env, ctx, responseStatus) {
+  try {
+    const feed = await getBotFeed(env, ctx);
+    if (!feed.entitled) return;
+    await maybeHeartbeat(env, "traffic");
+    const url = new URL(request.url);
+    if (isStaticAssetPath(url.pathname)) return;
+    const classification = classifyAgent(request.headers.get("user-agent") || "", feed.patterns);
+    if (classification.is_ai_bot) {
+      const verified = verifiedSource(request, feed.cidrRanges, classification);
+      await countDropped(
+        logEdgeEvent(env, request, classification, "capture", null, responseStatus, {
+          verified_source: verified
+        })
+      );
+      return;
+    }
+    if (!feed.citationTrackingEnabled) return;
+    const detection = detectCitationReferral(request, url, url.hostname);
+    if (!detection) return;
+    const payload = await buildPageViewPayload(request, url, url.hostname, detection, "customer_zone", true);
+    await countDropped(postControl(env, "/api/v1/edge/page-views", payload));
+  } catch (e) {
+    eventsDropped += 1;
+    console.error("norg edge capture report failed", e);
+  }
 }
 async function requestRender(env, url) {
   const now = Date.now();
@@ -784,6 +981,9 @@ function healthResponse(env) {
       version: EDGE_SCRIPT_VERSION,
       env: edgeEnv(env),
       disabled: binding(env, "EDGE_DISABLED") === "true",
+      // Record-only mode as this isolate sees it right now (binding OR feed),
+      // so an upgrade can confirm the worker has left capture mode.
+      capture_only: captureState(env).active,
       // Whether this isolate currently holds an authenticated feed. The first
       // question to ask when an install is "doing nothing" — an unentitled
       // worker passes everything through and is otherwise indistinguishable
@@ -993,10 +1193,12 @@ async function serveMirrorOrOrigin(request, env, ctx, url, classification, label
 async function handleRequest(request, env, ctx) {
   if (isHealthProbe(request, env)) return healthResponse(env);
   if (isPassthrough(request, env)) return fetch(request);
+  if (binding(env, "CAPTURE_ONLY") === "true") return handleCapture(request, env, ctx);
   const url = new URL(request.url);
   const userAgent = request.headers.get("user-agent") || "";
   const feed = await getBotFeed(env, ctx);
   if (!feed.entitled) return fetch(request);
+  if (feed.captureOnly) return handleCapture(request, env, ctx);
   if (isMcpPath(url.pathname)) {
     const mcp = await handleMcp(request, env, url);
     return mcp || fetch(request);
@@ -1074,6 +1276,7 @@ export {
   STRIP_UNWRAP_SELECTORS as __test_STRIP_UNWRAP_SELECTORS,
   UNENTITLED as __test_UNENTITLED,
   cacheableMirror as __test_cacheableMirror,
+  captureState as __test_captureState,
   cidrContains as __test_cidrContains,
   cidrVerdict as __test_cidrVerdict,
   classifyRequest as __test_classifyRequest,
@@ -1081,6 +1284,7 @@ export {
   contentStem as __test_contentStem,
   countVisibleWords as __test_countVisibleWords,
   getBotFeed as __test_getBotFeed,
+  handleCapture as __test_handleCapture,
   handleRequest as __test_handleRequest,
   hasAgentOverride as __test_hasAgentOverride,
   isAgenticPath as __test_isAgenticPath,
@@ -1095,6 +1299,7 @@ export {
   mayDivertUnverified as __test_mayDivertUnverified,
   pathToKeySuffix as __test_pathToKeySuffix,
   readFeedBody as __test_readFeedBody,
+  recordCapture as __test_recordCapture,
   responseCacheContext as __test_responseCacheContext,
   serveAgent as __test_serveAgent,
   serveOpenAiFeed as __test_serveOpenAiFeed,

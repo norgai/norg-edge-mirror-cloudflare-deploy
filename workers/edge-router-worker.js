@@ -52,6 +52,11 @@
  *                          mirror bucket. Never a public bucket URL.
  *   STRIP_FALLBACK_ENABLED "true" | "false"
  *   EDGE_DISABLED          "true" kills all interception (remote off switch)
+ *   CAPTURE_ONLY           "true" = record-only: every request passes to the
+ *                          origin untouched and the visit is reported AFTER the
+ *                          response, off the request path. NORG's feed can also
+ *                          switch a site to capture (capture_only); either one
+ *                          turns it on. Default "false" (the mirror).
  *   EDGE_ENV               NORG environment this worker is bound to
  *                          ("production" | "test"). A test-bound worker serves
  *                          TEST content, so it must be identifiable from
@@ -69,8 +74,10 @@ import { pathToKeySuffix } from "./lib/r2-content.mjs";
 import { withAlternateFormatHeaders } from "./lib/alternate-format.mjs";
 import { cidrContains, cidrVerdictFor } from "./lib/cidr.mjs";
 import { mcpForwardHeaders } from "./lib/mcp-forward.mjs";
+import { detectCitationReferral } from "./lib/referral.mjs";
+import { buildPageViewPayload } from "./lib/page-view.mjs";
 
-export const EDGE_SCRIPT_VERSION = "0.13.0";
+export const EDGE_SCRIPT_VERSION = "0.14.0";
 
 // Baked binding defaults (EDGEPAR 04). Five bindings never vary across manual
 // and deploy-button installs, so they default here and a hand install only
@@ -83,6 +90,7 @@ const BINDING_DEFAULTS = {
   STRIP_FALLBACK_ENABLED: "true",
   EDGE_DISABLED: "false",
   LAZY_RENDER_ENABLED: "true",
+  CAPTURE_ONLY: "false",
 };
 
 /**
@@ -270,6 +278,10 @@ let feedCache = {
   ttl: PATTERN_DEFAULT_TTL_MS,
 };
 let lastHeartbeatAt = 0;
+// Capture-mode reports NORG did not accept (non-2xx, timeout, network error)
+// since the last heartbeat that carried the count. Reported, then reset, so a
+// rejected or rate-limited event is counted instead of silently lost.
+let eventsDropped = 0;
 const renderDedup = new Map();
 
 /**
@@ -385,6 +397,10 @@ async function readFeedBody(response) {
       // Per-route mirror skip (NOR-2849172819): paths an operator marked to
       // pass through to origin. An array of normalised EdgeRoute paths.
       skipPaths: Array.isArray(data.skip_paths) ? data.skip_paths : [],
+      // Record-only switch and the AI-referral (citation) toggle, both per site
+      // and both column flips on NORG's side — no redeploy to change either.
+      captureOnly: data.capture_only === true,
+      citationTrackingEnabled: data.citation_tracking_enabled === true,
       // Per-site content version (a publish bumps it) and the disabled-by-default
       // response-cache config both ride this feed — no extra round trip.
       contentVersion: data.content_version || "",
@@ -584,10 +600,18 @@ async function getBotFeed(env, ctx) {
  *   response was resolved before logging.
  * @returns {Promise<void>}
  */
-async function logEdgeEvent(env, request, classification, served, rawWordCount = null, responseStatus = null) {
+async function logEdgeEvent(
+  env,
+  request,
+  classification,
+  served,
+  rawWordCount = null,
+  responseStatus = null,
+  extra = {},
+) {
   const url = new URL(request.url);
   const cf = request.cf || {};
-  await postControl(env, "/api/v1/edge/events", {
+  return postControl(env, "/api/v1/edge/events", {
     domain: url.hostname,
     path: url.pathname,
     user_agent: request.headers.get("user-agent") || null,
@@ -605,6 +629,7 @@ async function logEdgeEvent(env, request, classification, served, rawWordCount =
     colo: cf.colo || null,
     http_protocol: cf.httpProtocol || null,
     tls_version: cf.tlsVersion || null,
+    ...extra,
   });
 }
 
@@ -620,14 +645,112 @@ async function maybeHeartbeat(env, trigger) {
     return;
   }
   lastHeartbeatAt = now;
-  await postControl(env, "/api/v1/edge/heartbeat", {
+  const body = {
     script_version: EDGE_SCRIPT_VERSION,
     trigger,
     // The environment this worker believes it is bound to (edgeEnv's
     // "unknown" when EDGE_ENV is absent). NORG warns when this disagrees with
     // the environment it can confirm, surfacing a wrong-env manual install.
     env: edgeEnv(env),
-  });
+  };
+  const capture = captureState(env);
+  if (capture.active) {
+    body.events_dropped = eventsDropped;
+    body.capture_mismatch = capture.mismatch;
+  }
+  const sent = body.events_dropped || 0;
+  const response = await postControl(env, "/api/v1/edge/heartbeat", body);
+  // Only forget the drops NORG actually received; a failed beat keeps them.
+  if (sent && response && response.ok) eventsDropped = Math.max(0, eventsDropped - sent);
+}
+
+/**
+ * Is record-only (capture) mode on, and do the two switches agree?
+ *
+ * The binding is read on the request path (no NORG round trip); the feed value
+ * covers a Deploy-button install whose operator never set the binding. Either
+ * turns capture on. They "disagree" only once a feed is held and its value
+ * differs from the binding — reported in the heartbeat, never acted on.
+ *
+ * @param {Object} env Worker bindings.
+ * @returns {{active: boolean, mismatch: ?boolean}} Capture state.
+ */
+function captureState(env) {
+  const byBinding = binding(env, "CAPTURE_ONLY") === "true";
+  const byFeed = feedCache.entitled && feedCache.captureOnly === true;
+  const mismatch = feedCache.entitled ? byBinding !== (feedCache.captureOnly === true) : null;
+  return { active: byBinding || byFeed, mismatch };
+}
+
+/**
+ * POST a capture report, counting anything NORG did not accept as dropped.
+ * @param {Object} env Worker bindings.
+ * @param {Promise<?Response>} sending The postControl/logEdgeEvent promise.
+ * @returns {Promise<void>}
+ */
+async function countDropped(sending) {
+  const response = await sending;
+  if (!response || !response.ok) eventsDropped += 1;
+}
+
+/**
+ * Record-only request handling: the origin answers first, untouched.
+ *
+ * Nothing NORG-side runs before the response — no feed fetch, no
+ * classification — so a slow or unreachable NORG can never slow the site.
+ * The visit is reported afterwards via ctx.waitUntil.
+ *
+ * @param {Request} request Incoming request.
+ * @param {Object} env Worker bindings.
+ * @param {Object} ctx Execution context.
+ * @returns {Promise<Response>} The origin's own response.
+ */
+async function handleCapture(request, env, ctx) {
+  const response = await fetch(request);
+  ctx.waitUntil(recordCapture(request, env, ctx, response.status));
+  return response;
+}
+
+/**
+ * Report one visit seen in capture mode. Never throws.
+ *
+ * AI agents (every classified agent, verified or not — the verdict travels as
+ * verified_source) go to /edge/events with served "capture". People arriving
+ * from an AI answer go to /edge/page-views when NORG has citation tracking on
+ * for this site. Static subresources are skipped; everything else is ignored.
+ *
+ * @param {Request} request Incoming request.
+ * @param {Object} env Worker bindings.
+ * @param {Object} ctx Execution context.
+ * @param {number} responseStatus Status the origin returned to the visitor.
+ * @returns {Promise<void>}
+ */
+async function recordCapture(request, env, ctx, responseStatus) {
+  try {
+    const feed = await getBotFeed(env, ctx);
+    if (!feed.entitled) return;
+    await maybeHeartbeat(env, "traffic");
+    const url = new URL(request.url);
+    if (isStaticAssetPath(url.pathname)) return;
+    const classification = classifyAgent(request.headers.get("user-agent") || "", feed.patterns);
+    if (classification.is_ai_bot) {
+      const verified = verifiedSource(request, feed.cidrRanges, classification);
+      await countDropped(
+        logEdgeEvent(env, request, classification, "capture", null, responseStatus, {
+          verified_source: verified,
+        }),
+      );
+      return;
+    }
+    if (!feed.citationTrackingEnabled) return;
+    const detection = detectCitationReferral(request, url, url.hostname);
+    if (!detection) return;
+    const payload = await buildPageViewPayload(request, url, url.hostname, detection, "customer_zone", true);
+    await countDropped(postControl(env, "/api/v1/edge/page-views", payload));
+  } catch (e) {
+    eventsDropped += 1;
+    console.error("norg edge capture report failed", e);
+  }
 }
 
 /**
@@ -1264,6 +1387,9 @@ function healthResponse(env) {
       version: EDGE_SCRIPT_VERSION,
       env: edgeEnv(env),
       disabled: binding(env, "EDGE_DISABLED") === "true",
+      // Record-only mode as this isolate sees it right now (binding OR feed),
+      // so an upgrade can confirm the worker has left capture mode.
+      capture_only: captureState(env).active,
       // Whether this isolate currently holds an authenticated feed. The first
       // question to ask when an install is "doing nothing" — an unentitled
       // worker passes everything through and is otherwise indistinguishable
@@ -1819,6 +1945,10 @@ async function handleRequest(request, env, ctx) {
   if (isHealthProbe(request, env)) return healthResponse(env);
   if (isPassthrough(request, env)) return fetch(request);
 
+  // Record-only install: decided from the binding alone, before any NORG call,
+  // so the visitor's response never waits on NORG.
+  if (binding(env, "CAPTURE_ONLY") === "true") return handleCapture(request, env, ctx);
+
   const url = new URL(request.url);
   const userAgent = request.headers.get("user-agent") || "";
 
@@ -1830,6 +1960,10 @@ async function handleRequest(request, env, ctx) {
   // customer's ordinary page and cannot tell the worker is installed.
   const feed = await getBotFeed(env, ctx);
   if (!feed.entitled) return fetch(request);
+
+  // NORG switched this site to record-only without the binding being set
+  // (e.g. a Deploy-button install): from here on it behaves exactly as above.
+  if (feed.captureOnly) return handleCapture(request, env, ctx);
 
   // MCP paths do not exist on the origin, so they are served for any caller
   // and before any classification.
@@ -2023,4 +2157,7 @@ export {
   responseCacheContext as __test_responseCacheContext,
   cacheableMirror as __test_cacheableMirror,
   readFeedBody as __test_readFeedBody,
+  handleCapture as __test_handleCapture,
+  recordCapture as __test_recordCapture,
+  captureState as __test_captureState,
 };
