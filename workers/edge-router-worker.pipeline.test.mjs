@@ -1448,7 +1448,8 @@ test("an unentitled install ignores ?agent=true", async () => {
 // --- MIRROR 12: negative-cache the unentitled verdict ---------------------
 // A refused / unreachable install must not blocking-probe NORG on every visit.
 // The colo key mirrors PATTERN_CACHE_KEY in edge-router-worker.js.
-const NEG_CACHE_KEY = "https://norg-edge.internal/bot-patterns";
+// Per-site colo key (0.14.1): the feed cache folds SITE_ID.
+const NEG_CACHE_KEY = "https://norg-edge.internal/bot-patterns/site-123";
 const NEG_TTL_MS = 60 * 1000;
 
 /** How many blocking NORG feed probes have been recorded so far. */

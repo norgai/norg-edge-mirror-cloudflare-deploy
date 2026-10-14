@@ -195,7 +195,7 @@ function installPatternFetch({ status = 200, patterns, cacheTtl = 3600 } = {}) {
  */
 async function seedStaleFeed() {
   await globalThis.caches.default.put(
-    new Request("https://norg-edge.internal/bot-patterns"),
+    new Request("https://norg-edge.internal/bot-patterns/site-123"),
     new Response(
       JSON.stringify({
         entitled: true,
@@ -250,7 +250,7 @@ test("an outage does NOT revoke an install that already has a cached feed", asyn
   // And the failed revalidation must not have purged the colo copy either —
   // that is the difference between an outage and a refusal.
   const cached = await globalThis.caches.default.match(
-    new Request("https://norg-edge.internal/bot-patterns"),
+    new Request("https://norg-edge.internal/bot-patterns/site-123"),
   );
   assert.ok(cached, "an outage must leave the cached entitlement in place");
 });
@@ -284,7 +284,7 @@ for (const status of [401, 403]) {
     await Promise.allSettled(waitUntilTasks);
 
     const cached = await globalThis.caches.default.match(
-      new Request("https://norg-edge.internal/bot-patterns"),
+      new Request("https://norg-edge.internal/bot-patterns/site-123"),
     );
     assert.ok(cached, "the colo copy now holds the negative verdict, not purged");
     const verdict = await cached.json();
@@ -334,7 +334,7 @@ test("the server's cache_ttl is honoured over the local default", async () => {
   installPatternFetch({ cacheTtl: 1 });
   await (await coldIsolate())(env, ctx);
   const cached = await globalThis.caches.default.match(
-    new Request("https://norg-edge.internal/bot-patterns"),
+    new Request("https://norg-edge.internal/bot-patterns/site-123"),
   );
   const payload = await cached.json();
   assert.equal(payload.ttl, 1000, "ttl should be the server value in ms");
