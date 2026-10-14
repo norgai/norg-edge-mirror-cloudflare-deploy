@@ -109,6 +109,7 @@ table.
 | `STRIP_FALLBACK_ENABLED` | `true` | `false` to disable the stripped-origin fallback on a render miss |
 | `EDGE_DISABLED` | `false` | `true` to switch the worker off instantly without removing it (every request passes straight to your origin) |
 | `LAZY_RENDER_ENABLED` | `true` | `false` to serve the stripped origin on a miss without asking NORG to render it |
+| `CAPTURE_ONLY` | `false` | `true` for record-only: every visitor gets your site untouched, and AI-agent visits (plus people arriving from an AI answer, when NORG has that on) are reported to NORG after the response. NORG can also switch this on from its side |
 
 There is no content-prefix or bucket-path variable — the worker authenticates
 with `SITE_ID` + `NORG_SITE_KEY` and NORG resolves which content belongs to
