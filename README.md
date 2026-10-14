@@ -33,6 +33,7 @@ decides who's asking:
 | Googlebot, Bingbot, and other web-index crawlers | Your site, byte-for-byte unchanged |
 | An AI agent (GPTBot, ClaudeBot, PerplexityBot, Google-Extended, …) asking for a page NORG has already rendered | The NORG render, fetched behind the scenes and served **at your own URL** — no redirect, the address bar never changes |
 | An AI agent asking for a page NORG hasn't rendered yet | Your own page, stripped down to the token-dense facts, while NORG is asked in the background to render it properly |
+| An AI agent whose source can't be verified (no published IP ranges, not Cloudflare-verified, e.g. DeepSeekBot) that NORG has explicitly opted in | The NORG render if one exists, otherwise your page unchanged — it never triggers a render, and its visits are reported separately from verified agents |
 
 Two rules are built into the worker and have no off switch:
 

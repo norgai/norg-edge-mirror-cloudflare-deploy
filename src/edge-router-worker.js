@@ -353,7 +353,7 @@ async function buildPageViewPayload(request, url, requestHost, detection, served
 }
 
 // workers/edge-router-worker.js
-var EDGE_SCRIPT_VERSION = "0.12.0";
+var EDGE_SCRIPT_VERSION = "0.14.0";
 var BINDING_DEFAULTS = {
   NORG_API_URL: "https://content-craft-api.norg.ai",
   NORG_CONTENT_BASE: "https://edge-content.norg.ai",
@@ -936,12 +936,12 @@ async function serveOpenAiFeed(request, env, url) {
   return new Response(response.body, { status: 200, headers });
 }
 function isMcpPath(pathname) {
-  return pathname === "/.well-known/mcp.json" || pathname.endsWith("/mcp") || pathname.endsWith("/sse");
+  return pathname.endsWith("/mcp.json") || pathname.endsWith("/mcp") || pathname.endsWith("/sse");
 }
 async function handleMcp(request, env, url) {
   if (request.method === "POST") return forwardMcpToNorg(request.clone(), env, url);
   if (request.method !== "GET" && request.method !== "HEAD") return null;
-  const suffix = url.pathname === "/.well-known/mcp.json" ? "/.well-known/mcp.json" : `${url.pathname.replace(/\/(mcp|sse)$/, "")}/mcp.json`;
+  const suffix = url.pathname.endsWith("/mcp.json") ? url.pathname : `${url.pathname.replace(/\/(mcp|sse)$/, "")}/mcp.json`;
   const { response } = await fetchFromNorg(env, suffix);
   if (!response) return null;
   const headers = new Headers();
@@ -1030,6 +1030,9 @@ function classifyAgent(userAgent, patterns) {
 }
 function mayDivert(classification) {
   return classification.serving_policy === "divert";
+}
+function mayDivertUnverified(classification) {
+  return classification.serving_policy === "divert_unverified";
 }
 function cidrVerdict(request, cidrRanges, classification) {
   return cidrVerdictFor(request.headers.get("cf-connecting-ip"), cidrRanges, classification);
@@ -1175,14 +1178,16 @@ function agentOverrideClassification() {
   };
 }
 async function serveAgentOverride(request, env, ctx, url) {
-  const classification = agentOverrideClassification();
+  return serveMirrorOrOrigin(request, env, ctx, url, agentOverrideClassification(), "agent_param_override");
+}
+async function serveMirrorOrOrigin(request, env, ctx, url, classification, label) {
   const { response } = await fetchFromNorg(env, pathToKeySuffix(url.pathname));
   if (response) {
-    ctx.waitUntil(logEdgeEvent(env, request, classification, "agent_param_override", null, response.status));
+    ctx.waitUntil(logEdgeEvent(env, request, classification, label, null, response.status));
     return withAlternateFormatHeaders(mirrorResponse(response, env), url, url.pathname);
   }
   const passthrough = await fetch(request);
-  ctx.waitUntil(logEdgeEvent(env, request, classification, "agent_param_override_miss", null, passthrough.status));
+  ctx.waitUntil(logEdgeEvent(env, request, classification, `${label}_miss`, null, passthrough.status));
   return passthrough;
 }
 async function handleRequest(request, env, ctx) {
@@ -1228,6 +1233,10 @@ async function handleRequest(request, env, ctx) {
   }
   const classification = classifyAgent(userAgent, feed.patterns);
   if (!classification.is_ai_bot) return fetch(request);
+  if (mayDivertUnverified(classification)) {
+    ctx.waitUntil(maybeHeartbeat(env, "traffic"));
+    return serveMirrorOrOrigin(request, env, ctx, url, classification, "mirror_unverified");
+  }
   if (!mayDivert(classification)) return fetch(request);
   if (!verifiedSource(request, feed.cidrRanges, classification)) return fetch(request);
   ctx.waitUntil(maybeHeartbeat(env, "traffic"));
@@ -1287,6 +1296,7 @@ export {
   isSiblingArtifactPath as __test_isSiblingArtifactPath,
   logEdgeEvent as __test_logEdgeEvent,
   mayDivert as __test_mayDivert,
+  mayDivertUnverified as __test_mayDivertUnverified,
   pathToKeySuffix as __test_pathToKeySuffix,
   readFeedBody as __test_readFeedBody,
   recordCapture as __test_recordCapture,
