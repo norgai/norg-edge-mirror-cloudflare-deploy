@@ -85,7 +85,6 @@ import { mcpForwardHeaders } from "../../workers/lib/mcp-forward.mjs";
 import {
   LOOP_GUARD_HEADER,
   MCP_FORWARD_TIMEOUT_MS,
-  MIRROR_FETCH_TIMEOUT_MS,
   STRIP_WORD_FLOOR,
 } from "../../core/constants.mjs";
 import { EDGE_SCRIPT_VERSION, readConfig, scrubConfigHeaders } from "./lib/config.js";
@@ -102,6 +101,7 @@ import { fastPathExit } from "../../core/fastpath.js";
 import { getBotFeed, isEntitled } from "../../core/feed.js";
 import { clientIp, passthrough as toPassthrough, toCloudFrontResponse, toRequest } from "./lib/event.js";
 import {
+  ORIGIN_READ_TIMEOUT_MS,
   PASSTHROUGH,
   toOrigin,
   viewerHost,
@@ -209,7 +209,7 @@ function isPassthrough(request, env) {
  * @returns {Promise<Response|Object>} Response, or PASSTHROUGH.
  */
 async function serveOriginFirstArtifact(cfRequest, request, env, url, alternateFormatHeaders) {
-  const origin = await fetchOrigin(cfRequest, request, MIRROR_FETCH_TIMEOUT_MS);
+  const origin = await fetchOrigin(cfRequest, request, ORIGIN_READ_TIMEOUT_MS);
   if (origin && origin.status === 200) {
     const contentType = origin.headers.get("content-type") || "";
     // A real llms.txt/tree.json is never HTML; an HTML 200 is a SPA soft-404.
@@ -405,7 +405,7 @@ async function serveAgent(cfRequest, request, env, url, classification) {
 async function serveStrippedOrigin(cfRequest, request, env) {
   if (binding(env, "STRIP_FALLBACK_ENABLED") === "false") return PASSTHROUGH;
 
-  const origin = await fetchOrigin(cfRequest, request, MIRROR_FETCH_TIMEOUT_MS);
+  const origin = await fetchOrigin(cfRequest, request, ORIGIN_READ_TIMEOUT_MS);
   if (!origin) return PASSTHROUGH;
 
   const contentType = origin.headers.get("content-type") || "";

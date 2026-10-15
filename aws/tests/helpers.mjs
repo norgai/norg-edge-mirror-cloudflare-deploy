@@ -156,7 +156,9 @@ export function stubNetwork({ feed, mirror, origin, control } = {}) {
     if (url.startsWith(CONTENT_BASE)) {
       return mirror ? mirror(url, init) : new Response("", { status: 404 });
     }
-    if (url.includes(ORIGIN_HOST)) {
+    // The router reads the page through the distribution's public host (0.6.6)
+    // or, when the Host names the origin, from the origin directly.
+    if (url.includes(ORIGIN_HOST) || url.startsWith(`https://${PUBLIC_HOST}/`)) {
       return origin
         ? origin(url, init)
         : new Response(longHtml(), {

@@ -100,15 +100,61 @@ export function originUrl(cfRequest) {
 }
 
 /**
- * Fetch the customer's origin directly, for the branches that must read it.
+ * Budget for a read of the customer's page made by the router itself.
  *
- * Carries the viewer's own headers so the origin sees the request it would have
- * seen anyway, plus the origin's OWN custom headers — the ones CloudFront would
- * have attached, minus NORG's, which readConfig has already removed. An origin
- * behind a verification header (an ALB that 403s without `x-origin-verify`)
- * used to answer every direct read with that 403, and the agent got it. Plus
- * the loop guard. Returns null rather than throwing, because every caller's
- * answer to a failed origin read is the same: fall back to ordinary
+ * Shorter than the mirror fetch on purpose: a read that cannot complete must
+ * cost the agent well under the few seconds AI fetchers wait, because every
+ * caller's fallback (ordinary passthrough) still has to run after it.
+ */
+export const ORIGIN_READ_TIMEOUT_MS = 3000;
+
+/**
+ * Where the router reads the customer's page from, and whether that is the
+ * customer's own CloudFront distribution.
+ *
+ * Through the distribution's public hostname whenever the viewer's Host names
+ * one: CloudFront then fetches the origin exactly as it does for a visitor, so
+ * the read works however the origin is locked down. Bloom Healthcare's origin
+ * accepts only CloudFront; a direct read from the function timed out on every
+ * agent request (4-9 seconds), and AI fetchers gave up first (2026-10-15). The
+ * loop guard the read carries makes the router pass that request straight on.
+ * When the Host names the origin itself (a policy that does not forward the
+ * viewer's Host) there is no public name to use, and the origin is read
+ * directly as before.
+ *
+ * @param {Object} cfRequest CloudFront request object.
+ * @returns {?{url: string, viaDistribution: boolean}} Target, or null.
+ */
+export function originReadTarget(cfRequest) {
+  const direct = originUrl(cfRequest);
+  if (!direct) return null;
+  const publicHost = viewerHost(cfRequest);
+  if (!publicHost || publicHost === cfRequest.origin?.custom?.domainName) {
+    return { url: direct, viaDistribution: false };
+  }
+  // Drop the ?agent= force-serve override. The loop guard already passes this
+  // read straight on, but a customer origin request policy that does not
+  // forward our header would hide the guard from the router; without the
+  // override the read, which comes from an AWS address rather than an AI
+  // provider's, can never be routed down the agent path again.
+  const params = new URLSearchParams(cfRequest.querystring || "");
+  params.delete("agent");
+  const query = params.toString() ? `?${params.toString()}` : "";
+  return { url: `https://${publicHost}${cfRequest.uri}${query}`, viaDistribution: true };
+}
+
+/**
+ * Read the customer's page, for the branches that must see its bytes.
+ *
+ * Carries the viewer's own headers so the page is the one the visitor would
+ * have got, plus the loop guard. On a direct read it also carries the origin's
+ * OWN custom headers — the ones CloudFront would have attached, minus NORG's,
+ * which readConfig has already removed — because an origin behind a
+ * verification header (an ALB that 403s without `x-origin-verify`) answers a
+ * read without them with that 403. A read through the distribution must NOT
+ * carry them: CloudFront adds them itself, and a customer's secret has no
+ * business on the public path. Returns null rather than throwing, because
+ * every caller's answer to a failed read is the same: fall back to ordinary
  * passthrough and let CloudFront try.
  *
  * @param {Object} cfRequest CloudFront request object.
@@ -117,20 +163,22 @@ export function originUrl(cfRequest) {
  * @returns {Promise<?Response>} Origin response, or null on any failure.
  */
 export async function fetchOrigin(cfRequest, request, timeoutMs) {
-  const target = originUrl(cfRequest);
+  const target = originReadTarget(cfRequest);
   if (!target) return null;
 
   const headers = new Headers(request.headers);
-  for (const [name, entries] of Object.entries(originCustomHeaders(cfRequest) || {})) {
-    if (entries?.[0]?.value !== undefined) headers.set(name, entries[0].value);
+  if (!target.viaDistribution) {
+    for (const [name, entries] of Object.entries(originCustomHeaders(cfRequest) || {})) {
+      if (entries?.[0]?.value !== undefined) headers.set(name, entries[0].value);
+    }
   }
   headers.set(LOOP_GUARD_HEADER, "1");
-  // The origin is addressed by its own hostname; leaving the viewer's Host
-  // header on a fetch to a different host is what breaks virtual-hosted origins.
+  // fetch sets Host from the target URL: the public name through the
+  // distribution, the origin's own name on a direct read. A viewer's Host left
+  // on a direct read to a different host is what breaks virtual-hosted origins.
   headers.delete("host");
-  // Which is exactly why the public host has to travel separately: this read is
-  // re-served to the caller, so absolute URLs in it must name the site the
-  // visitor is on. Set or dropped, never relayed from the viewer.
+  // The read is re-served to the caller, so absolute URLs in it must name the
+  // site the visitor is on. Set or dropped, never relayed from the viewer.
   const publicHost = viewerHost(cfRequest);
   if (publicHost) headers.set(PUBLIC_HOST_HEADER, publicHost);
   else headers.delete(PUBLIC_HOST_HEADER);
@@ -140,14 +188,14 @@ export async function fetchOrigin(cfRequest, request, timeoutMs) {
   headers.set("accept-encoding", "identity");
 
   try {
-    return await fetch(target, {
+    return await fetch(target.url, {
       method: request.method === "HEAD" ? "HEAD" : "GET",
       headers,
       redirect: "manual",
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (e) {
-    console.error("norg edge origin fetch failed", e);
+    console.error("norg edge origin fetch failed", target.viaDistribution ? "(via distribution)" : "(direct)", e);
     return null;
   }
 }

@@ -272,7 +272,7 @@ var STATIC_ASSET_SUFFIXES = /* @__PURE__ */ new Set([
 ]);
 
 // aws/lambda/lib/config.js
-var EDGE_SCRIPT_VERSION = "0.6.5";
+var EDGE_SCRIPT_VERSION = "0.6.6";
 var CONFIG_HEADERS = {
   "x-norg-site-id": "SITE_ID",
   "x-norg-secret-arn": "NORG_SECRET_ARN",
@@ -894,12 +894,27 @@ function originUrl(cfRequest) {
   const query = cfRequest.querystring ? `?${cfRequest.querystring}` : "";
   return `${protocol}://${custom.domainName}${port}${prefix}${cfRequest.uri}${query}`;
 }
+var ORIGIN_READ_TIMEOUT_MS = 3e3;
+function originReadTarget(cfRequest) {
+  const direct = originUrl(cfRequest);
+  if (!direct) return null;
+  const publicHost = viewerHost(cfRequest);
+  if (!publicHost || publicHost === cfRequest.origin?.custom?.domainName) {
+    return { url: direct, viaDistribution: false };
+  }
+  const params = new URLSearchParams(cfRequest.querystring || "");
+  params.delete("agent");
+  const query = params.toString() ? `?${params.toString()}` : "";
+  return { url: `https://${publicHost}${cfRequest.uri}${query}`, viaDistribution: true };
+}
 async function fetchOrigin(cfRequest, request, timeoutMs) {
-  const target = originUrl(cfRequest);
+  const target = originReadTarget(cfRequest);
   if (!target) return null;
   const headers = new Headers(request.headers);
-  for (const [name, entries] of Object.entries(originCustomHeaders(cfRequest) || {})) {
-    if (entries?.[0]?.value !== void 0) headers.set(name, entries[0].value);
+  if (!target.viaDistribution) {
+    for (const [name, entries] of Object.entries(originCustomHeaders(cfRequest) || {})) {
+      if (entries?.[0]?.value !== void 0) headers.set(name, entries[0].value);
+    }
   }
   headers.set(LOOP_GUARD_HEADER, "1");
   headers.delete("host");
@@ -908,14 +923,14 @@ async function fetchOrigin(cfRequest, request, timeoutMs) {
   else headers.delete(PUBLIC_HOST_HEADER);
   headers.set("accept-encoding", "identity");
   try {
-    return await fetch(target, {
+    return await fetch(target.url, {
       method: request.method === "HEAD" ? "HEAD" : "GET",
       headers,
       redirect: "manual",
       signal: AbortSignal.timeout(timeoutMs)
     });
   } catch (e) {
-    console.error("norg edge origin fetch failed", e);
+    console.error("norg edge origin fetch failed", target.viaDistribution ? "(via distribution)" : "(direct)", e);
     return null;
   }
 }
@@ -1342,7 +1357,7 @@ function isPassthrough(request, env) {
   return true;
 }
 async function serveOriginFirstArtifact(cfRequest, request, env, url, alternateFormatHeaders) {
-  const origin = await fetchOrigin(cfRequest, request, MIRROR_FETCH_TIMEOUT_MS);
+  const origin = await fetchOrigin(cfRequest, request, ORIGIN_READ_TIMEOUT_MS);
   if (origin && origin.status === 200) {
     const contentType = origin.headers.get("content-type") || "";
     if (!/text\/html/i.test(contentType)) return origin;
@@ -1410,7 +1425,7 @@ async function serveAgent(cfRequest, request, env, url, classification) {
 }
 async function serveStrippedOrigin(cfRequest, request, env) {
   if (binding(env, "STRIP_FALLBACK_ENABLED") === "false") return PASSTHROUGH;
-  const origin = await fetchOrigin(cfRequest, request, MIRROR_FETCH_TIMEOUT_MS);
+  const origin = await fetchOrigin(cfRequest, request, ORIGIN_READ_TIMEOUT_MS);
   if (!origin) return PASSTHROUGH;
   const contentType = origin.headers.get("content-type") || "";
   if (origin.status !== 200 || !/text\/html/i.test(contentType)) return PASSTHROUGH;
