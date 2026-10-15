@@ -57,6 +57,10 @@ import { HEALTH_CHECK_HEADER, PUBLIC_HOST_HEADER } from "../../../core/constants
  * to the customer origin on any thrown exception or oversized response, and the
  * health-probe header, which carried the site key in a plain viewer request.
  *
+ * 0.6.8 — one "norg edge timing" log line per agent request: total time,
+ * cold start, region and each network step's milliseconds (site key, feed,
+ * mirror, page read), so a slow first request shows which step was slow.
+ *
  * 0.6.7 — the public hostname comes from the install config
  * (`x-norg-site-host`) when the customer's origin request policy delivers the
  * origin's own name as Host, so page reads still go through the distribution
@@ -102,7 +106,7 @@ import { HEALTH_CHECK_HEADER, PUBLIC_HOST_HEADER } from "../../../core/constants
  * is read from the replica in the region that ran the function. Behaviour
  * tracks edge-router-worker.js 0.11.7.
  */
-export const EDGE_SCRIPT_VERSION = "0.6.7";
+export const EDGE_SCRIPT_VERSION = "0.6.8";
 
 // Custom origin header -> binding name. Mirrors build_worker_bindings() in
 // content-craft's install_service.py; adding a binding there means adding it

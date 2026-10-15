@@ -209,14 +209,14 @@ function isPassthrough(request, env) {
  * @returns {Promise<Response|Object>} Response, or PASSTHROUGH.
  */
 async function serveOriginFirstArtifact(cfRequest, request, env, url, alternateFormatHeaders) {
-  const origin = await fetchOrigin(cfRequest, request, ORIGIN_READ_TIMEOUT_MS, env.SITE_HOST);
+  const origin = await timedFetchOrigin(env, cfRequest, request);
   if (origin && origin.status === 200) {
     const contentType = origin.headers.get("content-type") || "";
     // A real llms.txt/tree.json is never HTML; an HTML 200 is a SPA soft-404.
     if (!/text\/html/i.test(contentType)) return origin;
   }
 
-  const { response } = await fetchFromNorg(env, pathToKeySuffix(url.pathname));
+  const { response } = await timedFetchFromNorg(env, pathToKeySuffix(url.pathname));
   if (!response) return PASSTHROUGH;
 
   const served = mirrorResponse(response, env);
@@ -247,7 +247,7 @@ async function handleMcp(request, env, url) {
       ? "/.well-known/mcp.json"
       : `${url.pathname.replace(/\/(mcp|sse)$/, "")}/mcp.json`;
 
-  const { response } = await fetchFromNorg(env, suffix);
+  const { response } = await timedFetchFromNorg(env, suffix);
   return response ? mcpResponse(response) : null;
 }
 
@@ -380,7 +380,7 @@ function missIntent(env) {
 async function serveAgent(cfRequest, request, env, url, classification) {
   const keySuffix = pathToKeySuffix(url.pathname);
   const headers = visitHeaders(request, env, classification, "mirror", missIntent(env), true);
-  const { response, refused } = await fetchFromNorg(env, keySuffix, headers);
+  const { response, refused } = await timedFetchFromNorg(env, keySuffix, headers);
   if (response) return serveMirror(cfRequest, response, env, url, keySuffix);
   // A refused install changes nothing, this request included: no strip.
   if (refused) return PASSTHROUGH;
@@ -405,7 +405,7 @@ async function serveAgent(cfRequest, request, env, url, classification) {
 async function serveStrippedOrigin(cfRequest, request, env) {
   if (binding(env, "STRIP_FALLBACK_ENABLED") === "false") return PASSTHROUGH;
 
-  const origin = await fetchOrigin(cfRequest, request, ORIGIN_READ_TIMEOUT_MS, env.SITE_HOST);
+  const origin = await timedFetchOrigin(env, cfRequest, request);
   if (!origin) return PASSTHROUGH;
 
   const contentType = origin.headers.get("content-type") || "";
@@ -439,7 +439,7 @@ async function serveAgenticPath(cfRequest, request, env, url, prefix) {
   const headers = visitHeaders(
     request, env, anonymousClassification(), "agentic_path", "agentic_path_miss", false,
   );
-  const { response } = await fetchFromNorg(env, keySuffix, headers);
+  const { response } = await timedFetchFromNorg(env, keySuffix, headers);
   if (!response) return PASSTHROUGH;
   return serveMirror(cfRequest, response, env, url, keySuffix);
 }
@@ -463,7 +463,7 @@ async function serveAgentOverride(cfRequest, request, env, url) {
     request, env, agentOverrideClassification(),
     "agent_param_override", "agent_param_override_miss", false,
   );
-  const { response } = await fetchFromNorg(env, keySuffix, headers);
+  const { response } = await timedFetchFromNorg(env, keySuffix, headers);
   if (!response) return PASSTHROUGH;
   return serveMirror(cfRequest, response, env, url, keySuffix);
 }
@@ -491,11 +491,11 @@ async function serveNorgOwnedSurface(cfRequest, request, env, url) {
     return serveOriginFirstArtifact(cfRequest, request, env, url, false);
   }
   if (isReservedNorgPath(pathname)) {
-    const { response } = await fetchFromNorg(env, pathToKeySuffix(pathname));
+    const { response } = await timedFetchFromNorg(env, pathToKeySuffix(pathname));
     return response ? reservedAssetResponse(response, env) : PASSTHROUGH;
   }
   if (isOpenAiFeedPath(pathname)) {
-    const { response } = await fetchFromNorg(env, pathToKeySuffix(pathname));
+    const { response } = await timedFetchFromNorg(env, pathToKeySuffix(pathname));
     return response ? openAiFeedResponse(response, env, pathname) : PASSTHROUGH;
   }
   return null;
@@ -522,6 +522,67 @@ function reportHumanPassthrough(env, request) {
 }
 
 /**
+ * Time one awaited step of an agent request, onto env.__timing.
+ *
+ * 0.6.8: AI fetchers give up after a few seconds, and the first agent request
+ * in a region took 4-7 s with no error to show where. Each network step is
+ * timed so the log says which one is slow. A step called twice (two mirror
+ * fetches) adds up.
+ *
+ * @param {Object} env Install config; carries the per-request timing record.
+ * @param {string} step Step name.
+ * @param {Promise} work The awaited work.
+ * @returns {Promise} The work's result.
+ */
+async function timed(env, step, work) {
+  const started = Date.now();
+  try {
+    return await work;
+  } finally {
+    if (env.__timing) {
+      env.__timing.steps[step] = (env.__timing.steps[step] || 0) + (Date.now() - started);
+    }
+  }
+}
+
+/** Mirror fetch from NORG, timed. */
+const timedFetchFromNorg = (env, ...args) => timed(env, "mirror_ms", fetchFromNorg(env, ...args));
+
+/** The router's own page read, timed. */
+const timedFetchOrigin = (env, cfRequest, request) =>
+  timed(env, "page_read_ms", fetchOrigin(cfRequest, request, ORIGIN_READ_TIMEOUT_MS, env.SITE_HOST));
+
+let invocationsInContainer = 0;
+
+/**
+ * One log line per agent-shaped request: where its time went.
+ *
+ * Written only once the request left the human fast path (a step was timed),
+ * so ordinary visitors and search engines add no log lines. Carries no IP and
+ * no user agent — the path, the bot name the classifier gave it, the outcome
+ * and the milliseconds.
+ *
+ * @param {Object} env Install config with the timing record.
+ * @param {string} outcome What the router answered.
+ */
+function logTiming(env, outcome) {
+  const t = env.__timing;
+  if (!t || !Object.keys(t.steps).length) return;
+  console.log(
+    "norg edge timing " +
+      JSON.stringify({
+        path: t.path,
+        bot: t.bot || null,
+        outcome,
+        total_ms: Date.now() - t.started,
+        cold: t.cold,
+        region: process.env.AWS_REGION || null,
+        ...t.steps,
+      }),
+  );
+}
+
+/**
  * The request pipeline — routing only; each branch delegates.
  *
  * Order is load-bearing. Humans, search crawlers and static assets leave
@@ -541,8 +602,8 @@ export async function handleRequest(cfRequest, env) {
     // The feed is authenticated, and on this platform the key is read lazily
     // below — so it has to be read here first, or the fetch is a 401 and the
     // probe reports false for a site NORG serves (0.6.2 did exactly that).
-    env.NORG_SITE_KEY = await getSiteKey(env);
-    await getBotFeed(env);
+    env.NORG_SITE_KEY = await timed(env, "site_key_ms", getSiteKey(env));
+    await timed(env, "feed_ms", getBotFeed(env));
     return healthResponse(env, isEntitled());
   }
   if (isPassthrough(request, env)) return PASSTHROUGH;
@@ -566,13 +627,13 @@ export async function handleRequest(cfRequest, env) {
   // here, after every cheap exit above and immediately before the first call
   // that needs it. Assigned onto env because core/ reads it there, which
   // keeps every provider's credential handling identical.
-  env.NORG_SITE_KEY = await getSiteKey(env);
+  env.NORG_SITE_KEY = await timed(env, "site_key_ms", getSiteKey(env));
   if (!env.NORG_SITE_KEY) return PASSTHROUGH;
 
   // A stale feed is refreshed inline here (no keep-alive on this platform, so
   // a background refresh would be lost when the container freezes). Only
   // bot-shaped requests reach this line, so the wait falls on an agent.
-  const feed = await getBotFeed(env);
+  const feed = await timed(env, "feed_ms", getBotFeed(env));
   if (!feed.entitled) return PASSTHROUGH;
 
   const owned = await serveNorgOwnedSurface(cfRequest, request, env, url);
@@ -613,6 +674,7 @@ export async function handleRequest(cfRequest, env) {
   if (hasAgentOverride(url)) return serveAgentOverride(cfRequest, request, env, url);
 
   const classification = classifyAgent(userAgent, feed.patterns);
+  if (env.__timing) env.__timing.bot = classification.bot_name || null;
   if (!classification.is_ai_bot) return PASSTHROUGH;
 
   // NORG decides which crawlers may be served differently, not this file.
@@ -660,6 +722,12 @@ export async function handler(event) {
     scrubConfigHeaders((pristine = structuredClone(cfRequest)));
 
     const env = readConfig(cfRequest);
+    env.__timing = {
+      started: Date.now(),
+      steps: {},
+      path: cfRequest.uri,
+      cold: invocationsInContainer++ === 0,
+    };
     // Read before anything can overwrite it: an origin switch replaces the Host
     // header with the receptionist's name. readConfig touches only the custom
     // headers, so the viewer's Host is still as delivered here. Every
@@ -675,10 +743,14 @@ export async function handler(event) {
     if (!env.SITE_ID || !env.NORG_SECRET_ARN) return toOrigin(cfRequest, publicHost);
 
     let watchdog;
+    let timedOut = false;
     const result = await Promise.race([
       handleRequest(cfRequest, env),
       new Promise((resolve) => {
-        watchdog = setTimeout(() => resolve(PASSTHROUGH), WATCHDOG_MS);
+        watchdog = setTimeout(() => {
+          timedOut = true;
+          resolve(PASSTHROUGH);
+        }, WATCHDOG_MS);
       }),
     ]).finally(() => clearTimeout(watchdog));
 
@@ -686,9 +758,13 @@ export async function handler(event) {
     // receptionist records each agent visit from the header on the mirror
     // fetch — so there is no background work to flush and no wait a visitor
     // could pay for it. Lambda@Edge freezes the instant this returns.
-    if (result === PASSTHROUGH) return toPassthrough(toOrigin(cfRequest, publicHost));
+    if (result === PASSTHROUGH) {
+      logTiming(env, timedOut ? "watchdog" : "passthrough");
+      return toPassthrough(toOrigin(cfRequest, publicHost));
+    }
 
     const response = await toCloudFrontResponse(result);
+    logTiming(env, response ? `served_${response.status}` : "too_big");
     // Null means the body will not fit CloudFront's generated-response cap.
     // Degrading to the origin is the correct answer: the visitor gets the
     // customer's real page instead of a 502.
