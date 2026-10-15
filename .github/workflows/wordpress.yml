@@ -67,9 +67,10 @@ jobs:
       matrix:
         php: ["7.4", "8.3"]
     steps:
-      # The runner context is not available in job-level env, so WORK is set here.
-      - run: echo "WORK=$RUNNER_TEMP/e2e" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
+      # The runner context is not available in job-level env, so WORK is set here
+      # (after checkout: every run step defaults to the wordpress/ directory).
+      - run: echo "WORK=$RUNNER_TEMP/e2e" >> "$GITHUB_ENV"
       - uses: shivammathur/setup-php@v2
         with: { php-version: "${{ matrix.php }}", extensions: "curl, mbstring, sqlite3, pdo_sqlite, zip", tools: wp-cli }
       - name: Fetch cache plugins under test
