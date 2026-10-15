@@ -66,9 +66,9 @@ jobs:
     strategy:
       matrix:
         php: ["7.4", "8.3"]
-    env:
-      WORK: ${{ runner.temp }}/e2e
     steps:
+      # The runner context is not available in job-level env, so WORK is set here.
+      - run: echo "WORK=$RUNNER_TEMP/e2e" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
       - uses: shivammathur/setup-php@v2
         with: { php-version: "${{ matrix.php }}", extensions: "curl, mbstring, sqlite3, pdo_sqlite, zip", tools: wp-cli }
