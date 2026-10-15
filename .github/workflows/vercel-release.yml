@@ -1,0 +1,60 @@
+# Publish @norg-ai/edge-router-vercel to npm.
+#
+# Tag `vercel-vX.Y.Z` to release. The job refuses a tag that disagrees with
+# package.json or with the router version the package reports to NORG, runs
+# the tests, then publishes with npm provenance — a signed attestation linking
+# the tarball on npmjs.com to this workflow run and commit.
+#
+# Auth: the NPM_TOKEN repository secret. Once the package exists on npm, the
+# token can be replaced by npm Trusted Publishing (OIDC) for this workflow:
+# npmjs.com › package › Settings › Trusted Publisher › GitHub Actions, then
+# delete the secret and the NODE_AUTH_TOKEN line below.
+#
+# After publishing, content-craft must be bumped to match:
+# EDGE_WORKER_VERSION_VERCEL=<version> (app/core/config_edge.py), or every
+# installed site is told an update is available forever.
+name: Vercel middleware release
+
+on:
+  push:
+    tags: ["vercel-v*"]
+
+permissions:
+  contents: write
+  id-token: write # npm provenance
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: vercel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+      - name: Tag, package.json and router version agree
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#vercel-v}"
+          PKG_VERSION=$(node -p 'require("./package.json").version')
+          ROUTER_VERSION=$(node --input-type=module -e 'import("./src/lib/config.js").then(m => console.log(m.EDGE_SCRIPT_VERSION))')
+          echo "tag=$TAG_VERSION package=$PKG_VERSION router=$ROUTER_VERSION"
+          test "$TAG_VERSION" = "$PKG_VERSION" && test "$PKG_VERSION" = "$ROUTER_VERSION"
+      - name: Tests
+        run: node --test tests/*.test.mjs
+      - name: Publish
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Summary
+        run: |
+          {
+            echo "### Published @norg-ai/edge-router-vercel ${GITHUB_REF_NAME#vercel-v}"
+            echo "Set EDGE_WORKER_VERSION_VERCEL=${GITHUB_REF_NAME#vercel-v} in content-craft."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true

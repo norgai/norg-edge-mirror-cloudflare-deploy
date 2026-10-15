@@ -1,0 +1,61 @@
+# Tests and a pack check for the Vercel middleware package (vercel/).
+#
+# The suites import the package source directly and use only node:test /
+# node:assert. The package test builds dist/ (esbuild pinned via npx) and
+# imports the built bundle, so a bundling regression fails here, not on npm.
+# `npm pack --dry-run` proves the tarball carries dist/, the README and the
+# licence, and nothing else.
+name: Vercel middleware
+
+on:
+  push:
+    branches: [main, feature/vercel-middleware]
+    paths: ["vercel/**", "core/**", "workers/lib/**", ".github/workflows/vercel*.yml"]
+  pull_request:
+    paths: ["vercel/**", "core/**", "workers/lib/**", ".github/workflows/vercel*.yml"]
+
+jobs:
+  test:
+    name: Tests on Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        node: ["18", "20", "22"]
+    defaults:
+      run:
+        working-directory: vercel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Unit, pipeline and package tests
+        run: node --test tests/*.test.mjs
+      - name: Pack check
+        run: |
+          npm pack --dry-run --json > pack.json
+          node -e '
+            const files = require("./pack.json")[0].files.map((f) => f.path);
+            const bad = files.filter((f) => !/^(dist\/|README\.md$|LICENSE$|package\.json$)/.test(f));
+            if (bad.length) { console.error("unexpected files in tarball:", bad); process.exit(1); }
+            for (const need of ["dist/index.js", "dist/next.js", "dist/index.d.ts", "dist/next.d.ts"]) {
+              if (!files.includes(need)) { console.error("missing", need); process.exit(1); }
+            }
+            console.log(files.join("\n"));
+          '
+
+  e2e:
+    name: Real Next.js app (next build + next start)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - name: End-to-end
+        run: bash vercel/e2e/run.sh

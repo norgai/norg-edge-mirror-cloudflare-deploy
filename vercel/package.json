@@ -1,0 +1,58 @@
+{
+  "name": "@norg-ai/edge-router-vercel",
+  "version": "0.1.0",
+  "description": "Serve NORG's AI-optimised pages to verified AI agents from your Vercel project's middleware. People and search engines always get your site, unchanged.",
+  "keywords": [
+    "vercel",
+    "nextjs",
+    "middleware",
+    "proxy",
+    "ai-agents",
+    "llms.txt",
+    "gptbot",
+    "claudebot",
+    "norg"
+  ],
+  "homepage": "https://app.norg.ai/help/vercel-middleware",
+  "bugs": "https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/norgai/norg-edge-mirror-cloudflare-deploy.git",
+    "directory": "vercel"
+  },
+  "license": "MIT",
+  "author": "NORG.ai",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./next": {
+      "types": "./dist/next.d.ts",
+      "default": "./dist/next.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.18"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "test:e2e": "bash e2e/run.sh",
+    "prepack": "node build.mjs"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}
