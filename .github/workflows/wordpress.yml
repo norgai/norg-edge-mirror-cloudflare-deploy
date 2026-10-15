@@ -1,0 +1,117 @@
+# NORG Edge Router WordPress plugin: parity, standards, unit, end-to-end, Plugin Check.
+#
+# The plugin is a PHP port of the worker, so the first job regenerates the shared
+# test vectors from the worker source and fails if the committed copy is stale.
+# The end-to-end jobs run a real WordPress (SQLite, PHP built-in server) against
+# a mock NORG; no Docker, no MySQL.
+name: WordPress plugin
+
+on:
+  push:
+    branches: [main, feature/wordpress-plugin]
+    paths: ["wordpress/**", "workers/**", ".github/workflows/wordpress.yml"]
+  pull_request:
+    paths: ["wordpress/**", "workers/**", ".github/workflows/wordpress.yml"]
+
+defaults:
+  run:
+    working-directory: wordpress
+
+jobs:
+  vectors:
+    name: Shared vectors match the worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - run: node bin/gen-vectors.mjs
+      - name: Assert tests/fixtures is up to date
+        run: |
+          if [ -n "$(git status --porcelain -- tests/fixtures)" ]; then
+            git diff -- tests/fixtures; echo "Run: node wordpress/bin/gen-vectors.mjs"; exit 1
+          fi
+
+  standards:
+    name: WPCS + PHPCompatibility (7.4+) + PHPStan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with: { php-version: "8.2", tools: composer }
+      - run: composer install --no-interaction --no-progress
+      - run: vendor/bin/phpcs
+      - run: vendor/bin/phpstan analyse --no-progress --memory-limit=1G
+
+  unit:
+    name: Unit (PHP ${{ matrix.php }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        php: ["7.4", "8.0", "8.2", "8.4"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with: { php-version: "${{ matrix.php }}", tools: composer }
+      - run: composer install --no-interaction --no-progress
+      - run: vendor/bin/phpunit
+
+  e2e:
+    name: End-to-end (real WordPress, PHP ${{ matrix.php }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        php: ["7.4", "8.3"]
+    env:
+      WORK: ${{ runner.temp }}/e2e
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with: { php-version: "${{ matrix.php }}", extensions: "curl, mbstring, sqlite3, pdo_sqlite, zip", tools: wp-cli }
+      - name: Fetch cache plugins under test
+        run: |
+          mkdir -p "$WORK/dl"
+          for p in wp-super-cache wp-fastest-cache litespeed-cache plugin-check; do
+            curl -sSfL -o "$WORK/dl/$p.zip" "https://downloads.wordpress.org/plugin/$p.latest-stable.zip"
+          done
+      - run: E2E_CACHE="$WORK/dl" bash tests/e2e/setup.sh "$WORK"
+      - run: bash tests/e2e/run.sh "$WORK"
+      - run: E2E_CACHE="$WORK/dl" bash tests/e2e/cache-plugins.sh "$WORK"
+      - uses: actions/setup-node@v4
+        if: matrix.php == '8.3'
+        with: { node-version: "22" }
+      - name: Admin UI (Chrome)
+        if: matrix.php == '8.3'
+        run: |
+          npm i -g pnpm@9
+          (cd tests/e2e/ui && pnpm install && pnpm exec playwright install --with-deps chrome)
+          HEADLESS=1 bash tests/e2e/ui.sh "$WORK"
+      - name: Self-hosted updates (checksum-verified)
+        if: matrix.php == '8.3'
+        run: |
+          ZIP=$(bash bin/build-zip.sh norg "$WORK/dist" | head -1)
+          (cd "$WORK/site" && wp plugin deactivate norg-edge-router && rm wp-content/plugins/norg-edge-router \
+            && unzip -q "$ZIP" -d wp-content/plugins/ && wp plugin activate norg-edge-router)
+          bash tests/e2e/updates.sh "$WORK" "$ZIP"
+          (cd "$WORK/site" && wp plugin deactivate norg-edge-router && rm -rf wp-content/plugins/norg-edge-router \
+            && ln -s "$GITHUB_WORKSPACE/wordpress/norg-edge-router" wp-content/plugins/norg-edge-router)
+      - name: Plugin Check on the wordpress.org build
+        if: matrix.php == '8.3'
+        run: |
+          bash bin/build-zip.sh wporg "$WORK/dist"
+          cd "$WORK/site"
+          unzip -q -o "$WORK/dl/plugin-check.zip" -d wp-content/plugins/ && wp plugin activate plugin-check
+          rm -f wp-content/plugins/norg-edge-router
+          unzip -q "$WORK"/dist/norg-edge-router-*-wporg.zip -d wp-content/plugins/
+          wp plugin check norg-edge-router --format=table
+          test "$(wp plugin check norg-edge-router --format=csv | wc -l)" -le 1
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.php == '8.3'
+        with:
+          name: wordpress-e2e-screenshots
+          path: wordpress/screenshots/
+          if-no-files-found: ignore

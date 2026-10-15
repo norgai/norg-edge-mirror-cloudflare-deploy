@@ -1,0 +1,41 @@
+<?xml version="1.0"?>
+<ruleset name="NORG Edge Router">
+	<description>WordPress Coding Standards + PHP 7.4 compatibility for the shipped plugin.</description>
+	<file>norg-edge-router</file>
+	<exclude-pattern>*/vendor/*</exclude-pattern>
+	<arg name="extensions" value="php"/>
+	<arg value="sp"/>
+	<arg name="colors"/>
+
+	<config name="testVersion" value="7.4-"/>
+	<config name="minimum_wp_version" value="6.0"/>
+
+	<rule ref="WordPress">
+		<!-- PSR-style class-per-file naming is used for namespaced classes; WordPress.Files.FileName is applied below. -->
+		<exclude name="Universal.Arrays.DisallowShortArraySyntax"/>
+	</rule>
+	<rule ref="WordPress-Docs"/>
+	<rule ref="PHPCompatibilityWP"/>
+
+	<rule ref="WordPress.WP.I18n">
+		<properties>
+			<property name="text_domain" type="array"><element value="norg-edge-router"/></property>
+		</properties>
+	</rule>
+	<rule ref="WordPress.NamingConventions.PrefixAllGlobals">
+		<properties>
+			<property name="prefixes" type="array">
+				<element value="norg_edge"/>
+				<element value="norg"/>
+				<element value="Norg\Edge"/>
+				<element value="NORG_EDGE"/>
+			</property>
+		</properties>
+	</rule>
+	<rule ref="WordPress.Files.FileName">
+		<properties>
+			<property name="is_theme" value="false"/>
+		</properties>
+		<exclude-pattern>*/includes/cache/interface-adapter.php</exclude-pattern>
+	</rule>
+</ruleset>

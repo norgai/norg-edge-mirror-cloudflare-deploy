@@ -1,0 +1,17 @@
+includes:
+	- vendor/szepeviktor/phpstan-wordpress/extension.neon
+parameters:
+	level: 6
+	paths:
+		- norg-edge-router
+	bootstrapFiles:
+		- tests/phpstan-bootstrap.php
+	treatPhpDocTypesAsCertain: false
+	reportUnmatchedIgnoredErrors: false
+	ignoreErrors:
+		# Third-party plugin APIs called only behind class_exists()/function_exists() guards.
+		- '#Call to static method \w+\(\) on an unknown class W3TC\\Dispatcher#'
+		- '#Function (rocket_generate_config_file|flush_rocket_htaccess|wp_cache_replace_line|wpsc_update_htaccess) not found#'
+		- '#on an unknown class WP_CLI#'
+		# Plain array shapes are documented in prose; value types are not worth annotating everywhere.
+		- identifier: missingType.iterableValue

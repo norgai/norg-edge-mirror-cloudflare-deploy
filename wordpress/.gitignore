@@ -1,0 +1,7 @@
+/vendor/
+/dist/
+/screenshots/
+/tests/e2e/ui/node_modules/
+/tests/e2e/ui/test-results/
+/tests/e2e/ui/playwright-report/
+composer.lock

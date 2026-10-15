@@ -1,0 +1,433 @@
+# Copyright (C) 2026 NORG
+# This file is distributed under the GPL-2.0-or-later.
+msgid ""
+msgstr ""
+"Project-Id-Version: NORG Edge Router 0.1.0\n"
+"Report-Msgid-Bugs-To: https://wordpress.org/support/plugin/norg-edge-router\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"POT-Creation-Date: 2026-10-15T09:03:41+00:00\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"X-Generator: WP-CLI 2.12.0\n"
+"X-Domain: norg-edge-router\n"
+
+#. Plugin Name of the plugin
+#: norg-edge-router.php
+#: includes/admin/class-settings-page.php:56
+#: includes/admin/views/settings.php:27
+msgid "NORG Edge Router"
+msgstr ""
+
+#. Plugin URI of the plugin
+#: norg-edge-router.php
+msgid "https://app.norg.ai/help/wordpress-plugin"
+msgstr ""
+
+#. Description of the plugin
+#: norg-edge-router.php
+msgid "Serves NORG's AI-optimised mirror of your pages to verified AI agents at your own URLs. People and search engines always get your site, unchanged."
+msgstr ""
+
+#. Author of the plugin
+#: norg-edge-router.php
+msgid "NORG"
+msgstr ""
+
+#. Author URI of the plugin
+#: norg-edge-router.php
+msgid "https://norg.ai"
+msgstr ""
+
+#: includes/admin/class-actions.php:58
+msgid "You do not have permission to do that."
+msgstr ""
+
+#: includes/admin/class-notices.php:58
+msgid "Open NORG Edge Router"
+msgstr ""
+
+#: includes/admin/class-notices.php:70
+msgid "NORG Edge Router is installed but not connected yet."
+msgstr ""
+
+#: includes/admin/class-notices.php:74
+msgid "NORG refused this site key, so AI agents get your normal pages."
+msgstr ""
+
+#: includes/admin/class-notices.php:78
+msgid "A page cache is answering AI agents before NORG Edge Router can."
+msgstr ""
+
+#: includes/admin/class-settings-page.php:66
+#: includes/admin/views/settings.php:96
+msgid "Settings"
+msgstr ""
+
+#: includes/admin/class-settings-page.php:103
+msgid "The Site ID must be the UUID NORG gave you."
+msgstr ""
+
+#: includes/admin/class-settings-page.php:110
+msgid "That does not look like a NORG site key (nek_live_…)."
+msgstr ""
+
+#: includes/admin/class-status-view.php:53
+msgid "Connection"
+msgstr ""
+
+#: includes/admin/class-status-view.php:54
+msgid "Last heartbeat"
+msgstr ""
+
+#: includes/admin/class-status-view.php:55
+msgid "AI agents reach plugin"
+msgstr ""
+
+#: includes/admin/class-status-view.php:56
+msgid "People untouched"
+msgstr ""
+
+#: includes/admin/class-status-view.php:57
+msgid "Search engines untouched"
+msgstr ""
+
+#: includes/admin/class-status-view.php:58
+msgid "Simulated AI agent"
+msgstr ""
+
+#: includes/admin/class-status-view.php:59
+msgid "Background tasks"
+msgstr ""
+
+#: includes/admin/class-status-view.php:60
+msgid "Updates"
+msgstr ""
+
+#: includes/admin/class-status-view.php:61
+msgid "Client IP source"
+msgstr ""
+
+#: includes/admin/class-status-view.php:64
+msgid "Site key"
+msgstr ""
+
+#: includes/admin/class-status-view.php:64
+msgid "Stored key cannot be decrypted (the site salts changed). Paste the key again."
+msgstr ""
+
+#: includes/admin/class-status-view.php:78
+msgid "Not connected. Add the Site ID and Site Key from NORG."
+msgstr ""
+
+#: includes/admin/class-status-view.php:82
+msgid "Connected and entitled"
+msgstr ""
+
+#: includes/admin/class-status-view.php:83
+msgid "NORG refused the key (wrong key, or site paused)"
+msgstr ""
+
+#: includes/admin/class-status-view.php:84
+msgid "NORG unreachable from this server"
+msgstr ""
+
+#: includes/admin/class-status-view.php:86
+msgid "Not checked yet"
+msgstr ""
+
+#: includes/admin/class-status-view.php:88
+msgid "Disabled: every visitor gets your normal site"
+msgstr ""
+
+#: includes/admin/class-status-view.php:102
+msgid "None sent yet"
+msgstr ""
+
+#. translators: %s: time since the last heartbeat.
+#: includes/admin/class-status-view.php:105
+#, php-format
+msgid "%s ago"
+msgstr ""
+
+#: includes/admin/class-status-view.php:118
+msgid "Yes: an AI agent request is answered by WordPress"
+msgstr ""
+
+#: includes/admin/class-status-view.php:121
+msgid "No: a page cache answered first. See the fix below."
+msgstr ""
+
+#: includes/admin/class-status-view.php:123
+msgid "Could not verify (loopback blocked)"
+msgstr ""
+
+#: includes/admin/class-status-view.php:123
+msgid "Run the checks"
+msgstr ""
+
+#: includes/admin/class-status-view.php:137
+msgid "Yes"
+msgstr ""
+
+#: includes/admin/class-status-view.php:151
+msgid "Not diverted (feed does not divert GPTBot, or no render yet and strip off)"
+msgstr ""
+
+#: includes/admin/class-status-view.php:161
+msgid "Updates come from WordPress.org"
+msgstr ""
+
+#: includes/admin/class-status-view.php:164
+msgid "automatic"
+msgstr ""
+
+#: includes/admin/class-status-view.php:164
+msgid "manual"
+msgstr ""
+
+#. translators: %s: suggested mode.
+#: includes/admin/class-status-view.php:176
+#, php-format
+msgid "this request suggests \"%s\""
+msgstr ""
+
+#: includes/admin/views/settings.php:28
+msgid "Verified AI agents get NORG's optimised version of your pages at your own URLs. People and search engines always get your site exactly as it is."
+msgstr ""
+
+#: includes/admin/views/settings.php:30
+msgid "Status"
+msgstr ""
+
+#: includes/admin/views/settings.php:44
+msgid "Run checks"
+msgstr ""
+
+#: includes/admin/views/settings.php:45
+msgid "Send heartbeat"
+msgstr ""
+
+#: includes/admin/views/settings.php:46
+msgid "Re-apply cache bypass"
+msgstr ""
+
+#: includes/admin/views/settings.php:47
+msgid "Download debug report"
+msgstr ""
+
+#: includes/admin/views/settings.php:55
+msgid "Page cache"
+msgstr ""
+
+#: includes/admin/views/settings.php:57
+msgid "No page-cache plugin detected."
+msgstr ""
+
+#: includes/admin/views/settings.php:60
+msgid "Cache"
+msgstr ""
+
+#: includes/admin/views/settings.php:60
+msgid "Bypass for AI agents"
+msgstr ""
+
+#: includes/admin/views/settings.php:68
+msgid "Not applied yet"
+msgstr ""
+
+#: includes/admin/views/settings.php:83
+msgid "AI user agents to exclude from any cache in front of WordPress (for your host):"
+msgstr ""
+
+#. translators: 1: time since, 2: error message.
+#: includes/admin/views/settings.php:91
+#, php-format
+msgid "Last internal error %1$s ago: %2$s. Visitors were served your normal site."
+msgstr ""
+
+#: includes/admin/views/settings.php:101
+msgid "Site ID"
+msgstr ""
+
+#: includes/admin/views/settings.php:105
+msgid "Site Key"
+msgstr ""
+
+#: includes/admin/views/settings.php:108
+msgid "Leave empty to keep the current key. For best security define NORG_SITE_KEY in wp-config.php instead."
+msgstr ""
+
+#: includes/admin/views/settings.php:112
+msgid "NORG environment"
+msgstr ""
+
+#: includes/admin/views/settings.php:116
+msgid "Automatic"
+msgstr ""
+
+#: includes/admin/views/settings.php:126
+msgid "Visitor IP comes from"
+msgstr ""
+
+#: includes/admin/views/settings.php:131
+msgid "The connection (REMOTE_ADDR)"
+msgstr ""
+
+#: includes/admin/views/settings.php:132
+msgid "Cloudflare (CF-Connecting-IP, only from Cloudflare IPs)"
+msgstr ""
+
+#: includes/admin/views/settings.php:133
+msgid "A header set by my proxy"
+msgstr ""
+
+#: includes/admin/views/settings.php:140
+msgid "AI agents are verified by their IP address. A wrong setting means none are verified, which is safe but serves them your normal pages."
+msgstr ""
+
+#: includes/admin/views/settings.php:145
+msgid "Disable (every visitor gets your normal site)"
+msgstr ""
+
+#: includes/admin/views/settings.php:146
+msgid "Record only: report AI-agent visits, serve nothing different"
+msgstr ""
+
+#: includes/admin/views/settings.php:147
+msgid "Serve a stripped page to agents until NORG has rendered it"
+msgstr ""
+
+#: includes/admin/views/settings.php:148
+msgid "Ask NORG to render pages agents request"
+msgstr ""
+
+#: includes/admin/views/settings.php:149
+msgid "Register AI user agents with my page-cache plugin"
+msgstr ""
+
+#: includes/admin/views/settings.php:150
+msgid "Add the .htaccess bypass block (Apache/LiteSpeed; for caches without an API)"
+msgstr ""
+
+#: includes/admin/views/settings.php:151
+msgid "Let my own llms.txt and similar files win over NORG's"
+msgstr ""
+
+#: includes/admin/views/settings.php:152
+msgid "Install plugin updates automatically"
+msgstr ""
+
+#: includes/admin/views/settings.php:153
+msgid "Debug logging to the PHP error log"
+msgstr ""
+
+#: includes/admin/views/settings.php:157
+msgid "Behaviour"
+msgstr ""
+
+#: includes/class-cron.php:72
+msgid "Every 30 minutes (NORG Edge Router)"
+msgstr ""
+
+#: includes/class-site-health.php:28
+msgid "NORG Edge Router connection"
+msgstr ""
+
+#: includes/class-site-health.php:34
+msgid "AI agents reach the NORG Edge Router"
+msgstr ""
+
+#: includes/class-site-health.php:38
+msgid "NORG Edge Router background tasks"
+msgstr ""
+
+#: includes/class-site-health.php:64
+msgid "Open NORG Edge Router settings"
+msgstr ""
+
+#: includes/class-site-health.php:78
+msgid "NORG Edge Router is not connected"
+msgstr ""
+
+#: includes/class-site-health.php:78
+msgid "Add the Site ID and Site Key from NORG. Until then the plugin changes nothing."
+msgstr ""
+
+#: includes/class-site-health.php:83
+msgid "NORG Edge Router is connected"
+msgstr ""
+
+#: includes/class-site-health.php:83
+msgid "NORG confirmed this install. Verified AI agents are served the NORG mirror."
+msgstr ""
+
+#: includes/class-site-health.php:86
+msgid "NORG refused this site key"
+msgstr ""
+
+#: includes/class-site-health.php:86
+msgid "The key is wrong, or the site is paused in NORG. Every visitor gets your normal site."
+msgstr ""
+
+#: includes/class-site-health.php:88
+msgid "NORG could not be reached"
+msgstr ""
+
+#: includes/class-site-health.php:88
+msgid "Outbound requests to NORG are failing. Check WP_HTTP_BLOCK_EXTERNAL and your host firewall."
+msgstr ""
+
+#: includes/class-site-health.php:100
+msgid "AI agents reach the plugin"
+msgstr ""
+
+#: includes/class-site-health.php:100
+msgid "The last self-check confirmed an AI agent request is answered by WordPress, not a cached page."
+msgstr ""
+
+#: includes/class-site-health.php:103
+msgid "A page cache answers AI agents before the plugin"
+msgstr ""
+
+#: includes/class-site-health.php:103
+msgid "AI agents are being served cached pages. Open the plugin status page for the fix for your cache or host."
+msgstr ""
+
+#: includes/class-site-health.php:105
+msgid "Run the NORG Edge Router self-check"
+msgstr ""
+
+#: includes/class-site-health.php:105
+msgid "The self-check has not confirmed that AI agents reach the plugin through your page cache."
+msgstr ""
+
+#: includes/class-site-health.php:115
+msgid "WP-Cron is disabled"
+msgstr ""
+
+#: includes/class-site-health.php:115
+msgid "Make sure a system cron calls wp-cron.php, or NORG stops hearing from this site when it is quiet."
+msgstr ""
+
+#: includes/class-site-health.php:118
+msgid "Outbound HTTP is blocked"
+msgstr ""
+
+#: includes/class-site-health.php:118
+msgid "Add content-craft-api.norg.ai and edge-content.norg.ai to WP_ACCESSIBLE_HOSTS."
+msgstr ""
+
+#: includes/class-site-health.php:120
+msgid "Background tasks can run"
+msgstr ""
+
+#: includes/class-site-health.php:120
+msgid "Heartbeats and render requests run after each response."
+msgstr ""
+
+#: includes/class-updater.php:167
+msgid "The NORG Edge Router update did not match its published checksum and was not installed."
+msgstr ""
