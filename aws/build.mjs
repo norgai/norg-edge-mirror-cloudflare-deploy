@@ -89,10 +89,6 @@ function bundle(name) {
       "--bundle",
       "--format=cjs",
       "--platform=node",
-      // Provided by the Lambda Node runtime, deliberately not vendored: the
-      // deployed artifact stays a readable file an operator can diff against
-      // this repository, rather than tens of thousands of lines of SDK.
-      "--external:@aws-sdk/client-secrets-manager",
       `--target=${NODE_TARGET}`,
       "--legal-comments=inline",
       `--outfile=${outfile}`,
@@ -135,18 +131,10 @@ assertNoForbiddenNames("heartbeat-lambda.cjs", heartbeat);
 // unresolved require() fails at RUNTIME, not at deploy — and the router's own
 // error handling would turn that into a silent site-wide passthrough.
 //
-// Exactly one exception, named rather than pattern-matched. The AWS SDK v3 is
-// part of the Node.js managed runtime (nodejs18.x and later, nodejs24.x
-// included), so requiring the Secrets Manager client resolves without vendoring
-// tens of thousands of lines that would destroy the "read the file you are
-// about to run" property. The scheduled heartbeat exercises the same code path
-// and throws on failure, so if a future runtime ever drops the SDK it surfaces
-// in the customer's CloudWatch metrics within the half-hour rather than
-// degrading quietly.
-const ALLOWED_RUNTIME_REQUIRE = "@aws-sdk/client-secrets-manager";
+// No exception since 0.6.10: the one AWS call (GetSecretValue) is signed in
+// lib/sigv4.js, so the runtime's SDK is no longer required at all.
 const externalRequires = [...router.matchAll(/\brequire\s*\(\s*["']((?!node:)[^"']+)["']/g)]
-  .map((m) => m[1])
-  .filter((name) => name !== ALLOWED_RUNTIME_REQUIRE);
+  .map((m) => m[1]);
 if (externalRequires.length) {
   throw new Error(
     `refusing to publish: edge-router-lambda.cjs is not self-contained — ` +

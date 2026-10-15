@@ -27,36 +27,39 @@ import {
 
 const ARN = "arn:aws:secretsmanager:us-east-1:1:secret:norg-AbCdEf";
 
-const realRequire = globalThis.require;
+const realFetch = globalThis.fetch;
+const CRED_VARS = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"];
+const savedCreds = Object.fromEntries(CRED_VARS.map((k) => [k, process.env[k]]));
 
 afterEach(() => {
   __resetSecretCache();
-  globalThis.require = realRequire;
+  globalThis.fetch = realFetch;
+  for (const k of CRED_VARS) {
+    if (savedCreds[k] === undefined) delete process.env[k];
+    else process.env[k] = savedCreds[k];
+  }
 });
 
 /**
- * Stand in for the runtime's @aws-sdk/client-secrets-manager.
+ * Stand in for Secrets Manager and the function role's credentials.
  *
- * secret.js reaches the SDK through a free `require`, which resolves to the
- * global in an ES module, so a test can supply one without any AWS access.
+ * 0.6.10 signs GetSecretValue itself and sends it with fetch, so a test sets
+ * the reserved AWS_* variables Lambda provides and answers the HTTPS call.
  *
- * @param {Function} answer Resolves each GetSecretValue call.
- * @returns {{sends: number, clients: number}} Live call counters.
+ * @param {Function} answer Resolves each call to {SecretString} (or throws).
+ * @returns {{sends: number, requests: Array}} Live call record.
  */
-function stubSdk(answer) {
-  const calls = { sends: 0, clients: 0 };
-  globalThis.require = () => ({
-    SecretsManagerClient: class {
-      constructor() {
-        calls.clients += 1;
-      }
-      send() {
-        calls.sends += 1;
-        return answer();
-      }
-    },
-    GetSecretValueCommand: class {},
-  });
+function stubAws(answer) {
+  const calls = { sends: 0, requests: [] };
+  process.env.AWS_ACCESS_KEY_ID = "AKIDTEST";
+  process.env.AWS_SECRET_ACCESS_KEY = "secret-test";
+  process.env.AWS_SESSION_TOKEN = "session-test";
+  globalThis.fetch = async (url, init) => {
+    calls.sends += 1;
+    calls.requests.push({ url: String(url), init });
+    const body = await answer();
+    return new Response(JSON.stringify(body), { status: 200 });
+  };
   return calls;
 }
 
@@ -71,7 +74,7 @@ test("a primed cache is served without touching the network", async () => {
 });
 
 test("a failed fetch returns null rather than throwing", async () => {
-  // No AWS credentials and no SDK stub here, so the require or the call fails.
+  // No AWS credentials and no stub here, so the signed call cannot be made.
   // Whatever the reason, the caller must get null and the site must survive.
   const result = await getSiteKey({ NORG_SECRET_ARN: ARN });
   assert.equal(result, null);
@@ -86,7 +89,7 @@ test("a failure is not cached, so the next request retries", async () => {
 test("an expired key answers while one background refresh runs", async () => {
   // 0.6.9: only a container's first agent request waits on Secrets Manager.
   __primeSecretCache("nek_live_stale");
-  const calls = stubSdk(async () => {
+  const calls = stubAws(async () => {
     await new Promise((r) => setTimeout(r, 20));
     return { SecretString: "nek_live_fresh" };
   });
@@ -113,19 +116,26 @@ test("a key more than an hour past its TTL is not served", async () => {
   }
 });
 
-test("one Secrets Manager client per region serves every read", async () => {
-  const calls = stubSdk(async () => ({ SecretString: "nek_live_x" }));
-  await getSiteKey({ NORG_SECRET_ARN: ARN });
-  __expireSecretCache();
-  const realNow = Date.now;
-  Date.now = () => realNow() + 76 * 60 * 1000;
-  try {
-    await getSiteKey({ NORG_SECRET_ARN: ARN });
-  } finally {
-    Date.now = realNow;
-  }
-  assert.equal(calls.sends, 2);
-  assert.equal(calls.clients, 1, "the client is built once and reused");
+test("the key is read with one signed call, not the AWS SDK", async () => {
+  // 0.6.10: loading the SDK cost ~1.5 s on a cold container; the call is signed
+  // in lib/sigv4.js and sent to the region's endpoint directly.
+  const calls = stubAws(async () => ({ SecretString: "nek_live_signed" }));
+  assert.equal(await getSiteKey({ NORG_SECRET_ARN: ARN }), "nek_live_signed");
+  assert.equal(calls.sends, 1);
+  const { url, init } = calls.requests[0];
+  assert.equal(url, "https://secretsmanager.us-east-1.amazonaws.com/");
+  assert.equal(init.headers["x-amz-target"], "secretsmanager.GetSecretValue");
+  assert.equal(init.headers["x-amz-security-token"], "session-test");
+  assert.match(init.headers.authorization, /^AWS4-HMAC-SHA256 Credential=AKIDTEST\/\d{8}\/us-east-1\/secretsmanager\/aws4_request, /);
+  assert.equal(JSON.parse(init.body).SecretId, ARN);
+});
+
+test("an AWS error is a failed read: null, never a partial key", async () => {
+  process.env.AWS_ACCESS_KEY_ID = "AKIDTEST";
+  process.env.AWS_SECRET_ACCESS_KEY = "secret-test";
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify({ __type: "AccessDeniedException" }), { status: 400 });
+  assert.equal(await getSiteKey({ NORG_SECRET_ARN: ARN }), null);
 });
 
 test("a bare-string secret is the key", () => {
@@ -176,7 +186,7 @@ test("a failed replica read is remembered, and the primary is used from then on"
   try {
     process.env.AWS_REGION = "eu-west-1";
     assert.equal(localReadRegion(ARN), "eu-west-1");
-    // No SDK here, so the replica read throws, then the primary read throws.
+    // No credentials here, so the replica read throws, then the primary read throws.
     assert.equal(await getSiteKey({ NORG_SECRET_ARN: ARN }), null);
     assert.equal(localReadRegion(ARN), null, "an install without replicas pays for the miss once per container");
   } finally {

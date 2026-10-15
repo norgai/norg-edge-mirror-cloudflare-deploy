@@ -57,6 +57,9 @@ import { HEALTH_CHECK_HEADER, PUBLIC_HOST_HEADER } from "../../../core/constants
  * to the customer origin on any thrown exception or oversized response, and the
  * health-probe header, which carried the site key in a plain viewer request.
  *
+ * 0.6.10 — the site key is read with one signed HTTPS call (lib/sigv4.js)
+ * instead of the AWS SDK, whose load cost ~1.5 s on a cold container.
+ *
  * 0.6.9 — faster first agent request in a region: the step timer counts
  * start-up work, one Secrets Manager client per region, an expired site key
  * answers while it refreshes, an expired agent rules list waits at most
@@ -112,7 +115,7 @@ import { HEALTH_CHECK_HEADER, PUBLIC_HOST_HEADER } from "../../../core/constants
  * is read from the replica in the region that ran the function. Behaviour
  * tracks edge-router-worker.js 0.11.7.
  */
-export const EDGE_SCRIPT_VERSION = "0.6.9";
+export const EDGE_SCRIPT_VERSION = "0.6.10";
 
 // Custom origin header -> binding name. Mirrors build_worker_bindings() in
 // content-craft's install_service.py; adding a binding there means adding it
