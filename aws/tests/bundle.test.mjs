@@ -64,13 +64,13 @@ test("the built router leaves a human alone and leaks no credential", async () =
 test("the router bundle requires nothing the Lambda runtime does not provide", () => {
   // Lambda@Edge supports no layers, so an unresolved bare require() fails at
   // RUNTIME — and the router's own error handling would turn that into a silent
-  // site-wide passthrough. Exactly one module is allowed: the Secrets Manager
-  // client, which ships inside the managed Node.js runtime.
+  // site-wide passthrough. Since 0.6.10 nothing at all is allowed: the one AWS
+  // call is signed in lib/sigv4.js rather than made through the runtime's SDK.
   const source = readFileSync(routerPath, "utf8");
   const required = [...source.matchAll(/\brequire\s*\(\s*["']((?!node:)[^"']+)["']/g)].map(
     (m) => m[1],
   );
-  assert.deepEqual([...new Set(required)], ["@aws-sdk/client-secrets-manager"]);
+  assert.deepEqual([...new Set(required)], []);
 });
 
 test("no NORG-internal secret name reaches a customer account", () => {

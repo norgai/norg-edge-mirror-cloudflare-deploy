@@ -41,7 +41,71 @@ var UNENTITLED = Object.freeze({
 });
 
 // aws/lambda/lib/config.js
-var EDGE_SCRIPT_VERSION = "0.6.9";
+var EDGE_SCRIPT_VERSION = "0.6.10";
+
+// aws/lambda/lib/sigv4.js
+var import_node_crypto = require("node:crypto");
+var SERVICE = "secretsmanager";
+var sha256Hex = (text) => (0, import_node_crypto.createHash)("sha256").update(text, "utf8").digest("hex");
+var hmac = (key, text) => (0, import_node_crypto.createHmac)("sha256", key).update(text, "utf8").digest();
+function runtimeCredentials() {
+  const env = typeof process !== "undefined" ? process.env : {};
+  if (!env.AWS_ACCESS_KEY_ID || !env.AWS_SECRET_ACCESS_KEY) return null;
+  return {
+    accessKeyId: env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: env.AWS_SECRET_ACCESS_KEY,
+    sessionToken: env.AWS_SESSION_TOKEN || null
+  };
+}
+function signGetSecretValue(arn, region, creds, now) {
+  const host = `${SERVICE}.${region}.amazonaws.com`;
+  const body = JSON.stringify({ SecretId: arn });
+  const amzDate = now.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+  const day = amzDate.slice(0, 8);
+  const headers = {
+    "content-type": "application/x-amz-json-1.1",
+    host,
+    "x-amz-date": amzDate,
+    "x-amz-target": "secretsmanager.GetSecretValue"
+  };
+  if (creds.sessionToken) headers["x-amz-security-token"] = creds.sessionToken;
+  const names = Object.keys(headers).sort();
+  const signedHeaders = names.join(";");
+  const canonical = [
+    "POST",
+    "/",
+    "",
+    names.map((n) => `${n}:${headers[n]}
+`).join(""),
+    signedHeaders,
+    sha256Hex(body)
+  ].join("\n");
+  const scope = `${day}/${region}/${SERVICE}/aws4_request`;
+  const toSign = ["AWS4-HMAC-SHA256", amzDate, scope, sha256Hex(canonical)].join("\n");
+  const key = ["aws4_request"].reduce(
+    (k, part) => hmac(k, part),
+    hmac(hmac(hmac(`AWS4${creds.secretAccessKey}`, day), region), SERVICE)
+  );
+  const signature = (0, import_node_crypto.createHmac)("sha256", key).update(toSign, "utf8").digest("hex");
+  headers.authorization = `AWS4-HMAC-SHA256 Credential=${creds.accessKeyId}/${scope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+  return { url: `https://${host}/`, headers, body };
+}
+async function getSecretValue(arn, region, timeoutMs) {
+  const creds = runtimeCredentials();
+  if (!creds) throw new Error("no runtime credentials");
+  const { url, headers, body } = signGetSecretValue(arn, region, creds, /* @__PURE__ */ new Date());
+  const response = await fetch(url, {
+    method: "POST",
+    headers,
+    body,
+    signal: AbortSignal.timeout(timeoutMs)
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(`GetSecretValue ${response.status} ${payload.__type || ""}`.trim());
+  }
+  return payload.SecretString;
+}
 
 // aws/lambda/lib/secret.js
 var CACHE_TTL_MS = 15 * 60 * 1e3;
@@ -64,12 +128,8 @@ var EDGE_REGIONS = /* @__PURE__ */ new Set([
   "sa-east-1"
 ]);
 var cached = { value: null, fetchedAt: 0 };
-var clients = /* @__PURE__ */ new Map();
 var refreshing = null;
 var replicaMissing = false;
-function loadClient() {
-  return require("@aws-sdk/client-secrets-manager");
-}
 function parseSecret(secretString) {
   if (!secretString) return null;
   const trimmed = secretString.trim();
@@ -94,13 +154,7 @@ function localReadRegion(arn) {
   return region === primary ? null : region;
 }
 async function readSecret(arn, region) {
-  const { SecretsManagerClient, GetSecretValueCommand } = loadClient();
-  if (!clients.has(region)) clients.set(region, new SecretsManagerClient({ region }));
-  const client = clients.get(region);
-  const result = await client.send(new GetSecretValueCommand({ SecretId: arn }), {
-    abortSignal: AbortSignal.timeout(SECRET_TIMEOUT_MS)
-  });
-  return parseSecret(result?.SecretString);
+  return parseSecret(await getSecretValue(arn, region, SECRET_TIMEOUT_MS));
 }
 async function readNearest(arn) {
   const region = localReadRegion(arn);

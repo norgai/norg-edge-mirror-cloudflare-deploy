@@ -28,6 +28,8 @@
  * A Secrets Manager outage degrades the product; it cannot break the site.
  */
 
+import { getSecretValue } from "./sigv4.js";
+
 // Long enough that a busy container fetches roughly once, short enough that a
 // rotated key takes effect without waiting for the container to be recycled.
 // AWS's own Lambda@Edge secrets pattern caches for the container's whole life
@@ -56,10 +58,6 @@ export const EDGE_REGIONS = new Set([
 ]);
 
 let cached = { value: null, fetchedAt: 0 };
-// 0.6.9: one client per region for the container's life. Building one per
-// read cost a fresh client and TLS connection on every refresh; 0.6.8 logged
-// ~0.6 s per read even on warm containers in the secret's own region.
-const clients = new Map();
 // The background refresh of an expired key, so concurrent callers share one.
 let refreshing = null;
 // Set once a local-region read fails, so an install without replicas pays for
@@ -74,7 +72,6 @@ let replicaMissing = false;
 export function __resetSecretCache() {
   cached = { value: null, fetchedAt: 0 };
   replicaMissing = false;
-  clients.clear();
   refreshing = null;
 }
 
@@ -94,21 +91,6 @@ export function __expireSecretCache() {
  */
 export function __primeSecretCache(value) {
   cached = { value, fetchedAt: Date.now() };
-}
-
-/**
- * Load the Secrets Manager client from the runtime.
- *
- * Required lazily and from the runtime rather than bundled, so the deployed
- * artifact stays a readable, dependency-free file that can be diffed against
- * the public repository. If a future runtime stops providing the SDK this
- * throws, and the caller degrades to passthrough instead of a 502.
- *
- * @returns {Object} The @aws-sdk/client-secrets-manager module.
- */
-function loadClient() {
-  // eslint-disable-next-line no-undef
-  return require("@aws-sdk/client-secrets-manager");
 }
 
 /**
@@ -172,13 +154,9 @@ export function localReadRegion(arn) {
  * @returns {Promise<?string>} The parsed key, or null when the secret is empty.
  */
 async function readSecret(arn, region) {
-  const { SecretsManagerClient, GetSecretValueCommand } = loadClient();
-  if (!clients.has(region)) clients.set(region, new SecretsManagerClient({ region }));
-  const client = clients.get(region);
-  const result = await client.send(new GetSecretValueCommand({ SecretId: arn }), {
-    abortSignal: AbortSignal.timeout(SECRET_TIMEOUT_MS),
-  });
-  return parseSecret(result?.SecretString);
+  // 0.6.10: one signed HTTPS call instead of the AWS SDK, whose load alone
+  // cost ~1.5 s on a cold 192 MB container (lib/sigv4.js).
+  return parseSecret(await getSecretValue(arn, region, SECRET_TIMEOUT_MS));
 }
 
 /**
