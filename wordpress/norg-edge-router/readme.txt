@@ -4,7 +4,7 @@ Tags: ai, llms.txt, ai search, crawlers, chatgpt
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.1.0
+Stable tag: 0.1.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -71,6 +71,9 @@ Tick **Disable** in the settings, define `NORG_EDGE_DISABLED` as true in wp-conf
 Yes. Set **Visitor IP comes from** to Cloudflare so the agent's real IP is used.
 
 == Changelog ==
+
+= 0.1.1 =
+* REST endpoints `norg-edge/v1/status` and `norg-edge/v1/connect` (administrators, Application Password) so NORG's dashboard can connect the plugin without pasting the Site ID and Site Key; WP-CLI `configure` now runs the same checks.
 
 = 0.1.0 =
 * First release: verified AI-agent mirror serving, strip fallback with lazy render requests, MCP and discovery surfaces, record-only mode with citation tracking, page-cache adapters, self-check, Site Health tests, WP-CLI, and NORG-hosted updates.
