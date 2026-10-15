@@ -1,430 +1,297 @@
-# NORG Edge Router — Deploy to Cloudflare
+# NORG Edge Router — WordPress plugin
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/norgai/norg-edge-mirror-cloudflare-deploy)
+This branch holds the **WordPress plugin** version of NORG's edge router, for
+WordPress sites with no Cloudflare or other CDN in front of them. You don't
+change DNS, you don't create an API token, and you don't deploy a worker.
+Install a plugin and give it two values.
 
-This is the **no-token** way to install NORG's edge-mirroring worker on your
-own Cloudflare zone. Click the button, answer two prompts, and the worker
-deploys straight into **your own** Cloudflare account — NORG never receives
-an API token, and never gets deploy access to anything in your account.
+> **On Cloudflare?** Use the Cloudflare Worker on
+> [`main`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/tree/main)
+> instead. It runs before any cache and needs no plugin. Other CDNs are listed
+> under [Other CDNs](#other-cdns).
 
-> **Installing in front of a Shopify storefront?** Follow
-> [README.shopify.md](README.shopify.md) instead — same worker, same button,
-> but the Shopify (Cloudflare O2O) setup has extra steps and two rules you
-> must not break.
-
-> **Not on Cloudflare?** The same router is ported to other CDNs, each on its
-> own branch of this repository, and to a WordPress plugin for sites with no CDN
-> at all — see [Other CDNs](#other-cdns) below.
-
-If you'd rather NORG handle the deploy and keep it automatically up to date,
-ask your NORG contact about the **API-token install** instead — see
-[Trade-offs vs. the API-token install](#trade-offs-vs-the-api-token-install)
-below for why that route exists.
+Customer guide: [app.norg.ai/help/wordpress-plugin](https://app.norg.ai/help/wordpress-plugin).
 
 ---
 
-## What this worker does
+## What the plugin does
 
-Installed on your zone at `{your-domain}/*`, it inspects every request and
-decides who's asking:
+It runs inside WordPress. On every page request it works out who is asking:
 
 | Visitor | What they get |
 |---|---|
-| A person in a browser | Your site, byte-for-byte unchanged |
-| Googlebot, Bingbot, and other web-index crawlers | Your site, byte-for-byte unchanged |
-| An AI agent (GPTBot, ClaudeBot, PerplexityBot, Google-Extended, …) asking for a page NORG has already rendered | The NORG render, fetched behind the scenes and served **at your own URL** — no redirect, the address bar never changes |
-| An AI agent asking for a page NORG hasn't rendered yet | Your own page, stripped down to the token-dense facts, while NORG is asked in the background to render it properly |
-| An AI agent whose source can't be verified (no published IP ranges, not Cloudflare-verified, e.g. DeepSeekBot) that NORG has explicitly opted in | The NORG render if one exists, otherwise your page unchanged — it never triggers a render, and its visits are reported separately from verified agents |
+| A person in a browser | Your site, unchanged |
+| Googlebot, Bingbot and other search crawlers | Your site, unchanged (always; there is no setting for this) |
+| A verified AI agent (GPTBot, ClaudeBot, PerplexityBot, …) asking for a page NORG has rendered | The NORG render, served **at your own URL** with no redirect |
+| A verified AI agent asking for a page NORG hasn't rendered yet | Your page stripped down to its text, while NORG is asked to render it |
 
-Two rules are built into the worker and have no off switch:
+Three rules are built in and have no off switch:
 
-1. **It must never break your site.** Every failure path — NORG's API down,
-   its storage unreachable, a bug in the worker itself — falls back to your
-   origin response, unmodified.
-2. **Search engines always see exactly what humans see.** Serving Googlebot
-   different content than a real visitor is cloaking and would put your search
-   rankings at risk, so traditional search crawlers are always passed straight
-   through, unconditionally.
+1. **It must never break your site.** If anything fails (NORG can't be
+   reached, the feed is missing, the plugin hits a bug), the plugin steps
+   aside and WordPress serves the page as normal.
+2. **Search engines always see exactly what people see.** Serving Googlebot
+   something different would be cloaking.
+3. **A user agent alone is never trusted.** AI agents are verified by source
+   IP against the ranges their operators publish, using an authenticated feed from
+   NORG. The plugin has no built-in bot list. Without the feed, it serves
+   nothing different to anyone.
 
 ---
 
 ## Before you start
 
-- [ ] **Your domain is on Cloudflare and proxied (the orange cloud icon).** A
-      grey-cloud (DNS-only) record never reaches Cloudflare's network, so the
-      worker can never run. This is, by a wide margin, the most common reason
-      an install "does nothing."
-- [ ] **You have a Cloudflare account that can create Workers.** The free plan
-      is enough to get started — read
-      [The one caveat: the Workers free plan](#the-one-caveat-the-workers-free-plan)
-      before pointing it at a high-traffic site.
-- [ ] **You have a `SITE_ID` and a `NORG_SITE_KEY`.** NORG issues both when you
-      register the site for edge routing. The key is shown to you **once** —
-      NORG stores only a hash of it, so if you lose it, ask NORG to rotate it.
-- [ ] **No other Worker is already routed on `{your-domain}/*`.** Nothing here
-      detects a conflict; see [Limitations](#limitations).
+- [ ] **WordPress 6.0+ and PHP 7.4+.**
+- [ ] **A NORG install for the site.** In NORG, go to Publishing › CDN & Edge ›
+      **WordPress plugin** › **Create WordPress install**. You get the plugin
+      zip, a **Site ID** and a **Site Key**. The key is shown **once**
+      because NORG stores only its hash. If you lose it, ask NORG to rotate it.
+- [ ] **Know your page cache.** If a cache plugin or your host serves a saved
+      copy of a page before WordPress runs, the plugin never sees the request.
+      See [Page caches](#page-caches) before you go live.
+- [ ] **Know whether a proxy sits in front of you.** If the site is behind
+      Cloudflare (without the NORG worker) or a load balancer, set **Visitor
+      IP comes from** to match. Otherwise no agent can be verified.
 
 ---
 
-## Quick start
+## Install
 
-1. Click **Deploy to Cloudflare** above.
-2. Sign in and authorize Cloudflare to fork this repository into your own
-   GitHub/GitLab account (Cloudflare clones it — NORG is never involved in
-   this step and receives nothing from it).
-3. When prompted, fill in the two values from [Configuration](#configuration)
-   below. Everything else has a sensible default baked into the worker.
-4. Cloudflare builds and deploys the Worker into your account.
-5. **Add the route manually** — see [next section](#manual-step-attach-the-route).
-   This is the one step the button doesn't do for you.
-6. Run the three checks in [Verifying the install](#verifying-the-install).
+1. **Upload the plugin.** In WordPress, go to Plugins › Add New › Upload
+   Plugin, upload the zip and activate it.
+2. **Connect it.** Use any one of these four methods:
 
----
+   **Settings page.** Open Settings › NORG Edge Router, paste the Site ID and
+   Site Key, then save.
 
-## Configuration
+   **`wp-config.php`.** This keeps the key out of the database, so it suits
+   hosts and agencies. Add the lines above `That's all, stop editing!`:
 
-Cloudflare prompts for these during the button flow. Both are also editable
-afterwards under **Workers & Pages → the worker → Settings → Variables**.
+   ```php
+   define( 'NORG_SITE_ID',  'your-site-id-from-norg' );
+   define( 'NORG_SITE_KEY', 'nek_live_your_site_key' );
+   ```
 
-| Name | Kind | Example | Meaning |
-|---|---|---|---|
-| `SITE_ID` | Plain variable | `9f1c2e4a-…` | `edge_sites.id` — identifies this install to NORG |
-| `NORG_SITE_KEY` | **Secret** — never a plain variable | `nek_live_…` | Per-site key authenticating this install to NORG's API. Also the credential for the health probe below. |
+   **WP-CLI.**
 
-⚠️ **`NORG_SITE_KEY` must be set as an encrypted variable** (Settings →
-Variables → *Add variable* → toggle **Encrypt**, or `wrangler secret put
-NORG_SITE_KEY` from the CLI) — never pasted into `wrangler.jsonc`'s `vars`
-block or committed anywhere. It is the one credential this install has, and
-it is scoped to this site only.
+   ```bash
+   wp plugin install <plugin-zip-url> --activate
+   wp norg-edge configure --site-id=<site-id> --site-key=<site-key>
+   wp norg-edge check
+   ```
 
-### Advanced overrides
+   **Let NORG connect it for you.** On the NORG page, open *Let NORG connect
+   the plugin for you*. Enter a WordPress administrator username and an
+   **Application Password** (WordPress: Users › Profile › Application
+   Passwords). NORG uses the plugin's admin-only REST endpoints
+   (`norg-edge/v1/status`, `norg-edge/v1/connect`) to enter the two values
+   itself. The key is accepted there and never returned. If your site blocks
+   its REST API or Application Passwords, NORG says so and the other methods
+   still work. You can revoke the Application Password once the plugin is
+   connected.
 
-Everything below is baked into the worker as a default. Add one of these vars
-**only** to change its default behaviour — most installs never touch this
-table.
-
-| Name | Default | Set it to… |
-|---|---|---|
-| `NORG_API_URL` | NORG's production API | Point the worker at a different NORG environment |
-| `NORG_CONTENT_BASE` | NORG's edge-content service | Point at a different render source |
-| `STRIP_FALLBACK_ENABLED` | `true` | `false` to disable the stripped-origin fallback on a render miss |
-| `EDGE_DISABLED` | `false` | `true` to switch the worker off instantly without removing it (every request passes straight to your origin) |
-| `LAZY_RENDER_ENABLED` | `true` | `false` to serve the stripped origin on a miss without asking NORG to render it |
-| `CAPTURE_ONLY` | `false` | `true` for record-only: every visitor gets your site untouched, and AI-agent visits (plus people arriving from an AI answer, when NORG has that on) are reported to NORG after the response. NORG can also switch this on from its side |
-
-There is no content-prefix or bucket-path variable — the worker authenticates
-with `SITE_ID` + `NORG_SITE_KEY` and NORG resolves which content belongs to
-your site entirely server-side. A misconfigured install cannot read another
-site's content.
-
----
-
-## Manual step: attach the route
-
-The button deploys the script, but Cloudflare does **not** attach it to any
-traffic automatically. Someone with access to the zone has to do this once:
-
-**Workers & Pages → the worker → Settings → Domains & Routes → Add route**
-
-```
-Route:  your-domain.com/*
-Zone:   your-domain.com
-```
-
-Use `{your-domain}/*`, not a narrower path — the worker is written to see
-every request and pass through the ones it doesn't handle itself. Scoping the
-route to a subtree means AI agents hitting anything outside that subtree get
-the plain, un-mirrored origin.
+3. **Run checks.** See the next section.
 
 ---
 
 ## Verifying the install
 
-Run these against a real page on your site (include the trailing slash if
-your URLs use one).
+### 1. Run checks (the real test)
 
-### 1. An AI agent gets the NORG treatment
+Click **Run checks** on Settings › NORG Edge Router, or run `wp norg-edge
+check`. The plugin sends real requests to your own site and reports each one:
 
-```bash
-curl -sI -H "User-Agent: GPTBot" https://your-domain.com/some-page/ | grep -i x-norg-edge
-```
-
-| Result | Meaning |
+| Row | Passes when |
 |---|---|
-| `X-Norg-Edge: mirror` | A NORG render exists and was served. Fully working. |
-| `X-Norg-Edge: stripped` | Nothing rendered yet — your page was served stripped, and a render was requested. Re-check in a few minutes. |
-| *(no header at all)* | The worker never saw the request — jump to [Troubleshooting](#troubleshooting). |
+| Feed | The authenticated agent feed was fetched from NORG |
+| Human | A browser request comes back untouched |
+| Search engine | A Googlebot request comes back untouched |
+| Cache reach | An AI-agent request gets past every page cache and reaches the plugin |
+| AI agent | A simulated verified agent gets `mirror` (rendered) or `stripped` (render requested) |
 
-### 2. A normal visitor is untouched
+Every row should be green. The same results appear in Tools › Site Health.
+Within seconds the install shows as active in NORG.
 
-```bash
-curl -sI -A "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36" \
-  https://your-domain.com/some-page/ | grep -i x-norg-edge
-```
-
-Expect **no output at all** — a real browser user-agent must get your
-unmodified origin response, with no NORG headers added. Load the page in an
-actual browser too; it should look identical to before the install.
-
-### 3. Search engines are untouched
+### 2. From outside the site
 
 ```bash
-curl -sI -H "User-Agent: Googlebot/2.1 (+http://www.google.com/bot.html)" \
-  https://your-domain.com/some-page/ | grep -i x-norg-edge
+# Is the plugin alive and holding the right key?
+curl -s -H "x-norg-edge-check: <your-site-key>" https://your-site.example/ | head -c 200
+# {"site_id":"…","version":"0.1.1","platform":"wordpress","entitled":true,…}
+
+# People get the site unchanged: expect no output
+curl -sI https://your-site.example/some-page/ | grep -i x-norg-edge
 ```
 
-Expect **no output**, same as a browser. Googlebot, Bingbot, Applebot,
-DuckDuckBot, Baiduspider, and YandexBot are always passed straight through.
-
-### Optional: is the worker alive at all?
-
-```bash
-curl -s -H "x-norg-edge-check: <your-site-key>" https://your-domain.com/ | head -c 200
-# {"site_id":"…","version":"0.10.0","disabled":false,"ts":…}
-```
-
-A JSON response confirms the script is deployed, routed, and holding the
-correct key. Omit the header and the same path behaves completely normally —
-this can never shadow a real page on your site.
+A curl with a `GPTBot` user agent from your own computer also shows **no**
+`X-Norg-Edge` header. This is by design: your IP isn't OpenAI's, so the
+request isn't verified. Use **Run checks** to simulate a verified agent.
 
 ---
 
-## If this route doesn't work out
+## Page caches
 
-If the button flow fails, your Cloudflare/GitHub setup can't support it, or
-you get stuck on any step above, you don't need to debug it alone — fall back
-to the **API-token install** instead. You give NORG a scoped Cloudflare API
-token (Workers Scripts: Edit, Workers Routes: Edit, Zone WAF: Edit, Zone/DNS:
-Read) and NORG deploys the worker, creates the route, and verifies the install
-for you end to end — no manual route-attachment step, and you keep getting
-worker updates automatically going forward. Full walkthrough, including how
-to create the scoped token:
-[app.norg.ai/help/cloudflare-worker](https://app.norg.ai/help/cloudflare-worker) —
-see also [Trade-offs vs. the API-token install](#trade-offs-vs-the-api-token-install)
-below, or ask your NORG contact to switch you to that route.
+Unlike the Cloudflare worker, the plugin runs **after** any page cache. If a
+cache answers an AI agent from a saved copy, the plugin never runs for that
+request.
+
+- **Cache plugins it handles for you:** WP Rocket, LiteSpeed Cache, WP Super
+  Cache, WP Fastest Cache, W3 Total Cache and FlyingPress. The plugin
+  registers NORG's AI user agents with each one so those agents skip the
+  cache. If a cache plugin's settings get reset, use **Re-apply cache
+  bypass** (or `wp norg-edge apply-cache-bypass`).
+- **Cache Enabler** can't be bypassed from another plugin.
+- **Managed-host caches** (Kinsta, WP Engine, Flywheel, …) sit outside
+  WordPress. Your host has to bypass the listed agents. The settings page
+  lists the exact user agents to ask them for. On nginx FastCGI cache, for
+  example:
+
+  ```nginx
+  if ($http_user_agent ~* "(gptbot|claudebot|perplexitybot)") { set $skip_cache 1; }
+  ```
+
+- **Apache / LiteSpeed with a cache that has no API:** set
+  `NORG_EDGE_HTACCESS_BLOCK` to write a generic `.htaccess` bypass block.
+
+Pages served to AI agents are always marked uncacheable, so no cache can
+show a NORG render to a person or a search engine.
+
+The **Cache reach** row in Run checks shows whether an agent actually got
+through.
+
+---
+
+## Configuration
+
+The settings page covers the common options. Each option also has a
+`wp-config.php` constant, and a constant overrides the setting.
+
+| Constant | Default | Meaning |
+|---|---|---|
+| `NORG_SITE_ID` / `NORG_SITE_KEY` | — | Required |
+| `NORG_TRUSTED_PROXY` | `none` | Where the visitor IP comes from: `none` (REMOTE_ADDR), `cloudflare` (CF-Connecting-IP, accepted only from Cloudflare IPs) or `header` |
+| `NORG_TRUSTED_PROXY_HEADER` | — | The header to read in `header` mode (for X-Forwarded-For, the last hop is used) |
+| `NORG_EDGE_DISABLED` | `false` | Kill switch: every visitor gets the normal site |
+| `NORG_CAPTURE_ONLY` | `false` | Record-only mode: report AI-agent visits and AI-referred human visits, and serve nothing different |
+| `NORG_STRIP_FALLBACK_ENABLED` | `true` | Serve unrendered pages to agents stripped to their text |
+| `NORG_LAZY_RENDER_ENABLED` | `true` | Ask NORG to render pages agents request |
+| `NORG_EDGE_CACHE_BYPASS` | `true` | Register AI user agents with detected page-cache plugins |
+| `NORG_EDGE_HTACCESS_BLOCK` | `false` | Write the generic `.htaccess` cache-bypass block |
+| `NORG_EDGE_ORIGIN_PROBE` | `true` | Let the site's own `llms.txt` (and similar files) take priority over NORG's |
+| `NORG_EDGE_AUTO_UPDATE` | `true` | Install plugin updates automatically |
+| `NORG_EDGE_ENV` | derived from the API host | `production` / `test` |
+| `NORG_API_URL` / `NORG_CONTENT_BASE` | NORG production | Point at another NORG environment |
+| `NORG_EDGE_DEBUG` | `false` | Write a debug log to the PHP error log (never includes the key) |
+
+---
+
+## Updates and switching it off
+
+**Updates** come from NORG's own update manifest, not wordpress.org. They
+install automatically by default, and each one is checked against its
+published SHA-256 before it's installed. Set `NORG_EDGE_AUTO_UPDATE` to
+`false` to update by hand from the Plugins screen instead.
+
+**To switch it off instantly**, use any of these. Each takes effect on the
+next request:
+
+- Tick **Disable** in the plugin's settings.
+- Add `define( 'NORG_EDGE_DISABLED', true );` to `wp-config.php`. This works
+  without logging in.
+- Deactivate the plugin.
+
+---
 
 ## Troubleshooting
 
-**No `X-Norg-Edge` header for any user-agent, and the health probe returns
-your own page instead of JSON**
-The worker isn't running on that request. Check, in order of likelihood: the
-DNS record is grey-clouded (must be proxied); the route was never added, or
-was added narrower than `{your-domain}/*`; another Worker already owns
-`{your-domain}/*` and wins on route precedence; the Worker was deployed into a
-different Cloudflare account than the one that owns the zone.
+**Cache reach is red, or agents always get the normal page**
+A page cache is answering before WordPress runs. See [Page caches](#page-caches).
+Re-apply the bypass for cache plugins. Ask your host for host-level caches.
 
-**Health probe returns your page, but the Worker shows recent invocations in
-its dashboard**
-The probe header value doesn't match `NORG_SITE_KEY` — check for a trailing
-space or a truncated paste when you set the secret.
+**AI agent row says `untouched`, and Cache reach is green**
+The agent isn't being verified. This is usually a proxy in front of the
+site, so the plugin sees the proxy's IP. Set **Visitor IP comes from** to
+Cloudflare, or to the header your proxy sets.
 
-**Health probe (or any request) returns HTTP 403 before your worker's own
-logic runs**
-Cloudflare evaluates **WAF Managed Rules** and **Bot Fight Mode** *before* a
-Worker route fires, so a zone with either enabled can block the health probe
-— and real agent traffic — before your code ever sees it. Ask your NORG
-contact about the `waf_skip_rule` action, which creates a single scoped WAF
-Custom Rule that only skips the managed WAF for known AI-agent user agents
-plus the health probe carrying your exact site key — never a blanket
-all-traffic skip. It needs a Cloudflare API token with **Zone → Zone WAF →
-Edit**.
+**Feed row is red**
+The plugin can't reach `content-craft-api.norg.ai`, or the Site ID / Site
+Key is wrong. Check for a truncated paste, and check that outbound HTTPS
+from the server isn't blocked. Until the feed loads, the plugin serves
+nothing different to anyone.
 
 **Always `stripped`, never `mirror`**
-Nothing has been rendered for that path yet. Renders run at low priority and
-a first pass over a large site can take a while. If it persists more than a
-day, check whether NORG's crawler can actually reach your origin at all — a
-firewall or WAF silently challenging it means nothing will ever render. Ask
-NORG to check the site's reachability status.
+Nothing has been rendered for that path yet. A first pass over a large site
+takes a while. If it lasts more than a day, check that NORG's crawler can
+reach your site and isn't blocked by a firewall or security plugin.
 
-**Everything returns an error, humans included**
-Check your Cloudflare Workers request usage first — see the free-plan caveat
-below. To restore service immediately, set `EDGE_DISABLED` to `true`, or
-remove the route; your origin is unaffected either way.
+**`/llms.txt` and other root files don't work on a subdirectory install**
+A WordPress at `/blog/` never receives requests for `/llms.txt`. Pages under
+`/blog/` still work.
 
-**`/mcp` or `/.well-known/mcp.json` returns your normal 404 page**
-Same "not rendered yet" condition as above — it resolves the same way. If you
-already have your own `/mcp` route, it keeps working: the worker falls
-through to your origin whenever NORG has nothing to serve at that path.
-
----
-
-## The one caveat: the Workers free plan
-
-The worker is written so that anything going wrong *inside* it falls back to
-your origin. There is exactly one failure it cannot protect you from, because
-it happens **before** the worker's own code runs at all.
-
-**On the Cloudflare Workers free plan, an account is capped at 100,000 Worker
-requests per day.** Once that's hit, Cloudflare stops invoking the Worker
-entirely and returns its own error for every request matching the route.
-Because the route is `{your-domain}/*`, that means **every request to your
-site** — humans included — and the Worker's fall-back-to-origin logic never
-gets the chance to run.
-
-- Comfortably under ~100k requests/day account-wide, the free plan is fine.
-- Anywhere near that limit, or on any site where an outage is unacceptable,
-  move to **Workers Paid** (a small flat monthly fee) before adding the
-  route — it removes the cliff entirely.
-- The limit is your whole Cloudflare **account's** total Worker requests, so
-  other Workers you run count against it too.
-
-Two Cloudflare route settings shrink that risk a great deal. Neither changes
-the Worker; both are made in the dashboard next to the route you attached.
-
-- **Exclusion routes — keep asset traffic off the Worker.** A route can exist
-  with **no** Worker attached, and a more specific route always beats a
-  wildcard. Add one route per asset prefix with the Worker set to **None**
-  (Workers Routes → Add route), e.g. `{your-domain}/static/*`,
-  `{your-domain}/assets/*`, `{your-domain}/wp-content/*`: the Worker is never
-  invoked for those requests, so they never count against the 100,000. On a
-  typical site that is ~90% of all requests. Prefixes only — Cloudflare
-  rejects `*.js`-style patterns — and never a path NORG itself serves
-  (`/.well-known/mcp.json`, `/llms.txt`, `/llms-full.txt`, `/tree.json`,
-  `/agents.md`,
-  `/graph.jsonld`, `/openapi.json`, `/mcp`, `/sse`, `/.norg/*`, your agentic
-  prefix `/ai/*`): a no-worker route there silently switches that surface
-  off. The API-token install creates these for you; the button route can't.
-- **Fail open — make a cap breach harmless.** Each route has a *request
-  limit* mode, defaulting to *fail closed* (the error page above). Set your
-  `{your-domain}/*` route to **fail open** (Workers & Pages → the Worker →
-  Settings → Domains & Routes → the route) and exceeding the cap simply
-  bypasses the Worker for the rest of the day — agents get your plain origin,
-  humans notice nothing. Do it before adding the route.
-
-If you ever need to stop the Worker in a hurry without touching the route,
-set `EDGE_DISABLED` to `true` in its variables.
+**Need help from NORG?** Use **Download debug report** on the settings page
+and send it to your NORG contact. It contains only a masked Site Key and no visitor data.
 
 ---
 
 ## Security and privacy
 
-- **The Worker is a single self-contained file with zero imports and zero
-  third-party dependencies.** What you deploy is exactly `src/edge-router-worker.js`
-  in this repo — read it before you deploy it.
-- **No NORG-internal credential of any kind is in this code.** The only secret
-  the Worker holds is the `NORG_SITE_KEY` you configure yourself, scoped to
-  this one site.
-- **NORG never has deploy access to your Cloudflare account.** The button
-  forks this repo into *your* account and Cloudflare's own CI/CD deploys it
-  from there. NORG cannot push updates to it, cannot see your account, and
-  cannot remove the Worker.
-- **What leaves your Cloudflare account:** the `SITE_ID`, the classified
-  visitor type (bot name / "human"), and the requested path, sent to NORG's
-  API so it knows what to render next and can report you visit analytics.
-  Full page content of *your own site* is never sent to NORG by this Worker —
-  it only reads NORG's own previously-rendered pages back.
+- **Zero runtime dependencies.** The plugin is plain PHP in
+  [`wordpress/norg-edge-router/`](wordpress/norg-edge-router/). Read it
+  before you install it.
+- **The only credential is the Site Key you configure**, and it's scoped to
+  this one site. It's never logged, never returned by the REST API, and only
+  appears masked in the debug report.
+- **What it sends to NORG:**
+  - The agent feed fetch (about hourly).
+  - A heartbeat with the plugin, WordPress and PHP versions.
+  - Render requests for paths that agents asked for.
+  - MCP requests addressed to your site.
+  - Update checks.
+
+  In record-only mode it also reports AI-agent visits and AI-referred visits,
+  using a daily-rotating, non-reversible visitor hash. It never sends
+  cookies, names or emails.
+- **Nothing is sent for ordinary visitors** outside record-only mode. Your
+  page content is never sent to NORG. NORG crawls your public pages itself.
+
+Full detail is in the plugin's
+[`readme.txt`](wordpress/norg-edge-router/readme.txt), under "External
+services".
 
 ---
 
-## Limitations
+## For NORG engineers
 
-Installing this way trades NORG's ability to maintain the install for you
-never having to hand over an API token. That trade is real:
+The plugin's developer reference is [`wordpress/README.md`](wordpress/README.md).
+It covers:
 
-- **A button install is a fork NORG cannot update.** Cloudflare deploys from
-  the clone in *your* account. When NORG ships a Worker fix — a classification
-  bug, a new bot-pattern shape, a safety fix — every button-installed site
-  keeps running the old version until someone in your account redeploys it.
-  Heartbeats report the deployed version, so NORG can *see* the drift and will
-  email you about it, but cannot act on it directly.
-- **NORG's only remote control is invalidating your Site Key.** Rotating or
-  revoking it makes this Worker's calls back to NORG start failing — which,
-  because every failure path here ends at your origin, degrades the install to
-  "always serve origin." That's a safe stop, not an uninstall: the script
-  keeps running and the route stays attached until you remove it.
-- **There's no route-conflict detection.** If your zone already has a Worker
-  on `{your-domain}/*`, Cloudflare's route precedence silently decides which
-  one runs, and the other is never invoked.
-- **Config drift is invisible from NORG's side.** Editing `NORG_CONTENT_BASE`
-  or clearing `NORG_SITE_KEY` in your dashboard produces an install that looks
-  deployed but serves nothing but your origin.
+- How the plugin differs from the Cloudflare worker, line by line.
+- The repository layout.
+- Unit and end-to-end tests.
+- The release steps: tag `wordpress-vX.Y.Z`, then pin the version and
+  SHA-256 in content-craft's `services/edge_routing/wordpress_pin.py` and
+  `EDGE_WORKER_VERSION_WORDPRESS`.
 
-### Trade-offs vs. the API-token install
-
-With a scoped Cloudflare API token, NORG can upload the script and create the
-route itself. That keeps the update path open: a new Worker version reaches
-your zone automatically, the route is created correctly and verified, and the
-install can be genuinely paused or removed remotely by NORG on your request.
-
-Use this button-based install when you'd rather not issue an API token —
-just budget for redeploying it yourself when NORG tells you a new version is
-available.
-
----
-
-## Local development
-
-```bash
-npm install
-cp .dev.vars.example .dev.vars   # fill in your own SITE_ID / NORG_SITE_KEY, never commit this file
-npm run dev                       # wrangler dev
-```
-
-`.dev.vars` is gitignored. Never put a real `NORG_SITE_KEY` in `wrangler.jsonc`
-or any committed file — it belongs in `.dev.vars` locally, and as an
-**encrypted** variable once deployed.
-
----
-
-## Keeping this repo in sync with NORG's backend
-
-**This repo is the source of truth for the worker.** `workers/edge-router-worker.js`
-(+ `workers/lib/`) is the editable source; `src/edge-router-worker.js` is the
-committed single-file build that the button deploys and that NORG's backend
-pins and materialises for API-token installs.
-
-If you're a NORG engineer changing the worker:
-
-1. Edit `workers/edge-router-worker.js` (or `workers/lib/`) and bump
-   `EDGE_SCRIPT_VERSION`.
-2. `npm test` (node:test, nothing to install), then `npm run build` to
-   regenerate `src/edge-router-worker.js` — commit it; CI fails on a stale
-   bundle.
-3. In `content-craft`: bump `EDGE_WORKER_VERSION` (backend setting) and the pin
-   in `apps/api/app/services/edge_routing/edge_worker_pin.py` (this repo's
-   commit SHA, the version, and the SHA-256 of `src/edge-router-worker.js`),
-   then run `node infrastructure/cloudflare/sync-edge-router.mjs` to
-   materialise the pinned bundle into `apps/api/app/assets/`.
-
-Bump both version numbers together, or every already-installed site is told
-forever that an update is available. `workers/lib/` is a copy of the shared
-classification / R2-key modules NORG's own zone workers also use; a parity
-test in `content-craft` pins the two copies against each other.
-
-Customers on this install route do **not** receive worker updates
-automatically — see [Limitations](#limitations) above.
+The worker source (`workers/`, `src/`) is also on this branch, because the
+plugin's test vectors are generated from it (`wordpress/bin/gen-vectors.mjs`).
+CI fails if the vectors are stale, so classification, paths and strip output
+stay identical to the worker.
 
 ---
 
 ## Other CDNs
 
-`main` is the Cloudflare Worker. The other providers live on their own
-branches, sharing the provider-neutral core (`core/` + `workers/lib/`) with
-this worker so classification, the entitlement gate, the strip and the
-telemetry contract stay identical everywhere.
-
-| CDN | Branch | Install guide | Status |
-|---|---|---|---|
-| **Cloudflare** | [`main`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/tree/main) | this README | Production |
-| **AWS CloudFront** (Lambda@Edge + CloudFront Functions) | [`feature/aws-cloudfront`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/tree/feature/aws-cloudfront) | [`aws/README.md`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/blob/feature/aws-cloudfront/aws/README.md) | Available — attaches to an existing distribution, no DNS change |
-| **Fastly Compute** | [`feature/fastly-compute`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/tree/feature/fastly-compute) | [`fastly/README.md`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/blob/feature/fastly-compute/fastly/README.md) | Available — requires pointing DNS at Fastly |
-| **Bunny Edge Scripting** | [`feature/bunny-edge-scripting`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/tree/feature/bunny-edge-scripting) | [`bunny/README.md`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/blob/feature/bunny-edge-scripting/bunny/README.md) | Available — requires pointing DNS at Bunny |
-| **WordPress (no CDN)** | [`feature/wordpress-plugin`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/tree/feature/wordpress-plugin) | [`wordpress/README.md`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/blob/feature/wordpress-plugin/wordpress/README.md) | Available — a plugin inside WordPress, for sites with no CDN |
-| Akamai EdgeWorkers | [`feature/akamai-edgeworkers`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/tree/feature/akamai-edgeworkers) | — | Branch reserved; no adapter yet |
-| Vercel middleware | [`feature/vercel-middleware`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/tree/feature/vercel-middleware) | — | Branch reserved; no adapter yet |
-
-The three rules in [What this worker does](#what-this-worker-does) hold on
-every provider. What differs is what each platform can offer — bot
-verification signals, where the code runs relative to the cache, rollback
-speed — and each branch's README states its own differences from this
-install up front. Read that section before installing on another CDN.
-
-The public CloudFront architecture notes are at
-[app.norg.ai/help/edge-routing-cloudfront](https://app.norg.ai/help/edge-routing-cloudfront).
+| Platform | Branch | Install guide |
+|---|---|---|
+| **Cloudflare** | [`main`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/tree/main) | [README](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/blob/main/README.md) |
+| **AWS CloudFront** | [`feature/aws-cloudfront`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/tree/feature/aws-cloudfront) | [`aws/README.md`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/blob/feature/aws-cloudfront/aws/README.md) |
+| **Fastly Compute** | [`feature/fastly-compute`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/tree/feature/fastly-compute) | [`fastly/README.md`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/blob/feature/fastly-compute/fastly/README.md) |
+| **Bunny Edge Scripting** | [`feature/bunny-edge-scripting`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/tree/feature/bunny-edge-scripting) | [`bunny/README.md`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/blob/feature/bunny-edge-scripting/bunny/README.md) |
+| **WordPress (no CDN)** | `feature/wordpress-plugin` (this branch) | this README |
 
 ---
 
 ## Support
 
-Questions about your install, your Site ID/Key, or whether the API-token
-route would suit you better — reach out to your NORG account contact.
+For questions about your install, your Site ID or Site Key, or whether a CDN
+install would suit you better, contact your NORG account contact.
