@@ -272,7 +272,7 @@ var STATIC_ASSET_SUFFIXES = /* @__PURE__ */ new Set([
 ]);
 
 // aws/lambda/lib/config.js
-var EDGE_SCRIPT_VERSION = "0.6.8";
+var EDGE_SCRIPT_VERSION = "0.6.9";
 var CONFIG_HEADERS = {
   "x-norg-site-id": "SITE_ID",
   "x-norg-secret-arn": "NORG_SECRET_ARN",
@@ -330,6 +330,7 @@ function readConfig(cfRequest) {
 
 // aws/lambda/lib/secret.js
 var CACHE_TTL_MS = 15 * 60 * 1e3;
+var MAX_STALE_MS = 60 * 60 * 1e3;
 var SECRET_TIMEOUT_MS = 1500;
 var SECRET_REGION = "us-east-1";
 var EDGE_REGIONS = /* @__PURE__ */ new Set([
@@ -348,6 +349,8 @@ var EDGE_REGIONS = /* @__PURE__ */ new Set([
   "sa-east-1"
 ]);
 var cached = { value: null, fetchedAt: 0 };
+var clients = /* @__PURE__ */ new Map();
+var refreshing = null;
 var replicaMissing = false;
 function __primeSecretCache(value) {
   cached = { value, fetchedAt: Date.now() };
@@ -380,7 +383,8 @@ function localReadRegion(arn) {
 }
 async function readSecret(arn, region) {
   const { SecretsManagerClient, GetSecretValueCommand } = loadClient();
-  const client = new SecretsManagerClient({ region });
+  if (!clients.has(region)) clients.set(region, new SecretsManagerClient({ region }));
+  const client = clients.get(region);
   const result = await client.send(new GetSecretValueCommand({ SecretId: arn }), {
     abortSignal: AbortSignal.timeout(SECRET_TIMEOUT_MS)
   });
@@ -404,6 +408,15 @@ async function getSiteKey(env) {
   if (!arn) return null;
   const age = Date.now() - cached.fetchedAt;
   if (cached.value && age < CACHE_TTL_MS) return cached.value;
+  if (cached.value && age < CACHE_TTL_MS + MAX_STALE_MS) {
+    refreshing ||= fetchAndCache(arn).finally(() => {
+      refreshing = null;
+    });
+    return cached.value;
+  }
+  return fetchAndCache(arn);
+}
+async function fetchAndCache(arn) {
   try {
     const value = await readNearest(arn);
     if (!value) return null;
@@ -1431,8 +1444,10 @@ async function serveAgent(cfRequest, request, env, url, classification) {
   const { response, refused } = await timedFetchFromNorg(env, keySuffix, headers);
   if (response) return serveMirror(cfRequest, response, env, url, keySuffix);
   if (refused) return PASSTHROUGH;
+  if (NON_HTML_PATH.test(url.pathname)) return PASSTHROUGH;
   return serveStrippedOrigin(cfRequest, request, env);
 }
+var NON_HTML_PATH = /\.(txt|xml|json|jsonld|rss|atom|csv|md|pdf|ya?ml)$/i;
 async function serveStrippedOrigin(cfRequest, request, env) {
   if (binding(env, "STRIP_FALLBACK_ENABLED") === "false") return PASSTHROUGH;
   const origin = await timedFetchOrigin(env, cfRequest, request);
@@ -1501,16 +1516,21 @@ function reportHumanPassthrough(env, request) {
 async function timed(env, step, work) {
   const started = Date.now();
   try {
-    return await work;
+    return await work();
   } finally {
     if (env.__timing) {
       env.__timing.steps[step] = (env.__timing.steps[step] || 0) + (Date.now() - started);
     }
   }
 }
-var timedFetchFromNorg = (env, ...args) => timed(env, "mirror_ms", fetchFromNorg(env, ...args));
-var timedFetchOrigin = (env, cfRequest, request) => timed(env, "page_read_ms", fetchOrigin(cfRequest, request, ORIGIN_READ_TIMEOUT_MS, env.SITE_HOST));
+var timedFetchFromNorg = (env, ...args) => timed(env, "mirror_ms", () => fetchFromNorg(env, ...args));
+var timedFetchOrigin = (env, cfRequest, request) => timed(
+  env,
+  "page_read_ms",
+  () => fetchOrigin(cfRequest, request, ORIGIN_READ_TIMEOUT_MS, env.SITE_HOST)
+);
 var invocationsInContainer = 0;
+var STALE_FEED_BUDGET_MS = 250;
 function logTiming(env, outcome) {
   const t = env.__timing;
   if (!t || !Object.keys(t.steps).length) return;
@@ -1529,8 +1549,8 @@ function logTiming(env, outcome) {
 async function handleRequest(cfRequest, env) {
   const request = toRequest(cfRequest);
   if (isHealthProbe(request, env)) {
-    env.NORG_SITE_KEY = await timed(env, "site_key_ms", getSiteKey(env));
-    await timed(env, "feed_ms", getBotFeed(env));
+    env.NORG_SITE_KEY = await timed(env, "site_key_ms", () => getSiteKey(env));
+    await timed(env, "feed_ms", () => getBotFeed(env, { budgetMs: STALE_FEED_BUDGET_MS }));
     return healthResponse(env, isEntitled());
   }
   if (isPassthrough(request, env)) return PASSTHROUGH;
@@ -1541,9 +1561,9 @@ async function handleRequest(cfRequest, env) {
     if (exit === "human") reportHumanPassthrough(env, request);
     return PASSTHROUGH;
   }
-  env.NORG_SITE_KEY = await timed(env, "site_key_ms", getSiteKey(env));
+  env.NORG_SITE_KEY = await timed(env, "site_key_ms", () => getSiteKey(env));
   if (!env.NORG_SITE_KEY) return PASSTHROUGH;
-  const feed = await timed(env, "feed_ms", getBotFeed(env));
+  const feed = await timed(env, "feed_ms", () => getBotFeed(env, { budgetMs: STALE_FEED_BUDGET_MS }));
   if (!feed.entitled) return PASSTHROUGH;
   const owned = await serveNorgOwnedSurface(cfRequest, request, env, url);
   if (owned) return owned;

@@ -34,6 +34,11 @@
 // and has exactly that gap; this deliberately does not copy it.
 const CACHE_TTL_MS = 15 * 60 * 1000;
 
+// How long past the TTL an expired key may still answer while it refreshes.
+// Beyond this the read blocks again, so a container whose refreshes keep
+// failing stops using a key nobody has confirmed for over an hour.
+const MAX_STALE_MS = 60 * 60 * 1000;
+
 // A hard ceiling: a slow secret must not hold a visitor's request open. The
 // local-region read normally answers in tens of milliseconds.
 const SECRET_TIMEOUT_MS = 1500;
@@ -51,6 +56,12 @@ export const EDGE_REGIONS = new Set([
 ]);
 
 let cached = { value: null, fetchedAt: 0 };
+// 0.6.9: one client per region for the container's life. Building one per
+// read cost a fresh client and TLS connection on every refresh; 0.6.8 logged
+// ~0.6 s per read even on warm containers in the secret's own region.
+const clients = new Map();
+// The background refresh of an expired key, so concurrent callers share one.
+let refreshing = null;
 // Set once a local-region read fails, so an install without replicas pays for
 // the miss once per container rather than on every refresh.
 let replicaMissing = false;
@@ -63,6 +74,16 @@ let replicaMissing = false;
 export function __resetSecretCache() {
   cached = { value: null, fetchedAt: 0 };
   replicaMissing = false;
+  clients.clear();
+  refreshing = null;
+}
+
+/**
+ * Age the cached key past its TTL. Test seam only.
+ * @returns {void}
+ */
+export function __expireSecretCache() {
+  cached = { ...cached, fetchedAt: Date.now() - CACHE_TTL_MS - 1 };
 }
 
 /**
@@ -152,7 +173,8 @@ export function localReadRegion(arn) {
  */
 async function readSecret(arn, region) {
   const { SecretsManagerClient, GetSecretValueCommand } = loadClient();
-  const client = new SecretsManagerClient({ region });
+  if (!clients.has(region)) clients.set(region, new SecretsManagerClient({ region }));
+  const client = clients.get(region);
   const result = await client.send(new GetSecretValueCommand({ SecretId: arn }), {
     abortSignal: AbortSignal.timeout(SECRET_TIMEOUT_MS),
   });
@@ -184,6 +206,13 @@ async function readNearest(arn) {
 /**
  * The site key for this install, cached per container.
  *
+ * 0.6.9: an expired key still answers while a refresh runs behind it, so only
+ * a container's first agent request waits on Secrets Manager. A rotated key
+ * takes effect once that refresh lands — the request after expiry, or the one
+ * after that — instead of on the expiring request itself. The refresh is not
+ * awaited; Lambda@Edge freezes the container on return and the read resumes
+ * when it next runs.
+ *
  * @param {Object} env Config object carrying NORG_SECRET_ARN.
  * @returns {Promise<?string>} The key, or null when it cannot be obtained.
  */
@@ -193,7 +222,22 @@ export async function getSiteKey(env) {
 
   const age = Date.now() - cached.fetchedAt;
   if (cached.value && age < CACHE_TTL_MS) return cached.value;
+  if (cached.value && age < CACHE_TTL_MS + MAX_STALE_MS) {
+    refreshing ||= fetchAndCache(arn).finally(() => {
+      refreshing = null;
+    });
+    return cached.value;
+  }
+  return fetchAndCache(arn);
+}
 
+/**
+ * Read the key and cache it; null on any failure, never a throw.
+ *
+ * @param {string} arn Primary secret ARN.
+ * @returns {Promise<?string>} The key, or null when it cannot be obtained.
+ */
+async function fetchAndCache(arn) {
   try {
     const value = await readNearest(arn);
     if (!value) return null;

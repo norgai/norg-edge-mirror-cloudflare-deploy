@@ -41,10 +41,11 @@ var UNENTITLED = Object.freeze({
 });
 
 // aws/lambda/lib/config.js
-var EDGE_SCRIPT_VERSION = "0.6.8";
+var EDGE_SCRIPT_VERSION = "0.6.9";
 
 // aws/lambda/lib/secret.js
 var CACHE_TTL_MS = 15 * 60 * 1e3;
+var MAX_STALE_MS = 60 * 60 * 1e3;
 var SECRET_TIMEOUT_MS = 1500;
 var SECRET_REGION = "us-east-1";
 var EDGE_REGIONS = /* @__PURE__ */ new Set([
@@ -63,6 +64,8 @@ var EDGE_REGIONS = /* @__PURE__ */ new Set([
   "sa-east-1"
 ]);
 var cached = { value: null, fetchedAt: 0 };
+var clients = /* @__PURE__ */ new Map();
+var refreshing = null;
 var replicaMissing = false;
 function loadClient() {
   return require("@aws-sdk/client-secrets-manager");
@@ -92,7 +95,8 @@ function localReadRegion(arn) {
 }
 async function readSecret(arn, region) {
   const { SecretsManagerClient, GetSecretValueCommand } = loadClient();
-  const client = new SecretsManagerClient({ region });
+  if (!clients.has(region)) clients.set(region, new SecretsManagerClient({ region }));
+  const client = clients.get(region);
   const result = await client.send(new GetSecretValueCommand({ SecretId: arn }), {
     abortSignal: AbortSignal.timeout(SECRET_TIMEOUT_MS)
   });
@@ -116,6 +120,15 @@ async function getSiteKey(env) {
   if (!arn) return null;
   const age = Date.now() - cached.fetchedAt;
   if (cached.value && age < CACHE_TTL_MS) return cached.value;
+  if (cached.value && age < CACHE_TTL_MS + MAX_STALE_MS) {
+    refreshing ||= fetchAndCache(arn).finally(() => {
+      refreshing = null;
+    });
+    return cached.value;
+  }
+  return fetchAndCache(arn);
+}
+async function fetchAndCache(arn) {
   try {
     const value = await readNearest(arn);
     if (!value) return null;
