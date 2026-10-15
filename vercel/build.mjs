@@ -68,7 +68,9 @@ for (const file of listJs(outdir)) {
   const leaked = FORBIDDEN_NAMES.filter((name) => code.includes(name));
   if (leaked.length) throw new Error(`${file}: forbidden names ${leaked.join(", ")}`);
 }
-console.log(`built ${outdir}`);
+// stderr, not stdout: prepack runs this inside `npm pack --json`, whose stdout
+// must stay pure JSON.
+console.error(`built ${outdir}`);
 
 /**
  * Every .js file under a directory.
