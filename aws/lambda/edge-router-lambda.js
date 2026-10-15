@@ -104,7 +104,7 @@ import {
   ORIGIN_READ_TIMEOUT_MS,
   PASSTHROUGH,
   toOrigin,
-  viewerHost,
+  publicHostFor,
   fetchOrigin,
   switchOriginToNorg,
 } from "./lib/origin.js";
@@ -209,7 +209,7 @@ function isPassthrough(request, env) {
  * @returns {Promise<Response|Object>} Response, or PASSTHROUGH.
  */
 async function serveOriginFirstArtifact(cfRequest, request, env, url, alternateFormatHeaders) {
-  const origin = await fetchOrigin(cfRequest, request, ORIGIN_READ_TIMEOUT_MS);
+  const origin = await fetchOrigin(cfRequest, request, ORIGIN_READ_TIMEOUT_MS, env.SITE_HOST);
   if (origin && origin.status === 200) {
     const contentType = origin.headers.get("content-type") || "";
     // A real llms.txt/tree.json is never HTML; an HTML 200 is a SPA soft-404.
@@ -405,7 +405,7 @@ async function serveAgent(cfRequest, request, env, url, classification) {
 async function serveStrippedOrigin(cfRequest, request, env) {
   if (binding(env, "STRIP_FALLBACK_ENABLED") === "false") return PASSTHROUGH;
 
-  const origin = await fetchOrigin(cfRequest, request, ORIGIN_READ_TIMEOUT_MS);
+  const origin = await fetchOrigin(cfRequest, request, ORIGIN_READ_TIMEOUT_MS, env.SITE_HOST);
   if (!origin) return PASSTHROUGH;
 
   const contentType = origin.headers.get("content-type") || "";
@@ -657,13 +657,15 @@ export async function handler(event) {
   let pristine = cfRequest;
 
   try {
-    // Read before anything can overwrite it: an origin switch replaces the Host
-    // header with the receptionist's name. Every passthrough leaves Host as the
-    // distribution delivered it and adds the public host alongside.
-    const publicHost = viewerHost(cfRequest);
     scrubConfigHeaders((pristine = structuredClone(cfRequest)));
 
     const env = readConfig(cfRequest);
+    // Read before anything can overwrite it: an origin switch replaces the Host
+    // header with the receptionist's name. readConfig touches only the custom
+    // headers, so the viewer's Host is still as delivered here. Every
+    // passthrough leaves Host alone and adds the public host alongside, falling
+    // back to the hostname configured at install (publicHostFor).
+    const publicHost = publicHostFor(cfRequest, env.SITE_HOST);
     // Rule 3, in CloudFront's shape: core's isConfigured() wants the key on the
     // env, but on this provider the key is not in the config at all — the ARN
     // that leads to it is. Without both, every NORG call would be refused, so

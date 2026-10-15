@@ -57,6 +57,28 @@ export function viewerHost(cfRequest) {
 }
 
 /**
+ * The site's public hostname: the viewer's, or the one configured at install.
+ *
+ * The viewer's Host is used when it names something other than the origin. A
+ * customer origin request policy that does not forward the viewer's Host
+ * delivers the origin's own name instead, and then the hostname content-craft
+ * wrote into the install config (`x-norg-site-host`, the site's domain) is the
+ * only source of the public name. Without it the router's page reads went
+ * straight to the origin and timed out against an origin that accepts only
+ * CloudFront, and X-Norg-Public-Host named the origin (0.6.6 and earlier).
+ *
+ * @param {Object} cfRequest CloudFront request object.
+ * @param {?string} configuredHost SITE_HOST from the install config.
+ * @returns {?string} The public hostname, or null when there is none to trust.
+ */
+export function publicHostFor(cfRequest, configuredHost) {
+  const viewer = viewerHost(cfRequest);
+  if (viewer && viewer !== cfRequest?.origin?.custom?.domainName) return viewer;
+  if (configuredHost && HOSTNAME_PATTERN.test(configuredHost)) return configuredHost;
+  return viewer;
+}
+
+/**
  * Tell the origin which public hostname this request arrived on.
  *
  * Always authoritative: the header is SET from the viewer's real Host, or
@@ -119,16 +141,18 @@ export const ORIGIN_READ_TIMEOUT_MS = 3000;
  * agent request (4-9 seconds), and AI fetchers gave up first (2026-10-15). The
  * loop guard the read carries makes the router pass that request straight on.
  * When the Host names the origin itself (a policy that does not forward the
- * viewer's Host) there is no public name to use, and the origin is read
- * directly as before.
+ * viewer's Host), the public name comes from the install config; only when
+ * neither is available is the origin read directly.
  *
  * @param {Object} cfRequest CloudFront request object.
+ * @param {?string} configuredHost SITE_HOST from the install config, used when
+ *   the Host names the origin (see publicHostFor).
  * @returns {?{url: string, viaDistribution: boolean}} Target, or null.
  */
-export function originReadTarget(cfRequest) {
+export function originReadTarget(cfRequest, configuredHost) {
   const direct = originUrl(cfRequest);
   if (!direct) return null;
-  const publicHost = viewerHost(cfRequest);
+  const publicHost = publicHostFor(cfRequest, configuredHost);
   if (!publicHost || publicHost === cfRequest.origin?.custom?.domainName) {
     return { url: direct, viaDistribution: false };
   }
@@ -160,10 +184,11 @@ export function originReadTarget(cfRequest) {
  * @param {Object} cfRequest CloudFront request object.
  * @param {Request} request Request view of the same call.
  * @param {number} timeoutMs Budget for the fetch.
+ * @param {?string} configuredHost SITE_HOST from the install config.
  * @returns {Promise<?Response>} Origin response, or null on any failure.
  */
-export async function fetchOrigin(cfRequest, request, timeoutMs) {
-  const target = originReadTarget(cfRequest);
+export async function fetchOrigin(cfRequest, request, timeoutMs, configuredHost) {
+  const target = originReadTarget(cfRequest, configuredHost);
   if (!target) return null;
 
   const headers = new Headers(request.headers);
@@ -179,7 +204,7 @@ export async function fetchOrigin(cfRequest, request, timeoutMs) {
   headers.delete("host");
   // The read is re-served to the caller, so absolute URLs in it must name the
   // site the visitor is on. Set or dropped, never relayed from the viewer.
-  const publicHost = viewerHost(cfRequest);
+  const publicHost = publicHostFor(cfRequest, configuredHost);
   if (publicHost) headers.set(PUBLIC_HOST_HEADER, publicHost);
   else headers.delete(PUBLIC_HOST_HEADER);
   // The body is read and re-served by this function, so it must arrive as

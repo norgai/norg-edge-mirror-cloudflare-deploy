@@ -57,6 +57,11 @@ import { HEALTH_CHECK_HEADER, PUBLIC_HOST_HEADER } from "../../../core/constants
  * to the customer origin on any thrown exception or oversized response, and the
  * health-probe header, which carried the site key in a plain viewer request.
  *
+ * 0.6.7 — the public hostname comes from the install config
+ * (`x-norg-site-host`) when the customer's origin request policy delivers the
+ * origin's own name as Host, so page reads still go through the distribution
+ * and X-Norg-Public-Host is right under every policy.
+ *
  * 0.6.6 — the router's own page reads (the strip fallback, origin-first
  * artifacts) go through the distribution's public hostname with the loop
  * guard, not to the origin directly, and give up after 3 s. An origin that
@@ -97,7 +102,7 @@ import { HEALTH_CHECK_HEADER, PUBLIC_HOST_HEADER } from "../../../core/constants
  * is read from the replica in the region that ran the function. Behaviour
  * tracks edge-router-worker.js 0.11.7.
  */
-export const EDGE_SCRIPT_VERSION = "0.6.6";
+export const EDGE_SCRIPT_VERSION = "0.6.7";
 
 // Custom origin header -> binding name. Mirrors build_worker_bindings() in
 // content-craft's install_service.py; adding a binding there means adding it
@@ -116,6 +121,10 @@ const CONFIG_HEADERS = {
   "x-norg-disabled": "EDGE_DISABLED",
   "x-norg-lazy-render": "LAZY_RENDER_ENABLED",
   "x-norg-env": "EDGE_ENV",
+  // The site's public hostname, written at install. Used only when the
+  // customer's origin request policy delivers the origin's own name as Host
+  // (see publicHostFor in origin.js).
+  "x-norg-site-host": "SITE_HOST",
   // CloudFront-only. Origin-request fires on a cache miss, so the passthrough
   // event stream is incomplete here and rides the customer's human traffic;
   // it is off unless an install explicitly asks for it. See telemetry.js.
