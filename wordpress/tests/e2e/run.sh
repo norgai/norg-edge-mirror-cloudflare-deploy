@@ -22,10 +22,14 @@ GOOGLE="Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)
 BROWSER="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
 PASS=0; FAIL=0; H="$WORK/h.txt"; B="$WORK/b.txt"; MOCK_PID=""; WP_PID=""
 
-start_mock() { MOCK_FEED_TTL="${1:-3600}" nohup "$PHP_BIN" -S "127.0.0.1:$MOCK_PORT" "$HERE/mock-norg.php" >"$WORK/mock.out" 2>&1 & MOCK_PID=$!; sleep 0.7; }
+start_mock() { MOCK_FEED_TTL="${1:-3600}" nohup "$PHP_BIN" -d opcache.enable_cli=0 -S "127.0.0.1:$MOCK_PORT" "$HERE/mock-norg.php" >"$WORK/mock.out" 2>&1 & MOCK_PID=$!; bound "$WORK/mock.out"; }
 stop_mock() { [ -n "$MOCK_PID" ] && kill "$MOCK_PID" 2>/dev/null; wait "$MOCK_PID" 2>/dev/null; MOCK_PID=""; }
-start_wp() { PHP_CLI_SERVER_WORKERS=4 nohup "$PHP_BIN" -S "127.0.0.1:$PORT" -t "$WP_DIR" "$HERE/wp-router.php" >"$WORK/wp.out" 2>&1 & WP_PID=$!; sleep 0.7; }
-cleanup() { stop_mock; [ -n "$WP_PID" ] && kill "$WP_PID" 2>/dev/null; }
+# A server that cannot bind would leave requests to whatever already holds the port.
+bound() { sleep 0.7; if grep -q "Failed to listen" "$1"; then echo "port in use: $(cat "$1")" >&2; exit 2; fi; }
+start_wp() { PHP_CLI_SERVER_WORKERS=4 nohup "$PHP_BIN" -d opcache.enable_cli=0 -S "127.0.0.1:$PORT" -t "$WP_DIR" "$HERE/wp-router.php" >"$WORK/wp.out" 2>&1 & WP_PID=$!; bound "$WORK/wp.out"; }
+# PHP_CLI_SERVER_WORKERS forks children that keep listening after the parent dies.
+stop_wp() { [ -n "$WP_PID" ] && { pkill -P "$WP_PID" 2>/dev/null; kill "$WP_PID" 2>/dev/null; }; }
+cleanup() { stop_mock; stop_wp; }
 trap cleanup EXIT
 
 ok() { PASS=$((PASS+1)); printf '  \033[32m✓\033[0m %s\n' "$1"; }
