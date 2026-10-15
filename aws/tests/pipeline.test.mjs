@@ -1253,3 +1253,50 @@ test("the timing line carries no IP and no user agent", async () => {
   assert.equal(lines.includes(GPTBOT_UA), false);
   assert.equal(/\d+\.\d+\.\d+\.\d+/.test(lines), false);
 });
+
+// --- 0.6.9: a faster first agent request -----------------------------------------
+
+test("an agent's robots.txt with no mirror copy is passed through without a page read", async () => {
+  // Only HTML is ever stripped; 0.6.8 read robots.txt anyway and ClaudeBot
+  // waited on a 3 s timeout for a file it then got by passthrough.
+  const { result, calls } = await run({ uri: "/robots.txt", headers: { "user-agent": GPTBOT_UA } }, {});
+  assert.ok(isPassthroughResult(result));
+  assert.equal(
+    calls.some((c) => c.url.startsWith(`https://${PUBLIC_HOST}/`) || c.url.includes(ORIGIN_HOST)),
+    false,
+    "no page read for a non-HTML path",
+  );
+});
+
+test("an HTML page with no mirror copy still gets the strip read", async () => {
+  const { calls } = await run({ uri: "/about/", headers: { "user-agent": GPTBOT_UA } }, {});
+  assert.ok(calls.some((c) => c.url.startsWith(`https://${PUBLIC_HOST}/`) || c.url.includes(ORIGIN_HOST)));
+});
+
+test("a slow refresh of an expired rules list holds an agent for at most ~250 ms", async () => {
+  __test_setFeed({
+    ...FEED,
+    entitled: true,
+    patterns: FEED.patterns,
+    cidrRanges: FEED.cidr_ranges,
+    skipPaths: [],
+    agenticPathPrefix: "/ai",
+    etag: "",
+    fetchedAt: Date.now() - 10_000,
+    ttl: 1,
+  });
+  const started = Date.now();
+  const { result } = await run(
+    { headers: { "user-agent": GPTBOT_UA } },
+    {
+      feed: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        return new Response(JSON.stringify(FEED), { status: 200, headers: { "content-type": "application/json" } });
+      },
+      mirror: () => mirrorHit("<html><body>NORG render</body></html>"),
+    },
+  );
+  const elapsed = Date.now() - started;
+  assert.equal(header(result, "x-norg-edge"), "mirror", "the cached rules still serve the agent");
+  assert.ok(elapsed < 800, `held the agent ${elapsed} ms`);
+});

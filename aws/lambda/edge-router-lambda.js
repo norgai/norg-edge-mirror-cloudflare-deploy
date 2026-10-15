@@ -384,8 +384,15 @@ async function serveAgent(cfRequest, request, env, url, classification) {
   if (response) return serveMirror(cfRequest, response, env, url, keySuffix);
   // A refused install changes nothing, this request included: no strip.
   if (refused) return PASSTHROUGH;
+  // Only an HTML page is ever stripped, so reading a robots.txt or a sitemap
+  // only to pass it through costs the agent a page read for nothing — 3 s,
+  // timed out, on ClaudeBot's first robots.txt in 0.6.8's logs.
+  if (NON_HTML_PATH.test(url.pathname)) return PASSTHROUGH;
   return serveStrippedOrigin(cfRequest, request, env);
 }
+
+// Paths whose answer is never an HTML page, so never a strip candidate.
+const NON_HTML_PATH = /\.(txt|xml|json|jsonld|rss|atom|csv|md|pdf|ya?ml)$/i;
 
 /**
  * Serve the origin, stripped to a token-dense form where possible.
@@ -529,15 +536,20 @@ function reportHumanPassthrough(env, request) {
  * timed so the log says which one is slow. A step called twice (two mirror
  * fetches) adds up.
  *
+ * 0.6.9: takes a function, not a started promise. An async function runs
+ * synchronously up to its first await, so timing a promise missed everything
+ * before it — loading the AWS SDK and building its client — which 0.6.8's
+ * logs showed as 1-2.4 s missing from every cold request.
+ *
  * @param {Object} env Install config; carries the per-request timing record.
  * @param {string} step Step name.
- * @param {Promise} work The awaited work.
+ * @param {Function} work Starts the work and returns its promise.
  * @returns {Promise} The work's result.
  */
 async function timed(env, step, work) {
   const started = Date.now();
   try {
-    return await work;
+    return await work();
   } finally {
     if (env.__timing) {
       env.__timing.steps[step] = (env.__timing.steps[step] || 0) + (Date.now() - started);
@@ -546,13 +558,22 @@ async function timed(env, step, work) {
 }
 
 /** Mirror fetch from NORG, timed. */
-const timedFetchFromNorg = (env, ...args) => timed(env, "mirror_ms", fetchFromNorg(env, ...args));
+const timedFetchFromNorg = (env, ...args) => timed(env, "mirror_ms", () => fetchFromNorg(env, ...args));
 
 /** The router's own page read, timed. */
 const timedFetchOrigin = (env, cfRequest, request) =>
-  timed(env, "page_read_ms", fetchOrigin(cfRequest, request, ORIGIN_READ_TIMEOUT_MS, env.SITE_HOST));
+  timed(env, "page_read_ms", () =>
+    fetchOrigin(cfRequest, request, ORIGIN_READ_TIMEOUT_MS, env.SITE_HOST),
+  );
 
 let invocationsInContainer = 0;
+
+// How long an agent may wait on a refresh of an expired agent rules list
+// before the cached copy answers (core's default is 2 s). Lambda@Edge has no
+// keep-alive, but a refresh that outlives this is not cancelled: it resumes
+// when the container next runs and lands then. 0.6.8 logged 1.1-2.0 s feed
+// refreshes from regions far from NORG's API, on otherwise-warm containers.
+const STALE_FEED_BUDGET_MS = 250;
 
 /**
  * One log line per agent-shaped request: where its time went.
@@ -602,8 +623,8 @@ export async function handleRequest(cfRequest, env) {
     // The feed is authenticated, and on this platform the key is read lazily
     // below — so it has to be read here first, or the fetch is a 401 and the
     // probe reports false for a site NORG serves (0.6.2 did exactly that).
-    env.NORG_SITE_KEY = await timed(env, "site_key_ms", getSiteKey(env));
-    await timed(env, "feed_ms", getBotFeed(env));
+    env.NORG_SITE_KEY = await timed(env, "site_key_ms", () => getSiteKey(env));
+    await timed(env, "feed_ms", () => getBotFeed(env, { budgetMs: STALE_FEED_BUDGET_MS }));
     return healthResponse(env, isEntitled());
   }
   if (isPassthrough(request, env)) return PASSTHROUGH;
@@ -627,13 +648,13 @@ export async function handleRequest(cfRequest, env) {
   // here, after every cheap exit above and immediately before the first call
   // that needs it. Assigned onto env because core/ reads it there, which
   // keeps every provider's credential handling identical.
-  env.NORG_SITE_KEY = await timed(env, "site_key_ms", getSiteKey(env));
+  env.NORG_SITE_KEY = await timed(env, "site_key_ms", () => getSiteKey(env));
   if (!env.NORG_SITE_KEY) return PASSTHROUGH;
 
   // A stale feed is refreshed inline here (no keep-alive on this platform, so
   // a background refresh would be lost when the container freezes). Only
   // bot-shaped requests reach this line, so the wait falls on an agent.
-  const feed = await timed(env, "feed_ms", getBotFeed(env));
+  const feed = await timed(env, "feed_ms", () => getBotFeed(env, { budgetMs: STALE_FEED_BUDGET_MS }));
   if (!feed.entitled) return PASSTHROUGH;
 
   const owned = await serveNorgOwnedSurface(cfRequest, request, env, url);

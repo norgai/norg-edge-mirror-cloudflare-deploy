@@ -3,8 +3,10 @@
  *
  * @description Cache behaviour, and that every failure degrades to null.
  *
- * The contract that matters is the failure one: getSiteKey must never throw and
- * must never return a stale-but-wrong value. A null means the router serves the
+ * The contract that matters is the failure one: getSiteKey must never throw, and
+ * an expired key answers only while a refresh runs and for at most an hour
+ * past its TTL (0.6.9). A rotated-out key is refused by NORG, which stops the
+ * install diverting until the refresh lands — the safe direction. A null means the router serves the
  * customer's origin, so a Secrets Manager outage degrades the product without
  * breaking the site — rule 1.
  */
@@ -13,6 +15,7 @@ import { strict as assert } from "node:assert";
 import { afterEach, test } from "node:test";
 
 import {
+  __expireSecretCache,
   __primeSecretCache,
   __resetSecretCache,
   EDGE_REGIONS,
@@ -24,7 +27,38 @@ import {
 
 const ARN = "arn:aws:secretsmanager:us-east-1:1:secret:norg-AbCdEf";
 
-afterEach(() => __resetSecretCache());
+const realRequire = globalThis.require;
+
+afterEach(() => {
+  __resetSecretCache();
+  globalThis.require = realRequire;
+});
+
+/**
+ * Stand in for the runtime's @aws-sdk/client-secrets-manager.
+ *
+ * secret.js reaches the SDK through a free `require`, which resolves to the
+ * global in an ES module, so a test can supply one without any AWS access.
+ *
+ * @param {Function} answer Resolves each GetSecretValue call.
+ * @returns {{sends: number, clients: number}} Live call counters.
+ */
+function stubSdk(answer) {
+  const calls = { sends: 0, clients: 0 };
+  globalThis.require = () => ({
+    SecretsManagerClient: class {
+      constructor() {
+        calls.clients += 1;
+      }
+      send() {
+        calls.sends += 1;
+        return answer();
+      }
+    },
+    GetSecretValueCommand: class {},
+  });
+  return calls;
+}
 
 test("no ARN configured means no key, and no attempt to fetch one", async () => {
   assert.equal(await getSiteKey({}), null);
@@ -49,17 +83,49 @@ test("a failure is not cached, so the next request retries", async () => {
   assert.equal(await getSiteKey({ NORG_SECRET_ARN: ARN }), "nek_live_recovered");
 });
 
-test("an expired cache entry is not served", async () => {
+test("an expired key answers while one background refresh runs", async () => {
+  // 0.6.9: only a container's first agent request waits on Secrets Manager.
   __primeSecretCache("nek_live_stale");
-  // 15-minute TTL; reach past it without waiting.
+  const calls = stubSdk(async () => {
+    await new Promise((r) => setTimeout(r, 20));
+    return { SecretString: "nek_live_fresh" };
+  });
+  __expireSecretCache();
+
+  assert.equal(await getSiteKey({ NORG_SECRET_ARN: ARN }), "nek_live_stale");
+  assert.equal(await getSiteKey({ NORG_SECRET_ARN: ARN }), "nek_live_stale");
+  assert.equal(calls.sends, 1, "concurrent callers share one refresh");
+
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(await getSiteKey({ NORG_SECRET_ARN: ARN }), "nek_live_fresh");
+});
+
+test("a key more than an hour past its TTL is not served", async () => {
+  __primeSecretCache("nek_live_stale");
+  // 15-minute TTL plus the one-hour stale window; reach past both.
   const realNow = Date.now;
-  Date.now = () => realNow() + 16 * 60 * 1000;
+  Date.now = () => realNow() + 76 * 60 * 1000;
   try {
     // The refetch fails (no AWS here), and the stale value must NOT be returned.
     assert.equal(await getSiteKey({ NORG_SECRET_ARN: ARN }), null);
   } finally {
     Date.now = realNow;
   }
+});
+
+test("one Secrets Manager client per region serves every read", async () => {
+  const calls = stubSdk(async () => ({ SecretString: "nek_live_x" }));
+  await getSiteKey({ NORG_SECRET_ARN: ARN });
+  __expireSecretCache();
+  const realNow = Date.now;
+  Date.now = () => realNow() + 76 * 60 * 1000;
+  try {
+    await getSiteKey({ NORG_SECRET_ARN: ARN });
+  } finally {
+    Date.now = realNow;
+  }
+  assert.equal(calls.sends, 2);
+  assert.equal(calls.clients, 1, "the client is built once and reused");
 });
 
 test("a bare-string secret is the key", () => {
