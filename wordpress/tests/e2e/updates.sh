@@ -26,8 +26,9 @@ with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED
             data = data.replace(b"0.1.0", b"0.1.2")
         zout.writestr(item, data)
 PY
-nohup "$PHP_BIN" -S "127.0.0.1:$MOCK_PORT" "$HERE/mock-norg.php" >/dev/null 2>&1 & MP=$!
+nohup "$PHP_BIN" -d opcache.enable_cli=0 -S "127.0.0.1:$MOCK_PORT" "$HERE/mock-norg.php" >"$WORK/mock.out" 2>&1 & MP=$!
 trap 'kill $MP 2>/dev/null; rm -f "$MOCK_STATE/update_version" "$MOCK_STATE/update_sha" "$MOCK_STATE/package.zip"' EXIT; sleep 0.7
+grep -q "Failed to listen" "$WORK/mock.out" && { echo "port in use: $(cat "$WORK/mock.out")" >&2; exit 2; }
 reset_updates() { wpcli eval 'delete_site_transient("update_plugins"); delete_site_transient("norg_edge_update_manifest");' >/dev/null; }
 check "installed from a zip (not a dev symlink)" '[ ! -L "$WP_DIR/wp-content/plugins/norg-edge-router" ]'
 
