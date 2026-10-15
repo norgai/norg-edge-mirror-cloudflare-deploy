@@ -60,6 +60,7 @@ final class Plugin {
 			( new Admin\Notices( $plugin ) )->register();
 		}
 		Site_Health::register( $plugin );
+		( new Rest_Api( $plugin ) )->register();
 		if ( defined( 'WP_CLI' ) && WP_CLI ) {
 			\WP_CLI::add_command( 'norg-edge', new Cli( $plugin ) );
 		}

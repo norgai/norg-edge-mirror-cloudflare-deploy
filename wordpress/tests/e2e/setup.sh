@@ -53,6 +53,8 @@ cat > "$WP_DIR/wp-content/mu-plugins/e2e-allow-local-packages.php" <<'MU'
 // E2E only: let download_url() fetch from the local mock NORG.
 add_filter( 'http_request_host_is_external', static function ( $external, $host ) { return '127.0.0.1' === $host ? true : $external; }, 10, 2 );
 add_filter( 'http_allowed_safe_ports', static function ( $ports ) { return array_merge( (array) $ports, array( 8890 ) ); } );
+// E2E only: the site is plain HTTP, where core refuses Application Passwords.
+add_filter( 'wp_is_application_passwords_available', '__return_true' );
 MU
 wp core install --url="http://127.0.0.1:$PORT" --title="E2E Shop" --admin_user=admin --admin_password=admin --admin_email=e2e@example.test --skip-email --quiet
 wp rewrite structure '/%postname%/' --quiet

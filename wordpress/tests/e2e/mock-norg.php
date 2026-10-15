@@ -57,7 +57,7 @@ function out( $status, $data, array $extra = array() ) {
 
 if ( '/api/v1/edge/wordpress/update-manifest' === $path ) {
 	// Update tests: MOCK_UPDATE_VERSION / MOCK_PKG / MOCK_UPDATE_SHA (state files override env).
-	$version = is_file( "$state/update_version" ) ? trim( file_get_contents( "$state/update_version" ) ) : '0.1.0';
+	$version = is_file( "$state/update_version" ) ? trim( file_get_contents( "$state/update_version" ) ) : '0.1.1';
 	$sha     = is_file( "$state/update_sha" ) ? trim( file_get_contents( "$state/update_sha" ) ) : str_repeat( '0', 64 );
 	$port    = $_SERVER['SERVER_PORT'];
 	out( 200, array( 'version' => $version, 'package' => "http://127.0.0.1:$port/pkg/norg-edge-router.zip", 'sha256' => $sha, 'requires' => '6.0', 'tested' => '7.1', 'requires_php' => '7.4', 'channel' => 'ga' ) );
@@ -105,7 +105,7 @@ if ( '/api/v1/edge/bot-patterns' === $path ) {
 
 if ( 'POST' === $method && preg_match( '#^/api/v1/edge/(heartbeat|render-requests|events|page-views)$#', $path, $m ) ) {
 	$answers = array(
-		'heartbeat'       => array( 'status' => 'ok', 'latest_version' => '0.1.0', 'update_available' => false ),
+		'heartbeat'       => array( 'status' => 'ok', 'latest_version' => '0.1.1', 'update_available' => false ),
 		'render-requests' => array( 'status' => 'queued', 'path' => json_decode( $body, true )['path'] ?? '' ),
 		'events'          => array( 'status' => 'recorded', 'id' => 'e1' ),
 		'page-views'      => array( 'status' => 'recorded', 'id' => 'p1' ),

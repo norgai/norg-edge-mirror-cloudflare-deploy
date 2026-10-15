@@ -49,22 +49,16 @@ final class Cli {
 	 * @return void
 	 */
 	public function configure( $args, $assoc_args ) {
-		$site_id = strtolower( (string) ( $assoc_args['site-id'] ?? '' ) );
-		$key     = (string) ( $assoc_args['site-key'] ?? '' );
-		if ( ! preg_match( '/^[0-9a-f-]{36}$/', $site_id ) || ! preg_match( '/^nek_(live|test)_[A-Za-z0-9_-]{20,}$/', $key ) ) {
-			\WP_CLI::error( 'Pass --site-id=<uuid> and --site-key=nek_live_...' );
-		}
-		$values = array(
-			'site_id'  => $site_id,
-			'site_key' => $key,
+		$parsed = Connect::values(
+			$assoc_args['site-id'] ?? '',
+			$assoc_args['site-key'] ?? '',
+			isset( $assoc_args['env'] ) ? (string) $assoc_args['env'] : null
 		);
-		if ( isset( $assoc_args['env'] ) ) {
-			$values['edge_env'] = in_array( $assoc_args['env'], array( 'production', 'test' ), true ) ? $assoc_args['env'] : '';
+		if ( '' !== $parsed['error'] ) {
+			\WP_CLI::error( 'Pass --site-id=<uuid> and --site-key=nek_live_... (' . $parsed['error'] . ')' );
 		}
-		$this->plugin->config()->save( $values );
-		$this->plugin->reset();
-		$this->plugin->feed()->forget();
-		\WP_CLI::success( 'Saved. Feed: ' . $this->plugin->feed()->refresh() );
+		$result = Connect::apply( $this->plugin, $parsed['values'] );
+		\WP_CLI::success( 'Saved. Feed: ' . $result['feed'] . '. Checks: agent=' . $result['checks']['agent'] . ', cache=' . $result['checks']['cache_reach'] );
 	}
 
 	/**

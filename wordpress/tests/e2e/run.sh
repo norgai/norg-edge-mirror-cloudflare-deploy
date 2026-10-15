@@ -210,6 +210,27 @@ SETTLE=0.6 req "$BROWSER" "/sample-page/"
 log_none "a direct human visit is not reported" "r['path'] in ('/api/v1/edge/events','/api/v1/edge/page-views')"
 wpcli option patch delete norg_edge_settings capture_only >/dev/null 2>&1
 
+echo "REST connect (NORG dashboard with an Application Password)"
+APP_PW="$(wpcli user application-password create admin norg-e2e --porcelain 2>/dev/null)"
+rest() { curl -s -o "$B" -w '%{http_code}' "$@"; }
+CONNECT_BODY="{\"site_id\":\"$MOCK_SITE_ID\",\"site_key\":\"$MOCK_SITE_KEY\",\"env\":\"test\"}"
+code="$(rest -X POST -H 'Content-Type: application/json' -d "$CONNECT_BODY" "$BASE/wp-json/norg-edge/v1/connect")"
+[ "$code" = 401 ] && ok "connect without credentials is refused (401)" || bad "connect without credentials is refused (401)" "got $code"
+code="$(rest -u "admin:wrong" -X POST -H 'Content-Type: application/json' -d "$CONNECT_BODY" "$BASE/wp-json/norg-edge/v1/connect")"
+[ "$code" = 401 ] && ok "a wrong Application Password is refused (401)" || bad "a wrong Application Password is refused (401)" "got $code"
+code="$(rest -u "admin:$APP_PW" -X POST -H 'Content-Type: application/json' -d "$CONNECT_BODY" "$BASE/wp-json/norg-edge/v1/connect")"
+[ "$code" = 409 ] && ok "connect refuses while wp-config constants lock the settings (409)" || bad "connect refuses while wp-config constants lock the settings (409)" "got $code: $(head -c 200 "$B")"
+touch "$WP_DIR/.e2e-form-credentials"
+code="$(rest -u "admin:$APP_PW" -X POST -H 'Content-Type: application/json' -d '{"site_id":"nope","site_key":"x"}' "$BASE/wp-json/norg-edge/v1/connect")"
+[ "$code" = 400 ] && ok "connect validates the Site ID and Site Key (400)" || bad "connect validates the Site ID and Site Key (400)" "got $code"
+code="$(rest -u "admin:$APP_PW" -X POST -H 'Content-Type: application/json' -d "$CONNECT_BODY" "$BASE/wp-json/norg-edge/v1/connect")"
+[ "$code" = 200 ] && grep -q '"saved":true' "$B" && grep -q '"agent":"mirror"' "$B" && ! grep -q "$MOCK_SITE_KEY" "$B" && ok "connect saves, proves the install and never echoes the key" || bad "connect saves, proves the install and never echoes the key" "got $code: $(head -c 300 "$B")"
+log_has "connect sent a heartbeat" "r['path']=='/api/v1/edge/heartbeat'"
+code="$(rest -u "admin:$APP_PW" "$BASE/wp-json/norg-edge/v1/status")"
+[ "$code" = 200 ] && grep -q '"configured":true' "$B" && grep -q '"locked":false' "$B" && ! grep -q "$MOCK_SITE_KEY" "$B" && ok "status reports configured, unlocked, no key" || bad "status reports configured, unlocked, no key" "got $code: $(head -c 300 "$B")"
+rm -f "$WP_DIR/.e2e-form-credentials"
+wpcli option patch delete norg_edge_settings site_key_enc >/dev/null 2>&1; wpcli option patch delete norg_edge_settings site_id >/dev/null 2>&1
+
 if [ -s "$WORK/debug.log" ] && grep -qi "fatal\|norg" "$WORK/debug.log"; then bad "PHP debug log is clean" "$(grep -i 'fatal\|norg' "$WORK/debug.log" | tail -3)"; else ok "PHP debug log is clean"; fi
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
