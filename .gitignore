@@ -2,3 +2,6 @@ node_modules/
 .wrangler/
 .dev.vars
 .DS_Store
+vercel/dist/
+vercel/pack.json
+*.tgz
