@@ -14,6 +14,8 @@ import { strict as assert } from "node:assert";
 import { afterEach, test } from "node:test";
 
 import { handler } from "../lambda/edge-router-lambda.js";
+import { ORIGIN_READ_TIMEOUT_MS, originReadTarget } from "../lambda/lib/origin.js";
+import { MIRROR_FETCH_TIMEOUT_MS } from "../../core/constants.mjs";
 import { __test_getFeed, __test_setFeed } from "../../core/feed.js";
 import {
   CHROME_UA,
@@ -362,14 +364,20 @@ test("an origin error on the strip path is served by passthrough, never relayed"
   assert.ok(isPassthroughResult(result));
 });
 
-test("a direct origin read carries the origin's own custom headers and asks for identity encoding", async () => {
+test("the router reads the page through the distribution, never the origin directly", async () => {
+  // 0.6.6: Bloom Healthcare's origin accepts only CloudFront. A direct read from
+  // the function timed out on every agent request (4-9 s) and AI fetchers gave
+  // up first. Through the public host, CloudFront fetches the origin as it does
+  // for any visitor, and the loop guard makes the router pass that request on.
   let seen = null;
+  let seenUrl = null;
   const event = cloudFrontEvent({ headers: { "user-agent": GPTBOT_UA, "accept-encoding": "br, gzip" } });
   event.Records[0].cf.request.origin.custom.customHeaders["x-origin-verify"] = [
     { key: "x-origin-verify", value: "theirs-secret" },
   ];
   stubNetwork({
-    origin: (_url, init) => {
+    origin: (url, init) => {
+      seenUrl = url;
       seen = new Headers(init.headers);
       return new Response(longHtml(), { status: 200, headers: { "content-type": "text/html" } });
     },
@@ -378,9 +386,66 @@ test("a direct origin read carries the origin's own custom headers and asks for 
   const result = await handler(event);
 
   assert.equal(header(result, "x-norg-edge"), "stripped");
-  assert.equal(seen.get("x-origin-verify"), "theirs-secret", "an origin behind a verification header must accept the read");
+  assert.ok(seenUrl.startsWith(`https://${PUBLIC_HOST}/`), `read went to ${seenUrl}`);
+  assert.equal(seen.get("x-norg-edge"), "1", "the loop guard makes the router pass the read straight on");
+  assert.equal(seen.get("x-origin-verify"), null, "CloudFront adds the customer's origin secret itself; it must not travel on the public path");
   assert.equal(seen.get("x-norg-site-id"), null, "NORG's own config headers were scrubbed first");
   assert.equal(seen.get("accept-encoding"), "identity", "the strip needs bytes it can read");
+});
+
+test("the page read through the distribution never carries the ?agent= override", () => {
+  // If a customer's origin request policy hid the loop guard, the read must
+  // still never be forced down the agent path again.
+  const cfRequest = cloudFrontEvent({ headers: { "user-agent": GPTBOT_UA } }).Records[0].cf.request;
+  cfRequest.querystring = "agent=true&page=2";
+
+  const target = originReadTarget(cfRequest);
+
+  assert.equal(target.viaDistribution, true);
+  assert.ok(target.url.startsWith(`https://${PUBLIC_HOST}/`), target.url);
+  assert.ok(!/[?&]agent=/.test(target.url), `override leaked into the read: ${target.url}`);
+  assert.ok(target.url.endsWith("?page=2"), `other query parameters are kept: ${target.url}`);
+});
+
+test("with the origin's own name as Host, the read goes to the origin directly", () => {
+  const cfRequest = cloudFrontEvent({ headers: { "user-agent": GPTBOT_UA } }).Records[0].cf.request;
+  cfRequest.headers.host = [{ key: "Host", value: ORIGIN_HOST }];
+
+  const target = originReadTarget(cfRequest);
+
+  assert.equal(target.viaDistribution, false);
+  assert.ok(target.url.includes(ORIGIN_HOST), target.url);
+});
+
+test("with no public hostname the router reads the origin directly, with its custom headers", async () => {
+  // A policy that does not forward the viewer's Host delivers the origin's own
+  // name, so there is no public host to read through.
+  let seen = null;
+  let seenUrl = null;
+  const event = cloudFrontEvent({ headers: { "user-agent": GPTBOT_UA } });
+  event.Records[0].cf.request.headers.host = [{ key: "Host", value: ORIGIN_HOST }];
+  event.Records[0].cf.request.origin.custom.customHeaders["x-origin-verify"] = [
+    { key: "x-origin-verify", value: "theirs-secret" },
+  ];
+  stubNetwork({
+    origin: (url, init) => {
+      seenUrl = url;
+      seen = new Headers(init.headers);
+      return new Response(longHtml(), { status: 200, headers: { "content-type": "text/html" } });
+    },
+  });
+
+  await handler(event);
+
+  assert.ok(seenUrl.includes(ORIGIN_HOST), `read went to ${seenUrl}`);
+  assert.equal(seen.get("x-origin-verify"), "theirs-secret", "an origin behind a verification header must accept the read");
+});
+
+test("a page read that cannot complete costs less than the mirror fetch budget", () => {
+  // Every caller falls back to passthrough after a failed read, so the read's
+  // budget is time an agent waits for nothing.
+  assert.ok(ORIGIN_READ_TIMEOUT_MS < MIRROR_FETCH_TIMEOUT_MS);
+  assert.ok(ORIGIN_READ_TIMEOUT_MS <= 3000);
 });
 
 test("a relayed origin artifact never carries a content-encoding it no longer has", async () => {
@@ -822,7 +887,7 @@ test("a direct origin read carries the public host too", async () => {
     { origin: () => new Response("# llms", { status: 200, headers: { "content-type": "text/plain" } }) },
   );
 
-  const read = calls.find((call) => call.url.includes(ORIGIN_HOST));
+  const read = calls.find((call) => call.url.startsWith(`https://${PUBLIC_HOST}/`));
   assert.ok(read, "the origin-first artifact must actually read the origin");
   assert.equal(new Headers(read.init.headers).get("x-norg-public-host"), PUBLIC_HOST);
 });
