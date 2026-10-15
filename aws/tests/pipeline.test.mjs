@@ -1199,3 +1199,57 @@ test("the site-host config header never reaches the customer's origin", async ()
   );
   assert.equal(JSON.stringify(result).includes("x-norg-site-host"), false);
 });
+
+// --- 0.6.8: one timing line per agent request -----------------------------------
+
+/**
+ * Run the handler and collect the "norg edge timing" lines it logged.
+ *
+ * @param {Object} eventOptions cloudFrontEvent options.
+ * @param {Object} network stubNetwork handlers.
+ * @returns {Promise<Array<Object>>} The decoded timing records.
+ */
+async function timingLines(eventOptions, network) {
+  const realLog = console.log;
+  const lines = [];
+  console.log = (...args) => lines.push(args.join(" "));
+  try {
+    await run(eventOptions, network);
+  } finally {
+    console.log = realLog;
+  }
+  return lines
+    .filter((l) => l.startsWith("norg edge timing "))
+    .map((l) => JSON.parse(l.slice("norg edge timing ".length)));
+}
+
+test("a served agent request logs one timing line with each step's milliseconds", async () => {
+  const records = await timingLines(
+    { headers: { "user-agent": GPTBOT_UA } },
+    { mirror: () => mirrorHit("<html><body>NORG render</body></html>") },
+  );
+
+  assert.equal(records.length, 1);
+  const [record] = records;
+  assert.equal(record.outcome, "served_200");
+  assert.equal(record.bot, "gptbot");
+  assert.equal(record.path, "/widgets/");
+  assert.equal(typeof record.total_ms, "number");
+  assert.equal(typeof record.cold, "boolean");
+  for (const step of ["site_key_ms", "feed_ms", "mirror_ms"]) {
+    assert.equal(typeof record[step], "number", `${step} missing`);
+  }
+});
+
+test("a human visit logs no timing line", async () => {
+  const records = await timingLines({ headers: { "user-agent": CHROME_UA } }, { mirror: () => mirrorHit() });
+  assert.equal(records.length, 0);
+});
+
+test("the timing line carries no IP and no user agent", async () => {
+  const lines = JSON.stringify(
+    await timingLines({ headers: { "user-agent": GPTBOT_UA } }, { mirror: () => mirrorHit() }),
+  );
+  assert.equal(lines.includes(GPTBOT_UA), false);
+  assert.equal(/\d+\.\d+\.\d+\.\d+/.test(lines), false);
+});

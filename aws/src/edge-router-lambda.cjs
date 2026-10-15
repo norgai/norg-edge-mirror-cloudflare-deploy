@@ -272,7 +272,7 @@ var STATIC_ASSET_SUFFIXES = /* @__PURE__ */ new Set([
 ]);
 
 // aws/lambda/lib/config.js
-var EDGE_SCRIPT_VERSION = "0.6.7";
+var EDGE_SCRIPT_VERSION = "0.6.8";
 var CONFIG_HEADERS = {
   "x-norg-site-id": "SITE_ID",
   "x-norg-secret-arn": "NORG_SECRET_ARN",
@@ -1367,12 +1367,12 @@ function isPassthrough(request, env) {
   return true;
 }
 async function serveOriginFirstArtifact(cfRequest, request, env, url, alternateFormatHeaders) {
-  const origin = await fetchOrigin(cfRequest, request, ORIGIN_READ_TIMEOUT_MS, env.SITE_HOST);
+  const origin = await timedFetchOrigin(env, cfRequest, request);
   if (origin && origin.status === 200) {
     const contentType = origin.headers.get("content-type") || "";
     if (!/text\/html/i.test(contentType)) return origin;
   }
-  const { response } = await fetchFromNorg(env, pathToKeySuffix(url.pathname));
+  const { response } = await timedFetchFromNorg(env, pathToKeySuffix(url.pathname));
   if (!response) return PASSTHROUGH;
   const served = mirrorResponse(response, env);
   return alternateFormatHeaders ? withAlternateFormatHeaders(served, url, url.pathname) : served;
@@ -1381,7 +1381,7 @@ async function handleMcp(request, env, url) {
   if (request.method === "POST") return forwardMcpToNorg(request, env, url);
   if (request.method !== "GET" && request.method !== "HEAD") return null;
   const suffix = url.pathname === "/.well-known/mcp.json" ? "/.well-known/mcp.json" : `${url.pathname.replace(/\/(mcp|sse)$/, "")}/mcp.json`;
-  const { response } = await fetchFromNorg(env, suffix);
+  const { response } = await timedFetchFromNorg(env, suffix);
   return response ? mcpResponse(response) : null;
 }
 async function forwardMcpToNorg(request, env, url) {
@@ -1428,14 +1428,14 @@ function missIntent(env) {
 async function serveAgent(cfRequest, request, env, url, classification) {
   const keySuffix = pathToKeySuffix(url.pathname);
   const headers = visitHeaders(request, env, classification, "mirror", missIntent(env), true);
-  const { response, refused } = await fetchFromNorg(env, keySuffix, headers);
+  const { response, refused } = await timedFetchFromNorg(env, keySuffix, headers);
   if (response) return serveMirror(cfRequest, response, env, url, keySuffix);
   if (refused) return PASSTHROUGH;
   return serveStrippedOrigin(cfRequest, request, env);
 }
 async function serveStrippedOrigin(cfRequest, request, env) {
   if (binding(env, "STRIP_FALLBACK_ENABLED") === "false") return PASSTHROUGH;
-  const origin = await fetchOrigin(cfRequest, request, ORIGIN_READ_TIMEOUT_MS, env.SITE_HOST);
+  const origin = await timedFetchOrigin(env, cfRequest, request);
   if (!origin) return PASSTHROUGH;
   const contentType = origin.headers.get("content-type") || "";
   if (origin.status !== 200 || !/text\/html/i.test(contentType)) return PASSTHROUGH;
@@ -1455,7 +1455,7 @@ async function serveAgenticPath(cfRequest, request, env, url, prefix) {
     "agentic_path_miss",
     false
   );
-  const { response } = await fetchFromNorg(env, keySuffix, headers);
+  const { response } = await timedFetchFromNorg(env, keySuffix, headers);
   if (!response) return PASSTHROUGH;
   return serveMirror(cfRequest, response, env, url, keySuffix);
 }
@@ -1469,7 +1469,7 @@ async function serveAgentOverride(cfRequest, request, env, url) {
     "agent_param_override_miss",
     false
   );
-  const { response } = await fetchFromNorg(env, keySuffix, headers);
+  const { response } = await timedFetchFromNorg(env, keySuffix, headers);
   if (!response) return PASSTHROUGH;
   return serveMirror(cfRequest, response, env, url, keySuffix);
 }
@@ -1482,11 +1482,11 @@ async function serveNorgOwnedSurface(cfRequest, request, env, url) {
     return serveOriginFirstArtifact(cfRequest, request, env, url, false);
   }
   if (isReservedNorgPath(pathname)) {
-    const { response } = await fetchFromNorg(env, pathToKeySuffix(pathname));
+    const { response } = await timedFetchFromNorg(env, pathToKeySuffix(pathname));
     return response ? reservedAssetResponse(response, env) : PASSTHROUGH;
   }
   if (isOpenAiFeedPath(pathname)) {
-    const { response } = await fetchFromNorg(env, pathToKeySuffix(pathname));
+    const { response } = await timedFetchFromNorg(env, pathToKeySuffix(pathname));
     return response ? openAiFeedResponse(response, env, pathname) : PASSTHROUGH;
   }
   return null;
@@ -1498,11 +1498,39 @@ function reportHumanPassthrough(env, request) {
   }).catch(() => {
   });
 }
+async function timed(env, step, work) {
+  const started = Date.now();
+  try {
+    return await work;
+  } finally {
+    if (env.__timing) {
+      env.__timing.steps[step] = (env.__timing.steps[step] || 0) + (Date.now() - started);
+    }
+  }
+}
+var timedFetchFromNorg = (env, ...args) => timed(env, "mirror_ms", fetchFromNorg(env, ...args));
+var timedFetchOrigin = (env, cfRequest, request) => timed(env, "page_read_ms", fetchOrigin(cfRequest, request, ORIGIN_READ_TIMEOUT_MS, env.SITE_HOST));
+var invocationsInContainer = 0;
+function logTiming(env, outcome) {
+  const t = env.__timing;
+  if (!t || !Object.keys(t.steps).length) return;
+  console.log(
+    "norg edge timing " + JSON.stringify({
+      path: t.path,
+      bot: t.bot || null,
+      outcome,
+      total_ms: Date.now() - t.started,
+      cold: t.cold,
+      region: process.env.AWS_REGION || null,
+      ...t.steps
+    })
+  );
+}
 async function handleRequest(cfRequest, env) {
   const request = toRequest(cfRequest);
   if (isHealthProbe(request, env)) {
-    env.NORG_SITE_KEY = await getSiteKey(env);
-    await getBotFeed(env);
+    env.NORG_SITE_KEY = await timed(env, "site_key_ms", getSiteKey(env));
+    await timed(env, "feed_ms", getBotFeed(env));
     return healthResponse(env, isEntitled());
   }
   if (isPassthrough(request, env)) return PASSTHROUGH;
@@ -1513,9 +1541,9 @@ async function handleRequest(cfRequest, env) {
     if (exit === "human") reportHumanPassthrough(env, request);
     return PASSTHROUGH;
   }
-  env.NORG_SITE_KEY = await getSiteKey(env);
+  env.NORG_SITE_KEY = await timed(env, "site_key_ms", getSiteKey(env));
   if (!env.NORG_SITE_KEY) return PASSTHROUGH;
-  const feed = await getBotFeed(env);
+  const feed = await timed(env, "feed_ms", getBotFeed(env));
   if (!feed.entitled) return PASSTHROUGH;
   const owned = await serveNorgOwnedSurface(cfRequest, request, env, url);
   if (owned) return owned;
@@ -1531,6 +1559,7 @@ async function handleRequest(cfRequest, env) {
   if (isTraditionalSearchBot(userAgent)) return PASSTHROUGH;
   if (hasAgentOverride(url)) return serveAgentOverride(cfRequest, request, env, url);
   const classification = classifyAgent(userAgent, feed.patterns);
+  if (env.__timing) env.__timing.bot = classification.bot_name || null;
   if (!classification.is_ai_bot) return PASSTHROUGH;
   if (!mayDivert(classification)) return PASSTHROUGH;
   if (!verifiedSource(clientIp(cfRequest), feed.cidrRanges, classification)) {
@@ -1544,17 +1573,31 @@ async function handler(event) {
   try {
     scrubConfigHeaders(pristine = structuredClone(cfRequest));
     const env = readConfig(cfRequest);
+    env.__timing = {
+      started: Date.now(),
+      steps: {},
+      path: cfRequest.uri,
+      cold: invocationsInContainer++ === 0
+    };
     const publicHost = publicHostFor(cfRequest, env.SITE_HOST);
     if (!env.SITE_ID || !env.NORG_SECRET_ARN) return toOrigin(cfRequest, publicHost);
     let watchdog;
+    let timedOut = false;
     const result = await Promise.race([
       handleRequest(cfRequest, env),
       new Promise((resolve) => {
-        watchdog = setTimeout(() => resolve(PASSTHROUGH), WATCHDOG_MS);
+        watchdog = setTimeout(() => {
+          timedOut = true;
+          resolve(PASSTHROUGH);
+        }, WATCHDOG_MS);
       })
     ]).finally(() => clearTimeout(watchdog));
-    if (result === PASSTHROUGH) return passthrough(toOrigin(cfRequest, publicHost));
+    if (result === PASSTHROUGH) {
+      logTiming(env, timedOut ? "watchdog" : "passthrough");
+      return passthrough(toOrigin(cfRequest, publicHost));
+    }
     const response = await toCloudFrontResponse(result);
+    logTiming(env, response ? `served_${response.status}` : "too_big");
     return response || passthrough(toOrigin(scrubConfigHeaders(pristine), publicHost));
   } catch (e) {
     console.error("norg edge router error", e);
