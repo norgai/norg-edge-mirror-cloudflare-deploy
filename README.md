@@ -13,7 +13,8 @@ an API token, and never gets deploy access to anything in your account.
 > must not break.
 
 > **Not on Cloudflare?** The same router is ported to other CDNs, each on its
-> own branch of this repository — see [Other CDNs](#other-cdns) below.
+> own branch of this repository, and to a WordPress plugin for sites with no CDN
+> at all — see [Other CDNs](#other-cdns) below.
 
 If you'd rather NORG handle the deploy and keep it automatically up to date,
 ask your NORG contact about the **API-token install** instead — see
@@ -408,6 +409,7 @@ telemetry contract stay identical everywhere.
 | **AWS CloudFront** (Lambda@Edge + CloudFront Functions) | [`feature/aws-cloudfront`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/tree/feature/aws-cloudfront) | [`aws/README.md`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/blob/feature/aws-cloudfront/aws/README.md) | Available — attaches to an existing distribution, no DNS change |
 | **Fastly Compute** | [`feature/fastly-compute`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/tree/feature/fastly-compute) | [`fastly/README.md`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/blob/feature/fastly-compute/fastly/README.md) | Available — requires pointing DNS at Fastly |
 | **Bunny Edge Scripting** | [`feature/bunny-edge-scripting`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/tree/feature/bunny-edge-scripting) | [`bunny/README.md`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/blob/feature/bunny-edge-scripting/bunny/README.md) | Available — requires pointing DNS at Bunny |
+| **WordPress (no CDN)** | [`feature/wordpress-plugin`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/tree/feature/wordpress-plugin) | [`wordpress/README.md`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/blob/feature/wordpress-plugin/wordpress/README.md) | Available — a plugin inside WordPress, for sites with no CDN |
 | Akamai EdgeWorkers | [`feature/akamai-edgeworkers`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/tree/feature/akamai-edgeworkers) | — | Branch reserved; no adapter yet |
 | Vercel middleware | [`feature/vercel-middleware`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/tree/feature/vercel-middleware) | — | Branch reserved; no adapter yet |
 

@@ -1,0 +1,1955 @@
+{
+  "generated_by": "wordpress/bin/gen-vectors.mjs",
+  "worker_version": "0.14.2",
+  "constants": {
+    "TRADITIONAL_SEARCH_BOTS": [
+      "googlebot",
+      "bingbot",
+      "applebot",
+      "duckduckbot",
+      "baiduspider",
+      "yandex",
+      "slurp"
+    ],
+    "STRIP_REMOVE_SELECTORS": [
+      "script",
+      "style",
+      "noscript",
+      "iframe",
+      "svg",
+      "canvas",
+      "video",
+      "audio",
+      "form",
+      "input",
+      "select",
+      "textarea",
+      "nav",
+      "aside",
+      "footer",
+      "link[rel='stylesheet']",
+      "link[rel='preload']",
+      "link[rel='prefetch']",
+      "[role='navigation']",
+      "[aria-hidden='true']"
+    ],
+    "STRIP_UNWRAP_SELECTORS": [
+      "button"
+    ],
+    "STRIP_KEEP_ATTRIBUTES": [
+      "href",
+      "src",
+      "alt",
+      "title",
+      "lang",
+      "datetime",
+      "content",
+      "name",
+      "rel"
+    ],
+    "SIBLING_ARTIFACT_FILENAMES": [
+      "index.md",
+      "index.json",
+      "index.jsonld",
+      "index.pdf",
+      "index.openai.json",
+      "webmcp.js"
+    ],
+    "OPENAI_FEED_PATHS": [
+      "/.well-known/ai-plugin.json",
+      "/openapi.json",
+      "/openapi.yaml"
+    ],
+    "STATIC_ASSET_SUFFIXES": [
+      ".css",
+      ".js",
+      ".mjs",
+      ".map",
+      ".png",
+      ".jpg",
+      ".jpeg",
+      ".gif",
+      ".webp",
+      ".svg",
+      ".ico",
+      ".avif",
+      ".bmp",
+      ".tiff",
+      ".heic",
+      ".woff",
+      ".woff2",
+      ".ttf",
+      ".eot",
+      ".otf",
+      ".mp4",
+      ".webm",
+      ".mov",
+      ".avi",
+      ".mkv",
+      ".m4v",
+      ".ogv",
+      ".mp3",
+      ".wav",
+      ".ogg",
+      ".m4a",
+      ".aac",
+      ".flac",
+      ".weba",
+      ".vtt",
+      ".srt",
+      ".pdf",
+      ".doc",
+      ".docx",
+      ".xls",
+      ".xlsx",
+      ".ppt",
+      ".pptx",
+      ".zip",
+      ".gz",
+      ".rar",
+      ".tar",
+      ".7z",
+      ".webmanifest"
+    ],
+    "STRIP_WORD_FLOOR": 120,
+    "RESERVED_NORG_PREFIX": "/.norg/"
+  },
+  "paths": [
+    {
+      "path": "/",
+      "key_suffix": "/index.html",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/"
+    },
+    {
+      "path": "",
+      "key_suffix": "/index.html",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/"
+    },
+    {
+      "path": "/about",
+      "key_suffix": "/about/index.html",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/about"
+    },
+    {
+      "path": "/about/",
+      "key_suffix": "/about/index.html",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/about",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/about"
+    },
+    {
+      "path": "/products/v2.0/",
+      "key_suffix": "/products/v2.0/index.html",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/products/v2.0",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/products/v2.0"
+    },
+    {
+      "path": "/products/v2.0",
+      "key_suffix": "/products/v2.0",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/products",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/products/v2.0"
+    },
+    {
+      "path": "/file.pdf",
+      "key_suffix": "/file.pdf",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": true,
+      "is_agentic": false,
+      "normalise_skip": "/file.pdf"
+    },
+    {
+      "path": "/a/b/c",
+      "key_suffix": "/a/b/c/index.html",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/a/b",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/a/b/c"
+    },
+    {
+      "path": "/llms.txt",
+      "key_suffix": "/llms.txt",
+      "is_discovery": true,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/llms.txt"
+    },
+    {
+      "path": "/llms-full.txt",
+      "key_suffix": "/llms-full.txt",
+      "is_discovery": true,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/llms-full.txt"
+    },
+    {
+      "path": "/tree.json",
+      "key_suffix": "/tree.json",
+      "is_discovery": true,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/tree.json"
+    },
+    {
+      "path": "/graph.jsonld",
+      "key_suffix": "/graph.jsonld",
+      "is_discovery": true,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/graph.jsonld"
+    },
+    {
+      "path": "/agents.md",
+      "key_suffix": "/agents.md",
+      "is_discovery": true,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/agents.md"
+    },
+    {
+      "path": "/blog/llms.txt",
+      "key_suffix": "/blog/llms.txt",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/blog",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/blog/llms.txt"
+    },
+    {
+      "path": "/mcp",
+      "key_suffix": "/mcp/index.html",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": true,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/mcp"
+    },
+    {
+      "path": "/mcp.json",
+      "key_suffix": "/mcp.json",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": true,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/mcp.json"
+    },
+    {
+      "path": "/.well-known/mcp.json",
+      "key_suffix": "/.well-known/mcp.json",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/.well-known",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": true,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/.well-known/mcp.json"
+    },
+    {
+      "path": "/products/x/mcp",
+      "key_suffix": "/products/x/mcp/index.html",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/products/x",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": true,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/products/x/mcp"
+    },
+    {
+      "path": "/products/x/mcp.json",
+      "key_suffix": "/products/x/mcp.json",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/products/x",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": true,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/products/x/mcp.json"
+    },
+    {
+      "path": "/sse",
+      "key_suffix": "/sse/index.html",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": true,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/sse"
+    },
+    {
+      "path": "/x/sse",
+      "key_suffix": "/x/sse/index.html",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/x",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": true,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/x/sse"
+    },
+    {
+      "path": "/mcpx",
+      "key_suffix": "/mcpx/index.html",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/mcpx"
+    },
+    {
+      "path": "/.norg/theme.css",
+      "key_suffix": "/.norg/theme.css",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/.norg",
+      "is_reserved_norg": true,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": true,
+      "is_agentic": false,
+      "normalise_skip": "/.norg/theme.css"
+    },
+    {
+      "path": "/.norgx",
+      "key_suffix": "/.norgx",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/.norgx"
+    },
+    {
+      "path": "/.well-known/ai-plugin.json",
+      "key_suffix": "/.well-known/ai-plugin.json",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/.well-known",
+      "is_reserved_norg": false,
+      "is_openai_feed": true,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/.well-known/ai-plugin.json"
+    },
+    {
+      "path": "/openapi.json",
+      "key_suffix": "/openapi.json",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/",
+      "is_reserved_norg": false,
+      "is_openai_feed": true,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/openapi.json"
+    },
+    {
+      "path": "/openapi.yaml",
+      "key_suffix": "/openapi.yaml",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/",
+      "is_reserved_norg": false,
+      "is_openai_feed": true,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/openapi.yaml"
+    },
+    {
+      "path": "/ai",
+      "key_suffix": "/ai/index.html",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": true,
+      "normalise_skip": "/ai"
+    },
+    {
+      "path": "/ai/",
+      "key_suffix": "/ai/index.html",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/ai",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": true,
+      "normalise_skip": "/ai"
+    },
+    {
+      "path": "/ai/products/widget",
+      "key_suffix": "/ai/products/widget/index.html",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/ai/products",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": true,
+      "normalise_skip": "/ai/products/widget"
+    },
+    {
+      "path": "/aircraft",
+      "key_suffix": "/aircraft/index.html",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/aircraft"
+    },
+    {
+      "path": "/about/index.md",
+      "key_suffix": "/about/index.md",
+      "is_discovery": false,
+      "is_sibling_artifact": true,
+      "sibling_page_of": "/about",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/about/index.md"
+    },
+    {
+      "path": "/webmcp.js",
+      "key_suffix": "/webmcp.js",
+      "is_discovery": false,
+      "is_sibling_artifact": true,
+      "sibling_page_of": "/",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": true,
+      "is_agentic": false,
+      "normalise_skip": "/webmcp.js"
+    },
+    {
+      "path": "/x/index.openai.json",
+      "key_suffix": "/x/index.openai.json",
+      "is_discovery": false,
+      "is_sibling_artifact": true,
+      "sibling_page_of": "/x",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/x/index.openai.json"
+    },
+    {
+      "path": "/index.pdf",
+      "key_suffix": "/index.pdf",
+      "is_discovery": false,
+      "is_sibling_artifact": true,
+      "sibling_page_of": "/",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": true,
+      "is_agentic": false,
+      "normalise_skip": "/index.pdf"
+    },
+    {
+      "path": "/style.CSS",
+      "key_suffix": "/style.CSS",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": true,
+      "is_agentic": false,
+      "normalise_skip": "/style.CSS"
+    },
+    {
+      "path": "/v1.2/page",
+      "key_suffix": "/v1.2/page/index.html",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/v1.2",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/v1.2/page"
+    },
+    {
+      "path": "/.htaccess",
+      "key_suffix": "/.htaccess",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/.htaccess"
+    },
+    {
+      "path": "/file.",
+      "key_suffix": "/file.",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/file."
+    },
+    {
+      "path": "/a//b",
+      "key_suffix": "/a//b/index.html",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/a/",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/a/b"
+    },
+    {
+      "path": "/a//b/",
+      "key_suffix": "/a//b/index.html",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/a//b",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/a/b"
+    },
+    {
+      "path": "//",
+      "key_suffix": "//index.html",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/"
+    },
+    {
+      "path": "/img.webp",
+      "key_suffix": "/img.webp",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": true,
+      "is_agentic": false,
+      "normalise_skip": "/img.webp"
+    },
+    {
+      "path": "/font.woff2",
+      "key_suffix": "/font.woff2",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": true,
+      "is_agentic": false,
+      "normalise_skip": "/font.woff2"
+    },
+    {
+      "path": "/feed",
+      "key_suffix": "/feed/index.html",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/feed"
+    },
+    {
+      "path": "/feed/",
+      "key_suffix": "/feed/index.html",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/feed",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/feed"
+    },
+    {
+      "path": "/feed/atom",
+      "key_suffix": "/feed/atom/index.html",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/feed",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/feed/atom"
+    },
+    {
+      "path": "/wp-json/wp/v2/posts",
+      "key_suffix": "/wp-json/wp/v2/posts/index.html",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/wp-json/wp/v2",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/wp-json/wp/v2/posts"
+    },
+    {
+      "path": "/wp-admin/admin-ajax.php",
+      "key_suffix": "/wp-admin/admin-ajax.php",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/wp-admin",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/wp-admin/admin-ajax.php"
+    },
+    {
+      "path": "/wp-content/uploads/x.jpg",
+      "key_suffix": "/wp-content/uploads/x.jpg",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/wp-content/uploads",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": true,
+      "is_agentic": false,
+      "normalise_skip": "/wp-content/uploads/x.jpg"
+    },
+    {
+      "path": "/wp-login.php",
+      "key_suffix": "/wp-login.php",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/wp-login.php"
+    },
+    {
+      "path": "/sample-page/",
+      "key_suffix": "/sample-page/index.html",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/sample-page",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/sample-page"
+    },
+    {
+      "path": "/%E2%9C%93",
+      "key_suffix": "/%E2%9C%93/index.html",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/%E2%9C%93"
+    },
+    {
+      "path": "/caf%C3%A9/",
+      "key_suffix": "/caf%C3%A9/index.html",
+      "is_discovery": false,
+      "is_sibling_artifact": false,
+      "sibling_page_of": "/caf%C3%A9",
+      "is_reserved_norg": false,
+      "is_openai_feed": false,
+      "is_mcp": false,
+      "is_static_asset": false,
+      "is_agentic": false,
+      "normalise_skip": "/caf%C3%A9"
+    }
+  ],
+  "user_agents": [
+    {
+      "ua": "",
+      "traditional_search": false,
+      "classify": {
+        "is_ai_bot": false,
+        "bot_name": null,
+        "company": null,
+        "purpose": null
+      },
+      "automation": null
+    },
+    {
+      "ua": "Mozilla/5.0 (compatible; GPTBot/1.2; +https://openai.com/gptbot)",
+      "traditional_search": false,
+      "classify": {
+        "is_ai_bot": true,
+        "bot_name": "gptbot",
+        "company": "openai",
+        "purpose": "training"
+      },
+      "automation": null
+    },
+    {
+      "ua": "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; ClaudeBot/1.0; +claudebot@anthropic.com)",
+      "traditional_search": false,
+      "classify": {
+        "is_ai_bot": true,
+        "bot_name": "claudebot",
+        "company": "anthropic",
+        "purpose": "training"
+      },
+      "automation": null
+    },
+    {
+      "ua": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+      "traditional_search": true,
+      "classify": {
+        "is_ai_bot": false,
+        "bot_name": null,
+        "company": null,
+        "purpose": null
+      },
+      "automation": null
+    },
+    {
+      "ua": "Mozilla/5.0 (compatible; Google-Extended)",
+      "traditional_search": false,
+      "classify": {
+        "is_ai_bot": true,
+        "bot_name": "google-extended",
+        "company": "google",
+        "purpose": "training"
+      },
+      "automation": null
+    },
+    {
+      "ua": "Mozilla/5.0 (compatible; bingbot/2.0)",
+      "traditional_search": true,
+      "classify": {
+        "is_ai_bot": false,
+        "bot_name": null,
+        "company": null,
+        "purpose": null
+      },
+      "automation": null
+    },
+    {
+      "ua": "Mozilla/5.0 (compatible; YandexBot/3.0)",
+      "traditional_search": true,
+      "classify": {
+        "is_ai_bot": false,
+        "bot_name": null,
+        "company": null,
+        "purpose": null
+      },
+      "automation": null
+    },
+    {
+      "ua": "Mozilla/5.0 (Applebot/0.1)",
+      "traditional_search": true,
+      "classify": {
+        "is_ai_bot": false,
+        "bot_name": null,
+        "company": null,
+        "purpose": null
+      },
+      "automation": null
+    },
+    {
+      "ua": "curl/8.4.0",
+      "traditional_search": false,
+      "classify": {
+        "is_ai_bot": false,
+        "bot_name": null,
+        "company": null,
+        "purpose": null
+      },
+      "automation": {
+        "is_ai_bot": true,
+        "bot_name": "curl",
+        "company": "script_automation",
+        "purpose": "unknown"
+      }
+    },
+    {
+      "ua": "Wget/1.21",
+      "traditional_search": false,
+      "classify": {
+        "is_ai_bot": false,
+        "bot_name": null,
+        "company": null,
+        "purpose": null
+      },
+      "automation": {
+        "is_ai_bot": true,
+        "bot_name": "wget",
+        "company": "script_automation",
+        "purpose": "unknown"
+      }
+    },
+    {
+      "ua": "python-requests/2.31",
+      "traditional_search": false,
+      "classify": {
+        "is_ai_bot": false,
+        "bot_name": null,
+        "company": null,
+        "purpose": null
+      },
+      "automation": {
+        "is_ai_bot": true,
+        "bot_name": "python-http",
+        "company": "script_automation",
+        "purpose": "unknown"
+      }
+    },
+    {
+      "ua": "Python/3.11 aiohttp/3.9",
+      "traditional_search": false,
+      "classify": {
+        "is_ai_bot": false,
+        "bot_name": null,
+        "company": null,
+        "purpose": null
+      },
+      "automation": {
+        "is_ai_bot": true,
+        "bot_name": "python-http",
+        "company": "script_automation",
+        "purpose": "unknown"
+      }
+    },
+    {
+      "ua": "Python-urllib/3.11",
+      "traditional_search": false,
+      "classify": {
+        "is_ai_bot": false,
+        "bot_name": null,
+        "company": null,
+        "purpose": null
+      },
+      "automation": {
+        "is_ai_bot": true,
+        "bot_name": "python-http",
+        "company": "script_automation",
+        "purpose": "unknown"
+      }
+    },
+    {
+      "ua": "axios/1.6.0",
+      "traditional_search": false,
+      "classify": {
+        "is_ai_bot": false,
+        "bot_name": null,
+        "company": null,
+        "purpose": null
+      },
+      "automation": {
+        "is_ai_bot": true,
+        "bot_name": "node-http",
+        "company": "script_automation",
+        "purpose": "unknown"
+      }
+    },
+    {
+      "ua": "node-fetch/1.0",
+      "traditional_search": false,
+      "classify": {
+        "is_ai_bot": false,
+        "bot_name": null,
+        "company": null,
+        "purpose": null
+      },
+      "automation": {
+        "is_ai_bot": true,
+        "bot_name": "node-http",
+        "company": "script_automation",
+        "purpose": "unknown"
+      }
+    },
+    {
+      "ua": "Go-http-client/1.1",
+      "traditional_search": false,
+      "classify": {
+        "is_ai_bot": false,
+        "bot_name": null,
+        "company": null,
+        "purpose": null
+      },
+      "automation": {
+        "is_ai_bot": true,
+        "bot_name": "go-http",
+        "company": "script_automation",
+        "purpose": "unknown"
+      }
+    },
+    {
+      "ua": "Java/17.0.1",
+      "traditional_search": false,
+      "classify": {
+        "is_ai_bot": false,
+        "bot_name": null,
+        "company": null,
+        "purpose": null
+      },
+      "automation": {
+        "is_ai_bot": true,
+        "bot_name": "java-http",
+        "company": "script_automation",
+        "purpose": "unknown"
+      }
+    },
+    {
+      "ua": "okhttp/4.9",
+      "traditional_search": false,
+      "classify": {
+        "is_ai_bot": false,
+        "bot_name": null,
+        "company": null,
+        "purpose": null
+      },
+      "automation": {
+        "is_ai_bot": true,
+        "bot_name": "java-http",
+        "company": "script_automation",
+        "purpose": "unknown"
+      }
+    },
+    {
+      "ua": "Mozilla/5.0 HeadlessChrome/120",
+      "traditional_search": false,
+      "classify": {
+        "is_ai_bot": false,
+        "bot_name": null,
+        "company": null,
+        "purpose": null
+      },
+      "automation": {
+        "is_ai_bot": true,
+        "bot_name": "headless-chrome",
+        "company": "script_automation",
+        "purpose": "unknown"
+      }
+    },
+    {
+      "ua": "Mozilla/5.0 (Macintosh) Chrome/125.0 Safari/537.36",
+      "traditional_search": false,
+      "classify": {
+        "is_ai_bot": false,
+        "bot_name": null,
+        "company": null,
+        "purpose": null
+      },
+      "automation": null
+    },
+    {
+      "ua": "PerplexityBot/1.0",
+      "traditional_search": false,
+      "classify": {
+        "is_ai_bot": true,
+        "bot_name": "perplexitybot",
+        "company": "perplexity",
+        "purpose": "search"
+      },
+      "automation": null
+    },
+    {
+      "ua": "DeepSeekBot",
+      "traditional_search": false,
+      "classify": {
+        "is_ai_bot": true,
+        "bot_name": "deepseekbot",
+        "company": "deepseek",
+        "purpose": "training"
+      },
+      "automation": null
+    },
+    {
+      "ua": "nuclei/2.9",
+      "traditional_search": false,
+      "classify": {
+        "is_ai_bot": false,
+        "bot_name": null,
+        "company": null,
+        "purpose": null
+      },
+      "automation": {
+        "is_ai_bot": true,
+        "bot_name": "security-scanner",
+        "company": "script_automation",
+        "purpose": "unknown"
+      }
+    }
+  ],
+  "patterns": [
+    {
+      "pattern": "gptbot",
+      "company": "openai",
+      "purpose": "training",
+      "serving_policy": "divert"
+    },
+    {
+      "pattern": "claudebot",
+      "company": "anthropic",
+      "purpose": "training",
+      "serving_policy": "divert"
+    },
+    {
+      "pattern": "perplexitybot",
+      "company": "perplexity",
+      "purpose": "search",
+      "serving_policy": "never_divert"
+    },
+    {
+      "pattern": "deepseekbot",
+      "company": "deepseek",
+      "purpose": "training",
+      "serving_policy": "divert_unverified"
+    },
+    {
+      "pattern": "google-extended",
+      "company": "google",
+      "purpose": "training"
+    }
+  ],
+  "cidr_contains": [
+    {
+      "ip": "192.0.2.10",
+      "cidr": "192.0.2.0/24",
+      "contains": true,
+      "parses": true
+    },
+    {
+      "ip": "192.0.3.10",
+      "cidr": "192.0.2.0/24",
+      "contains": false,
+      "parses": true
+    },
+    {
+      "ip": "10.0.0.1",
+      "cidr": "0.0.0.0/0",
+      "contains": true,
+      "parses": true
+    },
+    {
+      "ip": "10.0.0.1",
+      "cidr": "10.0.0.1",
+      "contains": true,
+      "parses": true
+    },
+    {
+      "ip": "10.0.0.1",
+      "cidr": "10.0.0.1/32",
+      "contains": true,
+      "parses": true
+    },
+    {
+      "ip": "10.0.0.2",
+      "cidr": "10.0.0.1/32",
+      "contains": false,
+      "parses": true
+    },
+    {
+      "ip": "010.000.000.001",
+      "cidr": "10.0.0.0/8",
+      "contains": true,
+      "parses": true
+    },
+    {
+      "ip": "256.0.0.1",
+      "cidr": "0.0.0.0/0",
+      "contains": false,
+      "parses": false
+    },
+    {
+      "ip": "1.2.3",
+      "cidr": "1.2.3.0/24",
+      "contains": false,
+      "parses": false
+    },
+    {
+      "ip": "2001:db8::1",
+      "cidr": "2001:db8::/32",
+      "contains": true,
+      "parses": true
+    },
+    {
+      "ip": "2001:db9::1",
+      "cidr": "2001:db8::/32",
+      "contains": false,
+      "parses": true
+    },
+    {
+      "ip": "::ffff:192.0.2.1",
+      "cidr": "::ffff:192.0.2.0/120",
+      "contains": true,
+      "parses": true
+    },
+    {
+      "ip": "::1",
+      "cidr": "::1/128",
+      "contains": true,
+      "parses": true
+    },
+    {
+      "ip": "::",
+      "cidr": "::/0",
+      "contains": true,
+      "parses": true
+    },
+    {
+      "ip": "2001:db8::1",
+      "cidr": "192.0.2.0/24",
+      "contains": false,
+      "parses": true
+    },
+    {
+      "ip": "192.0.2.1",
+      "cidr": "2001:db8::/32",
+      "contains": false,
+      "parses": true
+    },
+    {
+      "ip": "fe80::1%eth0",
+      "cidr": "fe80::/10",
+      "contains": false,
+      "parses": false
+    },
+    {
+      "ip": "2001:db8:0:0:0:0:0:1",
+      "cidr": "2001:db8::/33",
+      "contains": true,
+      "parses": true
+    },
+    {
+      "ip": "2001:db8::1",
+      "cidr": "2001:db8::/129",
+      "contains": false,
+      "parses": true
+    },
+    {
+      "ip": "192.0.2.1",
+      "cidr": "192.0.2.0/33",
+      "contains": false,
+      "parses": true
+    },
+    {
+      "ip": "192.0.2.1",
+      "cidr": "192.0.2.0/x",
+      "contains": false,
+      "parses": true
+    },
+    {
+      "ip": "192.0.2.1",
+      "cidr": "192.0.2.0/24/1",
+      "contains": false,
+      "parses": true
+    },
+    {
+      "ip": "192.0.2.1",
+      "cidr": "192.0.2.0/",
+      "contains": false,
+      "parses": true
+    },
+    {
+      "ip": "1:2:3:4:5:6:7:8",
+      "cidr": "1:2:3:4:5:6:7:0/112",
+      "contains": true,
+      "parses": true
+    },
+    {
+      "ip": "1:2:3:4:5:6:7:8:9",
+      "cidr": "::/0",
+      "contains": false,
+      "parses": false
+    },
+    {
+      "ip": "1::2::3",
+      "cidr": "::/0",
+      "contains": false,
+      "parses": false
+    },
+    {
+      "ip": "12345::",
+      "cidr": "::/0",
+      "contains": false,
+      "parses": false
+    },
+    {
+      "ip": "",
+      "cidr": "0.0.0.0/0",
+      "contains": false,
+      "parses": false
+    },
+    {
+      "ip": "203.0.113.7",
+      "cidr": "203.0.113.0/99",
+      "contains": false,
+      "parses": true
+    },
+    {
+      "ip": "2001:DB8::ABCD",
+      "cidr": "2001:db8::/16",
+      "contains": true,
+      "parses": true
+    },
+    {
+      "ip": "1.2.3.4",
+      "cidr": "1.2.3.4/0",
+      "contains": true,
+      "parses": true
+    },
+    {
+      "ip": "128.0.0.1",
+      "cidr": "128.0.0.0/1",
+      "contains": true,
+      "parses": true
+    },
+    {
+      "ip": "127.255.255.255",
+      "cidr": "128.0.0.0/1",
+      "contains": false,
+      "parses": true
+    },
+    {
+      "ip": "2001:db8::1",
+      "cidr": "2001:db8::/3",
+      "contains": true,
+      "parses": true
+    }
+  ],
+  "cidr_ranges": {
+    "openai": {
+      "cidrs": [
+        "192.0.2.0/24",
+        "198.51.100.0/24"
+      ]
+    },
+    "anthropic": {
+      "cidrs": [
+        "2001:db8::/32"
+      ]
+    },
+    "empty": {
+      "cidrs": []
+    },
+    "broken": {
+      "cidrs": [
+        "203.0.113.0/99"
+      ]
+    }
+  },
+  "cidr_verdict": [
+    {
+      "ip": "192.0.2.5",
+      "company": "openai",
+      "verdict": true
+    },
+    {
+      "ip": "203.0.113.5",
+      "company": "openai",
+      "verdict": false
+    },
+    {
+      "ip": "2001:db8::1",
+      "company": "openai",
+      "verdict": null
+    },
+    {
+      "ip": "2001:db8::1",
+      "company": "anthropic",
+      "verdict": true
+    },
+    {
+      "ip": "192.0.2.5",
+      "company": "anthropic",
+      "verdict": null
+    },
+    {
+      "ip": "192.0.2.5",
+      "company": "empty",
+      "verdict": null
+    },
+    {
+      "ip": "192.0.2.5",
+      "company": "nobody",
+      "verdict": null
+    },
+    {
+      "ip": "garbage",
+      "company": "openai",
+      "verdict": null
+    },
+    {
+      "ip": null,
+      "company": "openai",
+      "verdict": null
+    },
+    {
+      "ip": "203.0.113.5",
+      "company": "broken",
+      "verdict": false
+    }
+  ],
+  "strip": [
+    {
+      "html": "<p>Hello <b>world</b></p>",
+      "stripped": "<p>Hello <b>world</b></p>",
+      "words": 2
+    },
+    {
+      "html": "<!doctype html><html lang=\"en\"><head><title>T &amp; x</title><link rel='stylesheet' href='a.css'><meta name=\"description\" content=\"d\"><script>var a='</div>';</script><style>p{}</style></head><body class=\"x\" data-a=1><nav><ul><li>skip</li></ul></nav><main id=\"m\"><h1 style=\"c\">Head</h1><p>Body text <a href=\"/x\" onclick=\"y\">link</a></p></main><footer>foot</footer></body></html>",
+      "stripped": "<!doctype html><html lang=\"en\"><head><title>T &amp; x</title><meta name=\"description\" content=\"d\"></head><body><main><h1>Head</h1><p>Body text <a href=\"/x\">link</a></p></main></body></html>",
+      "words": 7
+    },
+    {
+      "html": "<div><nav>a<nav>b</nav>c</nav>after</div>",
+      "stripped": "<div>after</div>",
+      "words": 1
+    },
+    {
+      "html": "<div><nav>unclosed <p>rest of doc</p></div>",
+      "stripped": "<div>",
+      "words": 0
+    },
+    {
+      "html": "<h5><button type=\"button\"><span>Trending</span></button></h5>",
+      "stripped": "<h5><span>Trending</span></h5>",
+      "words": 1
+    },
+    {
+      "html": "<p title='a\"b' alt=\"x>y\">q</p>",
+      "stripped": "<p title=\"a&quot;b\" alt=\"x>y\">q</p>",
+      "words": 1
+    },
+    {
+      "html": "<img src=\"/a.png\" alt=\"\" loading=lazy><br/><input type=text value=x><hr>",
+      "stripped": "<img src=\"/a.png\" alt=\"\"><br /><hr>",
+      "words": 0
+    },
+    {
+      "html": "<div aria-hidden=\"true\"><p>hidden</p></div><div aria-hidden=\"false\">shown</div><div role=\"navigation\">menu</div>",
+      "stripped": "<div>shown</div>",
+      "words": 1
+    },
+    {
+      "html": "<!-- comment --><p>after comment</p><!-- unterminated",
+      "stripped": "<p>after comment</p>",
+      "words": 2
+    },
+    {
+      "html": "a < b and c > d <3 <-- arrow",
+      "stripped": "a < b and c > d <3 <-- arrow",
+      "words": 5
+    },
+    {
+      "html": "<P CLASS=\"X\">Upper</P><DIV Data-X='1'>case</DIV>",
+      "stripped": "<p>Upper</p><div>case</div>",
+      "words": 2
+    },
+    {
+      "html": "<textarea>raw <b>text</b></textarea><p>x</p>",
+      "stripped": "<p>x</p>",
+      "words": 1
+    },
+    {
+      "html": "<svg><g><path d=\"M0\"/></g></svg><canvas></canvas><video src=x></video><p>media gone</p>",
+      "stripped": "<p>media gone</p>",
+      "words": 2
+    },
+    {
+      "html": "<form action=/s><label>L</label><select><option>o</option></select></form><aside>side</aside>",
+      "stripped": "",
+      "words": 0
+    },
+    {
+      "html": "<p>café — naïve   non breaking</p>",
+      "stripped": "<p>café — naïve   non breaking</p>",
+      "words": 5
+    },
+    {
+      "html": "<?xml version=\"1.0\"?><p>pi</p>",
+      "stripped": "<?xml version=\"1.0\"?><p>pi</p>",
+      "words": 1
+    },
+    {
+      "html": "<div attr = \"spaced\" bare data-k=v>x</div>",
+      "stripped": "<div>x</div>",
+      "words": 1
+    },
+    {
+      "html": "<p>unterminated tag <div class=\"x\"",
+      "stripped": "<p>unterminated tag ",
+      "words": 2
+    },
+    {
+      "html": "<script src=x></script><noscript><img src=t></noscript><iframe src=y></iframe><p>ok</p>",
+      "stripped": "<p>ok</p>",
+      "words": 1
+    },
+    {
+      "html": "<link rel=\"preload\" href=\"f\"><link rel=\"canonical\" href=\"c\"><link rel='prefetch' href='p'>",
+      "stripped": "<link rel=\"canonical\" href=\"c\">",
+      "words": 0
+    },
+    {
+      "html": "<time datetime=\"2026-01-01\">Jan</time><html lang=en>",
+      "stripped": "<time datetime=\"2026-01-01\">Jan</time><html lang=\"en\">",
+      "words": 1
+    },
+    {
+      "html": "<div><p>Nested <span>deep <em>very <strong>deep</strong></em></span></p></div>",
+      "stripped": "<div><p>Nested <span>deep <em>very <strong>deep</strong></em></span></p></div>",
+      "words": 4
+    }
+  ],
+  "words": [
+    {
+      "text": "",
+      "words": 0,
+      "core_words": 0
+    },
+    {
+      "text": "   ",
+      "words": 0,
+      "core_words": 0
+    },
+    {
+      "text": "one",
+      "words": 1,
+      "core_words": 1
+    },
+    {
+      "text": "one two  three",
+      "words": 3,
+      "core_words": 3
+    },
+    {
+      "text": "<p>a</p><p>b</p>",
+      "words": 2,
+      "core_words": 2
+    },
+    {
+      "text": "a b",
+      "words": 2,
+      "core_words": 2
+    },
+    {
+      "text": "a b",
+      "words": 2,
+      "core_words": 2
+    },
+    {
+      "text": "tab\tsep\nnew",
+      "words": 3,
+      "core_words": 3
+    },
+    {
+      "text": "<b>x</b>y",
+      "words": 2,
+      "core_words": 2
+    },
+    {
+      "text": "﻿word",
+      "words": 1,
+      "core_words": 1
+    },
+    {
+      "text": "café au lait",
+      "words": 3,
+      "core_words": 3
+    }
+  ],
+  "canonical": [
+    {
+      "path": "/en-au/business/index.jsonld",
+      "url": "https://shop.test/en-au/business/"
+    },
+    {
+      "path": "/about/index.md",
+      "url": "https://shop.test/about/"
+    },
+    {
+      "path": "/x/index.json",
+      "url": "https://shop.test/x/"
+    },
+    {
+      "path": "/doc.pdf",
+      "url": "https://shop.test/doc/"
+    },
+    {
+      "path": "/report.csv",
+      "url": "https://shop.test/report/"
+    },
+    {
+      "path": "/x/mcp.json",
+      "url": null
+    },
+    {
+      "path": "/x/index.openai.json",
+      "url": null
+    },
+    {
+      "path": "/about/",
+      "url": null
+    },
+    {
+      "path": "/about",
+      "url": null
+    },
+    {
+      "path": "/a.b/c",
+      "url": null
+    },
+    {
+      "path": "/page.html",
+      "url": null
+    }
+  ],
+  "referrals": [
+    {
+      "referer": "https://chatgpt.com/",
+      "utm": null,
+      "detection": {
+        "citation_source": "chatgpt",
+        "citation_category": "ai_assistant",
+        "citation_source_host": "chatgpt.com",
+        "citation_detection": "referer"
+      }
+    },
+    {
+      "referer": "https://chat.openai.com/c/1",
+      "utm": "chatgpt.com",
+      "detection": {
+        "citation_source": "chatgpt",
+        "citation_category": "ai_assistant",
+        "citation_source_host": "chat.openai.com",
+        "citation_detection": "both"
+      }
+    },
+    {
+      "referer": "https://www.perplexity.ai/search",
+      "utm": null,
+      "detection": {
+        "citation_source": "perplexity",
+        "citation_category": "ai_search",
+        "citation_source_host": "www.perplexity.ai",
+        "citation_detection": "referer"
+      }
+    },
+    {
+      "referer": "https://claude.ai/chat/x",
+      "utm": "claude",
+      "detection": {
+        "citation_source": "claude",
+        "citation_category": "ai_assistant",
+        "citation_source_host": "claude.ai",
+        "citation_detection": "both"
+      }
+    },
+    {
+      "referer": "https://gemini.google.com/app",
+      "utm": null,
+      "detection": {
+        "citation_source": "gemini",
+        "citation_category": "ai_assistant",
+        "citation_source_host": "gemini.google.com",
+        "citation_detection": "referer"
+      }
+    },
+    {
+      "referer": "https://www.google.com/",
+      "utm": null,
+      "detection": {
+        "citation_source": "google",
+        "citation_category": "search",
+        "citation_source_host": "www.google.com",
+        "citation_detection": "referer"
+      }
+    },
+    {
+      "referer": "https://google.com/search?q=x",
+      "utm": "openai",
+      "detection": {
+        "citation_source": "google",
+        "citation_category": "ai_search",
+        "citation_source_host": "google.com",
+        "citation_detection": "both"
+      }
+    },
+    {
+      "referer": "https://mail.google.com/",
+      "utm": null,
+      "detection": null
+    },
+    {
+      "referer": "https://docs.google.com/",
+      "utm": "perplexity",
+      "detection": {
+        "citation_source": "other_ai",
+        "citation_category": "ai_assistant",
+        "citation_source_host": "docs.google.com",
+        "citation_detection": "utm"
+      }
+    },
+    {
+      "referer": "https://example.com/page",
+      "utm": null,
+      "detection": null
+    },
+    {
+      "referer": "https://www.example.com/",
+      "utm": "chatgpt.com",
+      "detection": null
+    },
+    {
+      "referer": "https://unknown.test/",
+      "utm": "copilot",
+      "detection": {
+        "citation_source": "other_ai",
+        "citation_category": "ai_assistant",
+        "citation_source_host": "unknown.test",
+        "citation_detection": "utm"
+      }
+    },
+    {
+      "referer": null,
+      "utm": "Perplexity",
+      "detection": {
+        "citation_source": "perplexity",
+        "citation_category": "ai_search",
+        "citation_source_host": "",
+        "citation_detection": "utm"
+      }
+    },
+    {
+      "referer": null,
+      "utm": "newsletter",
+      "detection": null
+    },
+    {
+      "referer": null,
+      "utm": null,
+      "detection": null
+    },
+    {
+      "referer": "not a url",
+      "utm": null,
+      "detection": null
+    },
+    {
+      "referer": "https://www.bing.com/",
+      "utm": null,
+      "detection": {
+        "citation_source": "bing",
+        "citation_category": "search",
+        "citation_source_host": "www.bing.com",
+        "citation_detection": "referer"
+      }
+    },
+    {
+      "referer": "https://copilot.microsoft.com/",
+      "utm": "copilot.com",
+      "detection": {
+        "citation_source": "copilot",
+        "citation_category": "ai_assistant",
+        "citation_source_host": "copilot.microsoft.com",
+        "citation_detection": "both"
+      }
+    },
+    {
+      "referer": "https://sub.chatgpt.com/",
+      "utm": null,
+      "detection": {
+        "citation_source": "chatgpt",
+        "citation_category": "ai_assistant",
+        "citation_source_host": "sub.chatgpt.com",
+        "citation_detection": "referer"
+      }
+    }
+  ],
+  "device_types": [
+    {
+      "ua": "",
+      "device": "desktop"
+    },
+    {
+      "ua": "Mozilla/5.0 (iPad)",
+      "device": "tablet"
+    },
+    {
+      "ua": "Mozilla/5.0 (Linux; Android 13) Mobile",
+      "device": "mobile"
+    },
+    {
+      "ua": "Mozilla/5.0 (Linux; Android 13)",
+      "device": "tablet"
+    },
+    {
+      "ua": "Mozilla/5.0 (iPhone)",
+      "device": "mobile"
+    },
+    {
+      "ua": "Mozilla/5.0 (Windows NT 10.0)",
+      "device": "desktop"
+    },
+    {
+      "ua": "Tablet PC",
+      "device": "tablet"
+    }
+  ],
+  "pathnames": [
+    {
+      "target": "/",
+      "pathname": "/"
+    },
+    {
+      "target": "/about",
+      "pathname": "/about"
+    },
+    {
+      "target": "/a b",
+      "pathname": "/a%20b"
+    },
+    {
+      "target": "/café",
+      "pathname": "/caf%C3%A9"
+    },
+    {
+      "target": "/a\"b<c>d`e{f}g",
+      "pathname": "/a%22b%3Cc%3Ed%60e%7Bf%7Dg"
+    },
+    {
+      "target": "/x?y=1",
+      "pathname": "/x"
+    },
+    {
+      "target": "/x#frag",
+      "pathname": "/x"
+    },
+    {
+      "target": "/a/./b",
+      "pathname": "/a/b"
+    },
+    {
+      "target": "/a/../b",
+      "pathname": "/b"
+    },
+    {
+      "target": "/a/b/..",
+      "pathname": "/a/"
+    },
+    {
+      "target": "/a/b/.",
+      "pathname": "/a/b/"
+    },
+    {
+      "target": "/../x",
+      "pathname": "/x"
+    },
+    {
+      "target": "/%2e%2E/x",
+      "pathname": "/x"
+    },
+    {
+      "target": "/a/%2e/b",
+      "pathname": "/a/b"
+    },
+    {
+      "target": "/a\\b",
+      "pathname": "/a/b"
+    },
+    {
+      "target": "/%7Euser",
+      "pathname": "/%7Euser"
+    },
+    {
+      "target": "/a%20b",
+      "pathname": "/a%20b"
+    },
+    {
+      "target": "/A%2fb",
+      "pathname": "/A%2fb"
+    },
+    {
+      "target": "/x^y",
+      "pathname": "/x^y"
+    },
+    {
+      "target": "/a|b",
+      "pathname": "/a|b"
+    },
+    {
+      "target": "/a//b",
+      "pathname": "/a//b"
+    },
+    {
+      "target": "http://h.test/abs/path?q",
+      "pathname": "/abs/path"
+    },
+    {
+      "target": "/✓",
+      "pathname": "/%E2%9C%93"
+    },
+    {
+      "target": "/a'b",
+      "pathname": "/a'b"
+    },
+    {
+      "target": "/a[b]",
+      "pathname": "/a[b]"
+    }
+  ]
+}

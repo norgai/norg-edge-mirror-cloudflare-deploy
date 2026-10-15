@@ -1,0 +1,43 @@
+# Release the WordPress plugin: tag wordpress-vX.Y.Z builds both channel zips,
+# refuses a tag that disagrees with the plugin's version, and publishes a
+# GitHub Release whose NORG-channel zip is what content-craft's wordpress_pin.py
+# points at. The job summary prints the SHA-256 to pin there.
+name: WordPress plugin release
+
+on:
+  push:
+    tags: ["wordpress-v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: wordpress
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build both channels
+        id: build
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#wordpress-v}"
+          NORG_ZIP=$(bash bin/build-zip.sh norg "$PWD/dist" | head -1)
+          WPORG_ZIP=$(bash bin/build-zip.sh wporg "$PWD/dist" | head -1)
+          case "$NORG_ZIP" in *"-$TAG_VERSION-norg.zip") ;; *) echo "tag $GITHUB_REF_NAME does not match the plugin version ($NORG_ZIP)"; exit 1;; esac
+          SHA=$(sha256sum "$NORG_ZIP" | cut -d' ' -f1)
+          {
+            echo "### Pin this in content-craft"
+            echo '```python'
+            echo "GA = PluginRelease(version=\"$TAG_VERSION\", sha256=\"$SHA\")"
+            echo '```'
+            echo "and set EDGE_WORKER_VERSION_WORDPRESS=$TAG_VERSION."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            wordpress/dist/norg-edge-router-*-norg.zip
+            wordpress/dist/norg-edge-router-*-wporg.zip
+          generate_release_notes: true
