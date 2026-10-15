@@ -14,7 +14,7 @@ import { strict as assert } from "node:assert";
 import { afterEach, test } from "node:test";
 
 import { handler } from "../lambda/edge-router-lambda.js";
-import { ORIGIN_READ_TIMEOUT_MS, originReadTarget } from "../lambda/lib/origin.js";
+import { ORIGIN_READ_TIMEOUT_MS, originReadTarget, publicHostFor } from "../lambda/lib/origin.js";
 import { MIRROR_FETCH_TIMEOUT_MS } from "../../core/constants.mjs";
 import { __test_getFeed, __test_setFeed } from "../../core/feed.js";
 import {
@@ -1125,4 +1125,77 @@ test("MCP POST forwards JSON-RPC headers and NORG identity, never cookies or aut
   assert.ok(forwarded.get("x-norg-site-id"), "site id must still be attached");
   assert.ok(forwarded.get("x-norg-site-key"), "site key must still be attached");
   assert.ok(forwarded.get("x-norg-edge-version"), "version must still be attached");
+});
+
+// --- 0.6.7: the public hostname configured at install ------------------------
+
+test("with Host naming the origin, the read goes through the configured public host", async () => {
+  // A policy that does not forward the viewer's Host delivers the origin's own
+  // name. 0.6.6 then read the origin directly and timed out against an origin
+  // that accepts only CloudFront; the configured site host closes that gap.
+  let seenUrl = null;
+  let seen = null;
+  const event = cloudFrontEvent({
+    headers: { "user-agent": GPTBOT_UA },
+    config: { "x-norg-site-host": "www.customer.example" },
+  });
+  event.Records[0].cf.request.headers.host = [{ key: "Host", value: ORIGIN_HOST }];
+  stubNetwork({
+    origin: (url, init) => {
+      seenUrl = url;
+      seen = new Headers(init.headers);
+      return new Response(longHtml(), { status: 200, headers: { "content-type": "text/html" } });
+    },
+  });
+  globalThis.fetch = ((inner) => async (input, init) => {
+    const url = String(input);
+    if (url.startsWith("https://www.customer.example/")) {
+      seenUrl = url;
+      seen = new Headers(init.headers);
+      return new Response(longHtml(), { status: 200, headers: { "content-type": "text/html" } });
+    }
+    return inner(input, init);
+  })(globalThis.fetch);
+
+  await handler(event);
+
+  assert.ok(seenUrl && seenUrl.startsWith("https://www.customer.example/"), `read went to ${seenUrl}`);
+  assert.equal(seen.get("x-norg-public-host"), "www.customer.example");
+  assert.equal(seen.get("x-norg-edge"), "1");
+});
+
+test("with Host naming the origin, a passthrough names the configured public host", async () => {
+  const event = cloudFrontEvent({
+    headers: { "user-agent": CHROME_UA },
+    config: { "x-norg-site-host": "www.customer.example" },
+  });
+  event.Records[0].cf.request.headers.host = [{ key: "Host", value: ORIGIN_HOST }];
+  stubNetwork({});
+
+  const result = await handler(event);
+
+  assert.ok(isPassthroughResult(result));
+  assert.equal(result.headers.host[0].value, ORIGIN_HOST, "Host is still left as delivered");
+  assert.equal(header(result, "x-norg-public-host"), "www.customer.example");
+});
+
+test("the viewer's own public Host wins over the configured one", () => {
+  const cfRequest = cloudFrontEvent({ config: { "x-norg-site-host": "configured.example" } }).Records[0].cf.request;
+  assert.equal(publicHostFor(cfRequest, "configured.example"), PUBLIC_HOST);
+});
+
+test("a malformed configured host is ignored", () => {
+  const cfRequest = cloudFrontEvent({}).Records[0].cf.request;
+  cfRequest.headers.host = [{ key: "Host", value: ORIGIN_HOST }];
+  assert.equal(publicHostFor(cfRequest, "not a host/evil"), ORIGIN_HOST);
+  const target = originReadTarget(cfRequest, "not a host/evil");
+  assert.equal(target.viaDistribution, false);
+});
+
+test("the site-host config header never reaches the customer's origin", async () => {
+  const { result } = await run(
+    { headers: { "user-agent": CHROME_UA }, config: { "x-norg-site-host": "www.customer.example" } },
+    { mirror: () => mirrorHit() },
+  );
+  assert.equal(JSON.stringify(result).includes("x-norg-site-host"), false);
 });

@@ -272,7 +272,7 @@ var STATIC_ASSET_SUFFIXES = /* @__PURE__ */ new Set([
 ]);
 
 // aws/lambda/lib/config.js
-var EDGE_SCRIPT_VERSION = "0.6.6";
+var EDGE_SCRIPT_VERSION = "0.6.7";
 var CONFIG_HEADERS = {
   "x-norg-site-id": "SITE_ID",
   "x-norg-secret-arn": "NORG_SECRET_ARN",
@@ -287,6 +287,10 @@ var CONFIG_HEADERS = {
   "x-norg-disabled": "EDGE_DISABLED",
   "x-norg-lazy-render": "LAZY_RENDER_ENABLED",
   "x-norg-env": "EDGE_ENV",
+  // The site's public hostname, written at install. Used only when the
+  // customer's origin request policy delivers the origin's own name as Host
+  // (see publicHostFor in origin.js).
+  "x-norg-site-host": "SITE_HOST",
   // CloudFront-only. Origin-request fires on a cache miss, so the passthrough
   // event stream is incomplete here and rides the customer's human traffic;
   // it is off unless an install explicitly asks for it. See telemetry.js.
@@ -876,6 +880,12 @@ function viewerHost(cfRequest) {
   const host = cfRequest?.headers?.host?.[0]?.value;
   return host && HOSTNAME_PATTERN.test(host) ? host : null;
 }
+function publicHostFor(cfRequest, configuredHost) {
+  const viewer = viewerHost(cfRequest);
+  if (viewer && viewer !== cfRequest?.origin?.custom?.domainName) return viewer;
+  if (configuredHost && HOSTNAME_PATTERN.test(configuredHost)) return configuredHost;
+  return viewer;
+}
 function setPublicHost(cfRequest, publicHost) {
   if (!cfRequest.headers) return;
   if (publicHost) {
@@ -895,10 +905,10 @@ function originUrl(cfRequest) {
   return `${protocol}://${custom.domainName}${port}${prefix}${cfRequest.uri}${query}`;
 }
 var ORIGIN_READ_TIMEOUT_MS = 3e3;
-function originReadTarget(cfRequest) {
+function originReadTarget(cfRequest, configuredHost) {
   const direct = originUrl(cfRequest);
   if (!direct) return null;
-  const publicHost = viewerHost(cfRequest);
+  const publicHost = publicHostFor(cfRequest, configuredHost);
   if (!publicHost || publicHost === cfRequest.origin?.custom?.domainName) {
     return { url: direct, viaDistribution: false };
   }
@@ -907,8 +917,8 @@ function originReadTarget(cfRequest) {
   const query = params.toString() ? `?${params.toString()}` : "";
   return { url: `https://${publicHost}${cfRequest.uri}${query}`, viaDistribution: true };
 }
-async function fetchOrigin(cfRequest, request, timeoutMs) {
-  const target = originReadTarget(cfRequest);
+async function fetchOrigin(cfRequest, request, timeoutMs, configuredHost) {
+  const target = originReadTarget(cfRequest, configuredHost);
   if (!target) return null;
   const headers = new Headers(request.headers);
   if (!target.viaDistribution) {
@@ -918,7 +928,7 @@ async function fetchOrigin(cfRequest, request, timeoutMs) {
   }
   headers.set(LOOP_GUARD_HEADER, "1");
   headers.delete("host");
-  const publicHost = viewerHost(cfRequest);
+  const publicHost = publicHostFor(cfRequest, configuredHost);
   if (publicHost) headers.set(PUBLIC_HOST_HEADER, publicHost);
   else headers.delete(PUBLIC_HOST_HEADER);
   headers.set("accept-encoding", "identity");
@@ -1357,7 +1367,7 @@ function isPassthrough(request, env) {
   return true;
 }
 async function serveOriginFirstArtifact(cfRequest, request, env, url, alternateFormatHeaders) {
-  const origin = await fetchOrigin(cfRequest, request, ORIGIN_READ_TIMEOUT_MS);
+  const origin = await fetchOrigin(cfRequest, request, ORIGIN_READ_TIMEOUT_MS, env.SITE_HOST);
   if (origin && origin.status === 200) {
     const contentType = origin.headers.get("content-type") || "";
     if (!/text\/html/i.test(contentType)) return origin;
@@ -1425,7 +1435,7 @@ async function serveAgent(cfRequest, request, env, url, classification) {
 }
 async function serveStrippedOrigin(cfRequest, request, env) {
   if (binding(env, "STRIP_FALLBACK_ENABLED") === "false") return PASSTHROUGH;
-  const origin = await fetchOrigin(cfRequest, request, ORIGIN_READ_TIMEOUT_MS);
+  const origin = await fetchOrigin(cfRequest, request, ORIGIN_READ_TIMEOUT_MS, env.SITE_HOST);
   if (!origin) return PASSTHROUGH;
   const contentType = origin.headers.get("content-type") || "";
   if (origin.status !== 200 || !/text\/html/i.test(contentType)) return PASSTHROUGH;
@@ -1532,9 +1542,9 @@ async function handler(event) {
   const cfRequest = event.Records[0].cf.request;
   let pristine = cfRequest;
   try {
-    const publicHost = viewerHost(cfRequest);
     scrubConfigHeaders(pristine = structuredClone(cfRequest));
     const env = readConfig(cfRequest);
+    const publicHost = publicHostFor(cfRequest, env.SITE_HOST);
     if (!env.SITE_ID || !env.NORG_SECRET_ARN) return toOrigin(cfRequest, publicHost);
     let watchdog;
     const result = await Promise.race([
