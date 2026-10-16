@@ -128,6 +128,7 @@ $norg_edge_lock   = static function ( $field ) use ( $norg_edge_config ) {
 					<select id="norg-proxy" name="<?php echo esc_attr( $norg_edge_name ); ?>[trusted_proxy]"<?php echo esc_attr( $norg_edge_lock( 'trusted_proxy' ) ); ?>>
 						<?php
 						foreach ( array(
+							'auto'       => __( 'Detect automatically (recommended)', 'norg-edge-router' ),
 							'none'       => __( 'The connection (REMOTE_ADDR)', 'norg-edge-router' ),
 							'cloudflare' => __( 'Cloudflare (CF-Connecting-IP, only from Cloudflare IPs)', 'norg-edge-router' ),
 							'header'     => __( 'A header set by my proxy', 'norg-edge-router' ),

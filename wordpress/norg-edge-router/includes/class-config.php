@@ -30,7 +30,7 @@ final class Config {
 		'capture_only'   => array( 'NORG_CAPTURE_ONLY', false ),
 		'strip_fallback' => array( 'NORG_STRIP_FALLBACK_ENABLED', true ),
 		'lazy_render'    => array( 'NORG_LAZY_RENDER_ENABLED', true ),
-		'trusted_proxy'  => array( 'NORG_TRUSTED_PROXY', 'none' ),
+		'trusted_proxy'  => array( 'NORG_TRUSTED_PROXY', 'auto' ),
 		'trusted_header' => array( 'NORG_TRUSTED_PROXY_HEADER', '' ),
 		'origin_probe'   => array( 'NORG_EDGE_ORIGIN_PROBE', true ),
 		'cache_bypass'   => array( 'NORG_EDGE_CACHE_BYPASS', true ),

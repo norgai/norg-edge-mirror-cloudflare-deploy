@@ -3,10 +3,11 @@
  * Client IP under the admin's trusted-proxy setting.
  *
  * There is no platform verified-bot signal inside WordPress, so source
- * verification is CIDR-only and the client IP is everything. Default is
+ * verification is CIDR-only and the client IP is everything. "none" is
  * REMOTE_ADDR. "cloudflare" trusts CF-Connecting-IP only when REMOTE_ADDR is a
  * Cloudflare edge address; "header" trusts one named header (for X-Forwarded-For,
- * the last hop). An unusable value yields null, which fails closed.
+ * the last hop). "auto" (the setting's default) picks one of those per request
+ * from what the request shows. An unusable value yields null, which fails closed.
  *
  * @package NorgEdgeRouter
  */
@@ -46,7 +47,15 @@ final class Ip_Resolver {
 		'2c0f:f248::/32',
 	);
 
-	const MODES = array( 'none', 'cloudflare', 'header' );
+	const MODES = array( 'auto', 'none', 'cloudflare', 'header' );
+
+	/**
+	 * Non-private ranges only a proxy in front of this server connects from.
+	 *
+	 * RFC 6598 shared space: Azure Container Apps reaches the app from it, and
+	 * PHP's reserved-range filter does not reliably cover it.
+	 */
+	const PROXY_RANGES = array( '100.64.0.0/10' );
 
 	/**
 	 * Trusted-proxy mode.
@@ -65,7 +74,7 @@ final class Ip_Resolver {
 	/**
 	 * Build a resolver.
 	 *
-	 * @param string $mode   none | cloudflare | header.
+	 * @param string $mode   auto | none | cloudflare | header.
 	 * @param string $header Header for "header" mode, e.g. "X-Real-IP".
 	 */
 	public function __construct( $mode = 'none', $header = '' ) {
@@ -80,14 +89,32 @@ final class Ip_Resolver {
 	 * @return string|null IP.
 	 */
 	public function client_ip( array $server ) {
-		$remote = isset( $server['REMOTE_ADDR'] ) ? trim( (string) $server['REMOTE_ADDR'] ) : '';
-		if ( 'cloudflare' === $this->mode && self::is_cloudflare( $remote ) ) {
+		list( $mode, $header ) = $this->effective( $server );
+		$remote                = isset( $server['REMOTE_ADDR'] ) ? trim( (string) $server['REMOTE_ADDR'] ) : '';
+		if ( 'cloudflare' === $mode && self::is_cloudflare( $remote ) ) {
 			return self::valid( isset( $server['HTTP_CF_CONNECTING_IP'] ) ? $server['HTTP_CF_CONNECTING_IP'] : '' );
 		}
-		if ( 'header' === $this->mode && '' !== $this->header ) {
-			return self::valid( self::last_hop( self::server_header( $server, $this->header ) ) );
+		if ( 'header' === $mode && '' !== $header ) {
+			return self::valid( self::last_hop( self::server_header( $server, $header ) ) );
 		}
 		return self::valid( $remote );
+	}
+
+	/**
+	 * The mode and header in force: as configured, or under "auto" what suggest() reads from the request.
+	 *
+	 * @param array $server $_SERVER-shaped array.
+	 * @return array array( mode, header ).
+	 */
+	private function effective( array $server ) {
+		if ( 'auto' !== $this->mode ) {
+			return array( $this->mode, $this->header );
+		}
+		$mode = self::suggest( $server );
+		if ( 'header' !== $mode ) {
+			return array( $mode, '' );
+		}
+		return array( $mode, isset( $server['HTTP_X_FORWARDED_FOR'] ) ? 'X-Forwarded-For' : 'X-Real-IP' );
 	}
 
 	/**
@@ -97,8 +124,9 @@ final class Ip_Resolver {
 	 * @return string|null Two-letter code.
 	 */
 	public function country( array $server ) {
-		$remote = isset( $server['REMOTE_ADDR'] ) ? (string) $server['REMOTE_ADDR'] : '';
-		if ( 'cloudflare' !== $this->mode || ! self::is_cloudflare( $remote ) ) {
+		list( $mode ) = $this->effective( $server );
+		$remote       = isset( $server['REMOTE_ADDR'] ) ? (string) $server['REMOTE_ADDR'] : '';
+		if ( 'cloudflare' !== $mode || ! self::is_cloudflare( $remote ) ) {
 			return null;
 		}
 		$code = isset( $server['HTTP_CF_IPCOUNTRY'] ) ? strtoupper( (string) $server['HTTP_CF_IPCOUNTRY'] ) : '';
@@ -112,11 +140,35 @@ final class Ip_Resolver {
 	 * @return bool True for a Cloudflare edge address.
 	 */
 	public static function is_cloudflare( $ip ) {
+		return self::in_ranges( $ip, self::CLOUDFLARE_RANGES );
+	}
+
+	/**
+	 * Is REMOTE_ADDR a proxy's (private, reserved, or shared address space)?
+	 *
+	 * @param string $ip Address.
+	 * @return bool True when only a proxy in front of this server could connect from it.
+	 */
+	private static function is_proxy_peer( $ip ) {
+		if ( null === Cidr::parse_ip( $ip ) ) {
+			return false;
+		}
+		return self::in_ranges( $ip, self::PROXY_RANGES ) || ! filter_var( $ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE );
+	}
+
+	/**
+	 * Is an address inside any of the ranges?
+	 *
+	 * @param string $ip     Address.
+	 * @param array  $ranges CIDR blocks.
+	 * @return bool True when contained.
+	 */
+	private static function in_ranges( $ip, array $ranges ) {
 		$addr = Cidr::parse_ip( $ip );
 		if ( null === $addr ) {
 			return false;
 		}
-		foreach ( self::CLOUDFLARE_RANGES as $range ) {
+		foreach ( $ranges as $range ) {
 			if ( Cidr::contains( $addr, $range ) ) {
 				return true;
 			}
@@ -125,7 +177,7 @@ final class Ip_Resolver {
 	}
 
 	/**
-	 * Suggest a mode from what the current request carries (status page only).
+	 * The mode the current request's shape calls for ("auto" uses it; the status page shows it).
 	 *
 	 * @param array $server $_SERVER-shaped array.
 	 * @return string Suggested mode.
@@ -135,8 +187,7 @@ final class Ip_Resolver {
 		if ( isset( $server['HTTP_CF_CONNECTING_IP'] ) && self::is_cloudflare( $remote ) ) {
 			return 'cloudflare';
 		}
-		$private = null !== Cidr::parse_ip( $remote ) && ! filter_var( $remote, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE );
-		if ( $private && ( isset( $server['HTTP_X_REAL_IP'] ) || isset( $server['HTTP_X_FORWARDED_FOR'] ) ) ) {
+		if ( self::is_proxy_peer( $remote ) && ( isset( $server['HTTP_X_REAL_IP'] ) || isset( $server['HTTP_X_FORWARDED_FOR'] ) ) ) {
 			return 'header';
 		}
 		return 'none';
