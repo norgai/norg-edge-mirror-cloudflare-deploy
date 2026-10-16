@@ -95,3 +95,21 @@ test("norgEdgeMiddleware with no app middleware continues with undefined", async
   const result = await norgEdgeMiddleware(OPTIONS)(vercelRequest({ userAgent: CHROME_UA }));
   assert.equal(result, undefined);
 });
+
+test("a pipeline that fails after the watchdog fired is never an unhandled rejection", async () => {
+  const { __test_raceWatchdog: race } = await import("../src/index.js");
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const late = new Promise((_, reject) => setTimeout(() => reject(new Error("late")), 30));
+    const result = await race(late, 5);
+    assert.equal(result, null, "the watchdog answers with the site");
+    // Let the late rejection land, then one more tick for any unhandled report.
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});

@@ -33,20 +33,30 @@ function keepAliveFrom(context) {
 }
 
 /**
- * Run the pipeline under the watchdog.
+ * Run a pipeline promise under a watchdog.
  *
- * @param {Request} request Incoming request.
- * @param {Object} env Install config.
- * @param {Object} options Factory options.
+ * The pipeline is given its rejection handler BEFORE the race. When the
+ * watchdog wins, the race has settled and nothing awaits the pipeline any
+ * more; a rejection from it later would then be unhandled — and on the
+ * Node.js middleware runtime an unhandled rejection ends the server process,
+ * which is the one outcome this package exists to rule out. Handled, a late
+ * failure is a log line and nothing else.
+ *
+ * @param {Promise<?Response>} pipeline The running pipeline.
+ * @param {number} watchdogMs Budget before "serve the site" wins.
  * @returns {Promise<?Response>} Response, or null.
  */
-async function raceWatchdog(request, env, options) {
+async function raceWatchdog(pipeline, watchdogMs) {
+  const guarded = pipeline.catch((e) => {
+    console.error("norg edge router error", e);
+    return null;
+  });
   let watchdog;
   try {
     return await Promise.race([
-      handleRequest(request, env, options),
+      guarded,
       new Promise((resolve) => {
-        watchdog = setTimeout(() => resolve(null), WATCHDOG_MS);
+        watchdog = setTimeout(() => resolve(null), watchdogMs);
       }),
     ]);
   } finally {
@@ -78,7 +88,7 @@ export function createNorgEdge(options = {}) {
       if (!isConfigured(env)) return undefined;
       const keepAlive = keepAliveFrom(context);
       if (keepAlive) env.EDGE_KEEPALIVE = keepAlive;
-      const response = await raceWatchdog(request, env, options);
+      const response = await raceWatchdog(handleRequest(request, env, options), WATCHDOG_MS);
       return response || undefined;
     } catch (e) {
       console.error("norg edge router error", e);
@@ -89,3 +99,6 @@ export function createNorgEdge(options = {}) {
 
 export { EDGE_SCRIPT_VERSION as version };
 export default createNorgEdge;
+
+// Test-only export.
+export { raceWatchdog as __test_raceWatchdog };
