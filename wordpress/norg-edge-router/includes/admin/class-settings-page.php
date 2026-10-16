@@ -110,8 +110,8 @@ final class Settings_Page {
 				add_settings_error( Config::OPTION, 'site_key', __( 'That does not look like a NORG site key (nek_live_…).', 'norg-edge-router' ) );
 			}
 		}
-		$proxy                 = isset( $input['trusted_proxy'] ) ? sanitize_key( $input['trusted_proxy'] ) : 'none';
-		$out['trusted_proxy']  = in_array( $proxy, \Norg\Edge\Ip_Resolver::MODES, true ) ? $proxy : 'none';
+		$proxy                 = isset( $input['trusted_proxy'] ) ? sanitize_key( $input['trusted_proxy'] ) : 'auto';
+		$out['trusted_proxy']  = in_array( $proxy, \Norg\Edge\Ip_Resolver::MODES, true ) ? $proxy : 'auto';
 		$out['trusted_header'] = isset( $input['trusted_header'] ) ? preg_replace( '/[^A-Za-z0-9-]/', '', (string) $input['trusted_header'] ) : '';
 		$env                   = isset( $input['edge_env'] ) ? sanitize_key( $input['edge_env'] ) : '';
 		$out['edge_env']       = in_array( $env, array( '', 'production', 'test' ), true ) ? $env : '';

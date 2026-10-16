@@ -173,7 +173,11 @@ final class Status_View {
 	private function proxy_row() {
 		$mode       = (string) $this->plugin->config()->get( 'trusted_proxy' );
 		$suggestion = Ip_Resolver::suggest( $_SERVER ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- presence checks only.
-		$text       = $mode . ( $suggestion !== $mode ? ' · ' . sprintf( /* translators: %s: suggested mode. */ __( 'this request suggests "%s"', 'norg-edge-router' ), $suggestion ) : '' );
+		if ( 'auto' === $mode ) {
+			/* translators: %s: the mode this request resolved to. */
+			return array( 'good', sprintf( __( 'auto · this request uses "%s"', 'norg-edge-router' ), $suggestion ) );
+		}
+		$text = $mode . ( $suggestion !== $mode ? ' · ' . sprintf( /* translators: %s: suggested mode. */ __( 'this request suggests "%s"', 'norg-edge-router' ), $suggestion ) : '' );
 		return array( $suggestion === $mode ? 'good' : 'warn', $text );
 	}
 

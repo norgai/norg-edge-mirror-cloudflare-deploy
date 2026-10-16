@@ -169,7 +169,7 @@ The settings page covers the common options. Each option also has a
 | Constant | Default | Meaning |
 |---|---|---|
 | `NORG_SITE_ID` / `NORG_SITE_KEY` | — | Required |
-| `NORG_TRUSTED_PROXY` | `none` | Where the visitor IP comes from: `none` (REMOTE_ADDR), `cloudflare` (CF-Connecting-IP, accepted only from Cloudflare IPs) or `header` |
+| `NORG_TRUSTED_PROXY` | `auto` | Where the visitor IP comes from: `auto` (per request: CF-Connecting-IP from a Cloudflare peer, the last X-Forwarded-For / X-Real-IP hop from a private or shared-space peer, otherwise REMOTE_ADDR), `none` (REMOTE_ADDR), `cloudflare` (CF-Connecting-IP, accepted only from Cloudflare IPs) or `header` |
 | `NORG_TRUSTED_PROXY_HEADER` | — | The header to read in `header` mode (for X-Forwarded-For, the last hop is used) |
 | `NORG_EDGE_DISABLED` | `false` | Kill switch: every visitor gets the normal site |
 | `NORG_CAPTURE_ONLY` | `false` | Record-only mode: report AI-agent visits and AI-referred human visits, and serve nothing different |
@@ -210,8 +210,9 @@ Re-apply the bypass for cache plugins. Ask your host for host-level caches.
 
 **AI agent row says `untouched`, and Cache reach is green**
 The agent isn't being verified. This is usually a proxy in front of the
-site, so the plugin sees the proxy's IP. Set **Visitor IP comes from** to
-Cloudflare, or to the header your proxy sets.
+site that *Detect automatically* does not recognise (for example a proxy on
+a public address), so the plugin sees the proxy's IP. Set **Visitor IP comes
+from** to Cloudflare, or to the header your proxy sets.
 
 **Feed row is red**
 The plugin can't reach `content-craft-api.norg.ai`, or the Site ID / Site

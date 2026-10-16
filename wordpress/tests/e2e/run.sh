@@ -109,6 +109,10 @@ req "$CLAUDE" /
 expect_edge "ClaudeBot from outside Anthropic's range is not trusted" ""
 req "$CLAUDE" / -H "x-norg-edge-simulate: $MOCK_SITE_KEY"
 expect_edge "ClaudeBot with the self-check's verified assertion is diverted" mirror
+req "$CLAUDE" / -H "X-Forwarded-For: 203.0.113.9, 192.0.2.44"
+expect_edge "behind a proxy, auto mode verifies the proxy's hop (Anthropic's range)" mirror
+req "$CLAUDE" / -H "X-Forwarded-For: 192.0.2.44, 203.0.113.9"
+expect_edge "a forged hop ahead of the proxy's is ignored" ""
 req "Mozilla/5.0 (compatible; DeepSeekBot/1.0)" /
 expect_edge "divert_unverified agent gets an existing render" mirror
 log_has "divert_unverified tagged mirror_unverified" "r['visit'] and r['visit'].get('served')=='mirror_unverified'"

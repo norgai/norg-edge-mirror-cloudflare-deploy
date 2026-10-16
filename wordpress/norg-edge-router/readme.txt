@@ -4,7 +4,7 @@ Tags: ai, llms.txt, ai search, crawlers, chatgpt
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.1.1
+Stable tag: 0.1.2
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -68,9 +68,12 @@ Tick **Disable** in the settings, define `NORG_EDGE_DISABLED` as true in wp-conf
 
 = Does it work behind Cloudflare without the Worker? =
 
-Yes. Set **Visitor IP comes from** to Cloudflare so the agent's real IP is used.
+Yes. **Visitor IP comes from** defaults to *Detect automatically*, which uses Cloudflare's CF-Connecting-IP when the request comes from a Cloudflare address, and the last X-Forwarded-For (or X-Real-IP) hop when it comes from a private or shared-space proxy such as a load balancer or Azure Container Apps. Pick a fixed source only if detection reports the wrong one on the status page.
 
 == Changelog ==
+
+= 0.1.2 =
+* **Visitor IP comes from** now defaults to *Detect automatically*. Behind a load balancer or managed proxy the plugin previously saw only the proxy's address, so no AI agent could be verified and none received the mirror. A setting saved explicitly is kept.
 
 = 0.1.1 =
 * REST endpoints `norg-edge/v1/status` and `norg-edge/v1/connect` (administrators, Application Password) so NORG's dashboard can connect the plugin without pasting the Site ID and Site Key; WP-CLI `configure` now runs the same checks.
