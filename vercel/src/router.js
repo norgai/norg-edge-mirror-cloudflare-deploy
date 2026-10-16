@@ -90,10 +90,29 @@ import { clientIp, edgeRegion, visitView } from "./lib/request.js";
 const NON_HTML_PATH = /\.(txt|xml|json|jsonld|rss|atom|csv|md|pdf|ya?ml)$/i;
 
 /**
+ * Compare two strings in time that depends only on their length.
+ *
+ * The Edge runtime has no node:crypto timingSafeEqual, so this is the plain
+ * XOR-accumulate form. Length is compared first and leaks only that, which
+ * is public anyway: every site key has the same shape.
+ *
+ * @param {string} a First string.
+ * @param {string} b Second string.
+ * @returns {boolean} True when identical.
+ */
+function constantTimeEqual(a, b) {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+/**
  * Is this an authenticated health probe rather than a real visit?
  *
- * The key comparison is not constant-time. A successful probe reveals only the
- * site id and script version, both of which the caller already knows.
+ * The presented key is compared in constant time: the probe header is the
+ * one place a caller can present a guess at the site key and observe a
+ * response, so the comparison must not leak how much of it was right.
  *
  * @param {Request} request Incoming request.
  * @param {Object} env Install config.
@@ -101,8 +120,12 @@ const NON_HTML_PATH = /\.(txt|xml|json|jsonld|rss|atom|csv|md|pdf|ya?ml)$/i;
  */
 function isHealthProbe(request, env) {
   const probeKey = request.headers.get("x-norg-edge-check");
-  return Boolean(probeKey && env.NORG_SITE_KEY && probeKey === env.NORG_SITE_KEY);
+  return Boolean(probeKey && env.NORG_SITE_KEY && constantTimeEqual(probeKey, env.NORG_SITE_KEY));
 }
+
+// An MCP JSON-RPC request is small; a body over this is not one, and is
+// refused rather than buffered. Falls through to the site like any other miss.
+const MCP_MAX_BODY_BYTES = 1024 * 1024;
 
 /**
  * Should this request skip interception entirely?
@@ -204,6 +227,8 @@ async function handleMcp(request, env, url) {
  * @returns {Promise<?Response>} NORG's 2xx response, or null.
  */
 async function forwardMcpToNorg(request, env, url) {
+  const declared = Number(request.headers.get("content-length") || 0);
+  if (!Number.isFinite(declared) || declared > MCP_MAX_BODY_BYTES) return null;
   try {
     const headers = mcpForwardHeaders(request.headers);
     headers.set("X-Norg-Site-Id", env.SITE_ID || "");
@@ -408,7 +433,9 @@ export async function handleRequest(request, env, options = {}) {
 
 // Test-only exports.
 export {
+  constantTimeEqual as __test_constantTimeEqual,
   isHealthProbe as __test_isHealthProbe,
   isPassthrough as __test_isPassthrough,
   serveStrippedOrigin as __test_serveStrippedOrigin,
+  MCP_MAX_BODY_BYTES as __test_MCP_MAX_BODY_BYTES,
 };
