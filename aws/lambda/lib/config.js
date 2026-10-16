@@ -57,6 +57,10 @@ import { HEALTH_CHECK_HEADER, PUBLIC_HOST_HEADER } from "../../../core/constants
  * to the customer origin on any thrown exception or oversized response, and the
  * health-probe header, which carried the site key in a plain viewer request.
  *
+ * 0.6.11 — the timing line also carries checkpoints ("at": ms since the
+ * handler started, after each stage), to find the ~0.9 s on a cold request
+ * that no timed step accounts for.
+ *
  * 0.6.10 — the site key is read with one signed HTTPS call (lib/sigv4.js)
  * instead of the AWS SDK, whose load cost ~1.5 s on a cold container.
  *
@@ -115,7 +119,7 @@ import { HEALTH_CHECK_HEADER, PUBLIC_HOST_HEADER } from "../../../core/constants
  * is read from the replica in the region that ran the function. Behaviour
  * tracks edge-router-worker.js 0.11.7.
  */
-export const EDGE_SCRIPT_VERSION = "0.6.10";
+export const EDGE_SCRIPT_VERSION = "0.6.11";
 
 // Custom origin header -> binding name. Mirrors build_worker_bindings() in
 // content-craft's install_service.py; adding a binding there means adding it
