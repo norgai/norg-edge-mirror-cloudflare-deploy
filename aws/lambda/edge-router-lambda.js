@@ -381,6 +381,7 @@ async function serveAgent(cfRequest, request, env, url, classification) {
   const keySuffix = pathToKeySuffix(url.pathname);
   const headers = visitHeaders(request, env, classification, "mirror", missIntent(env), true);
   const { response, refused } = await timedFetchFromNorg(env, keySuffix, headers);
+  mark(env, "mirror");
   if (response) return serveMirror(cfRequest, response, env, url, keySuffix);
   // A refused install changes nothing, this request included: no strip.
   if (refused) return PASSTHROUGH;
@@ -568,6 +569,22 @@ const timedFetchOrigin = (env, cfRequest, request) =>
 
 let invocationsInContainer = 0;
 
+/**
+ * Stamp a checkpoint: milliseconds since the handler started, by name.
+ *
+ * 0.6.11: 0.6.10's cold agent requests still had ~0.9 s that no timed step
+ * accounted for. The step timers say how long each network call took; the
+ * checkpoints say WHEN each stage finished, so the gap shows up between two
+ * named points instead of only in the total.
+ *
+ * @param {Object} env Install config with the timing record.
+ * @param {string} name Checkpoint name.
+ */
+function mark(env, name) {
+  const t = env.__timing;
+  if (t) t.at[name] = Date.now() - t.started;
+}
+
 // How long an agent may wait on a refresh of an expired agent rules list
 // before the cached copy answers (core's default is 2 s). Lambda@Edge has no
 // keep-alive, but a refresh that outlives this is not cancelled: it resumes
@@ -599,6 +616,7 @@ function logTiming(env, outcome) {
         cold: t.cold,
         region: process.env.AWS_REGION || null,
         ...t.steps,
+        at: t.at,
       }),
   );
 }
@@ -635,6 +653,7 @@ export async function handleRequest(cfRequest, env) {
   // The human fast path: no secret, no feed, no NORG. A passthrough event is
   // sent only when the install opts in, and even then it is never awaited.
   const exit = fastPathExit(request, url, userAgent);
+  mark(env, "fastpath");
   if (exit) {
     if (exit === "human") reportHumanPassthrough(env, request);
     return PASSTHROUGH;
@@ -649,15 +668,18 @@ export async function handleRequest(cfRequest, env) {
   // that needs it. Assigned onto env because core/ reads it there, which
   // keeps every provider's credential handling identical.
   env.NORG_SITE_KEY = await timed(env, "site_key_ms", () => getSiteKey(env));
+  mark(env, "site_key");
   if (!env.NORG_SITE_KEY) return PASSTHROUGH;
 
   // A stale feed is refreshed inline here (no keep-alive on this platform, so
   // a background refresh would be lost when the container freezes). Only
   // bot-shaped requests reach this line, so the wait falls on an agent.
   const feed = await timed(env, "feed_ms", () => getBotFeed(env, { budgetMs: STALE_FEED_BUDGET_MS }));
+  mark(env, "feed");
   if (!feed.entitled) return PASSTHROUGH;
 
   const owned = await serveNorgOwnedSurface(cfRequest, request, env, url);
+  mark(env, "owned");
   if (owned) return owned;
 
   // The agentic subtree is answered by URL for every caller — humans, search
@@ -695,6 +717,7 @@ export async function handleRequest(cfRequest, env) {
   if (hasAgentOverride(url)) return serveAgentOverride(cfRequest, request, env, url);
 
   const classification = classifyAgent(userAgent, feed.patterns);
+  mark(env, "classify");
   if (env.__timing) env.__timing.bot = classification.bot_name || null;
   if (!classification.is_ai_bot) return PASSTHROUGH;
 
@@ -703,7 +726,9 @@ export async function handleRequest(cfRequest, env) {
 
   // A spoofable UA is not enough to divert: the source IP must be verified, or
   // a spoofed UA from any IP would harvest the NORG mirror.
-  if (!verifiedSource(clientIp(cfRequest), feed.cidrRanges, classification)) {
+  const verified = verifiedSource(clientIp(cfRequest), feed.cidrRanges, classification);
+  mark(env, "verify");
+  if (!verified) {
     return PASSTHROUGH;
   }
 
@@ -746,6 +771,7 @@ export async function handler(event) {
     env.__timing = {
       started: Date.now(),
       steps: {},
+      at: {},
       path: cfRequest.uri,
       cold: invocationsInContainer++ === 0,
     };
@@ -780,11 +806,14 @@ export async function handler(event) {
     // fetch — so there is no background work to flush and no wait a visitor
     // could pay for it. Lambda@Edge freezes the instant this returns.
     if (result === PASSTHROUGH) {
+      mark(env, "handled");
       logTiming(env, timedOut ? "watchdog" : "passthrough");
       return toPassthrough(toOrigin(cfRequest, publicHost));
     }
 
+    mark(env, "handled");
     const response = await toCloudFrontResponse(result);
+    mark(env, "converted");
     logTiming(env, response ? `served_${response.status}` : "too_big");
     // Null means the body will not fit CloudFront's generated-response cap.
     // Degrading to the origin is the correct answer: the visitor gets the

@@ -1239,6 +1239,13 @@ test("a served agent request logs one timing line with each step's milliseconds"
   for (const step of ["site_key_ms", "feed_ms", "mirror_ms"]) {
     assert.equal(typeof record[step], "number", `${step} missing`);
   }
+  // 0.6.11: checkpoints, in the order the stages run, never past the total.
+  const order = ["fastpath", "site_key", "feed", "owned", "classify", "verify", "mirror", "handled", "converted"];
+  for (const name of order) assert.equal(typeof record.at[name], "number", `checkpoint ${name} missing`);
+  for (let i = 1; i < order.length; i += 1) {
+    assert.ok(record.at[order[i]] >= record.at[order[i - 1]], `${order[i]} before ${order[i - 1]}`);
+  }
+  assert.ok(record.at.converted <= record.total_ms);
 });
 
 test("a human visit logs no timing line", async () => {

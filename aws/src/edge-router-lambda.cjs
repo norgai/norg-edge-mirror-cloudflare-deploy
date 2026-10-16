@@ -272,7 +272,7 @@ var STATIC_ASSET_SUFFIXES = /* @__PURE__ */ new Set([
 ]);
 
 // aws/lambda/lib/config.js
-var EDGE_SCRIPT_VERSION = "0.6.10";
+var EDGE_SCRIPT_VERSION = "0.6.11";
 var CONFIG_HEADERS = {
   "x-norg-site-id": "SITE_ID",
   "x-norg-secret-arn": "NORG_SECRET_ARN",
@@ -1496,6 +1496,7 @@ async function serveAgent(cfRequest, request, env, url, classification) {
   const keySuffix = pathToKeySuffix(url.pathname);
   const headers = visitHeaders(request, env, classification, "mirror", missIntent(env), true);
   const { response, refused } = await timedFetchFromNorg(env, keySuffix, headers);
+  mark(env, "mirror");
   if (response) return serveMirror(cfRequest, response, env, url, keySuffix);
   if (refused) return PASSTHROUGH;
   if (NON_HTML_PATH.test(url.pathname)) return PASSTHROUGH;
@@ -1584,6 +1585,10 @@ var timedFetchOrigin = (env, cfRequest, request) => timed(
   () => fetchOrigin(cfRequest, request, ORIGIN_READ_TIMEOUT_MS, env.SITE_HOST)
 );
 var invocationsInContainer = 0;
+function mark(env, name) {
+  const t = env.__timing;
+  if (t) t.at[name] = Date.now() - t.started;
+}
 var STALE_FEED_BUDGET_MS = 250;
 function logTiming(env, outcome) {
   const t = env.__timing;
@@ -1596,7 +1601,8 @@ function logTiming(env, outcome) {
       total_ms: Date.now() - t.started,
       cold: t.cold,
       region: process.env.AWS_REGION || null,
-      ...t.steps
+      ...t.steps,
+      at: t.at
     })
   );
 }
@@ -1611,15 +1617,19 @@ async function handleRequest(cfRequest, env) {
   const url = new URL(request.url);
   const userAgent = request.headers.get("user-agent") || "";
   const exit = fastPathExit(request, url, userAgent);
+  mark(env, "fastpath");
   if (exit) {
     if (exit === "human") reportHumanPassthrough(env, request);
     return PASSTHROUGH;
   }
   env.NORG_SITE_KEY = await timed(env, "site_key_ms", () => getSiteKey(env));
+  mark(env, "site_key");
   if (!env.NORG_SITE_KEY) return PASSTHROUGH;
   const feed = await timed(env, "feed_ms", () => getBotFeed(env, { budgetMs: STALE_FEED_BUDGET_MS }));
+  mark(env, "feed");
   if (!feed.entitled) return PASSTHROUGH;
   const owned = await serveNorgOwnedSurface(cfRequest, request, env, url);
+  mark(env, "owned");
   if (owned) return owned;
   if (isAgenticPath(url.pathname, feed.agenticPathPrefix)) {
     return serveAgenticPath(cfRequest, request, env, url, feed.agenticPathPrefix);
@@ -1633,10 +1643,13 @@ async function handleRequest(cfRequest, env) {
   if (isTraditionalSearchBot(userAgent)) return PASSTHROUGH;
   if (hasAgentOverride(url)) return serveAgentOverride(cfRequest, request, env, url);
   const classification = classifyAgent(userAgent, feed.patterns);
+  mark(env, "classify");
   if (env.__timing) env.__timing.bot = classification.bot_name || null;
   if (!classification.is_ai_bot) return PASSTHROUGH;
   if (!mayDivert(classification)) return PASSTHROUGH;
-  if (!verifiedSource(clientIp(cfRequest), feed.cidrRanges, classification)) {
+  const verified = verifiedSource(clientIp(cfRequest), feed.cidrRanges, classification);
+  mark(env, "verify");
+  if (!verified) {
     return PASSTHROUGH;
   }
   return serveAgent(cfRequest, request, env, url, classification);
@@ -1650,6 +1663,7 @@ async function handler(event) {
     env.__timing = {
       started: Date.now(),
       steps: {},
+      at: {},
       path: cfRequest.uri,
       cold: invocationsInContainer++ === 0
     };
@@ -1667,10 +1681,13 @@ async function handler(event) {
       })
     ]).finally(() => clearTimeout(watchdog));
     if (result === PASSTHROUGH) {
+      mark(env, "handled");
       logTiming(env, timedOut ? "watchdog" : "passthrough");
       return passthrough(toOrigin(cfRequest, publicHost));
     }
+    mark(env, "handled");
     const response = await toCloudFrontResponse(result);
+    mark(env, "converted");
     logTiming(env, response ? `served_${response.status}` : "too_big");
     return response || passthrough(toOrigin(scrubConfigHeaders(pristine), publicHost));
   } catch (e) {
