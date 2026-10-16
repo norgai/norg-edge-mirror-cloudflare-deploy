@@ -42,7 +42,7 @@ Or `wp norg-edge configure --site-id=… --site-key=… && wp norg-edge check`.
 | `NORG_EDGE_DISABLED` | `false` | Kill switch: every visitor gets the normal site |
 | `NORG_CAPTURE_ONLY` | `false` | Record-only: report agent visits and AI-referred human visits, serve nothing different |
 | `NORG_STRIP_FALLBACK_ENABLED` / `NORG_LAZY_RENDER_ENABLED` | `true` | Strip unrendered pages for agents / ask NORG to render them |
-| `NORG_TRUSTED_PROXY` | `none` | `cloudflare` (CF-Connecting-IP, only from Cloudflare IPs) or `header` |
+| `NORG_TRUSTED_PROXY` | `auto` | `auto` (detect per request), `none` (REMOTE_ADDR), `cloudflare` (CF-Connecting-IP, only from Cloudflare IPs) or `header` |
 | `NORG_TRUSTED_PROXY_HEADER` | — | Header for `header` mode (X-Forwarded-For takes the last hop) |
 | `NORG_EDGE_CACHE_BYPASS` | `true` | Register AI user agents with detected page-cache plugins |
 | `NORG_EDGE_HTACCESS_BLOCK` | `false` | Generic `.htaccess` bypass block (Apache/LiteSpeed) for caches with no API |
