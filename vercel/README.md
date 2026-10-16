@@ -163,6 +163,14 @@ export default withNorgEdge(myMiddleware, {
 | Always `stripped`, never `mirror` | Nothing has been rendered for that path yet; the first pass over a large site takes a while |
 | Switch it off now | Set `NORG_EDGE_DISABLED=true` and redeploy, or remove the wrapper |
 
+## Security
+
+- **No runtime dependencies.** The package is a single bundle of NORG's own router code; the build refuses any external import.
+- **Your Site Key is the only credential**, scoped to your one site. It's sent only to NORG's API and render service, never logged, and compared in constant time when it arrives on a health probe.
+- **NORG runs before your own middleware, but serves only what NORG crawled publicly.** A page behind your auth has no NORG render, so the request falls through to your middleware exactly as before.
+- **Nothing is trusted from the client:** the visitor's IP comes from Vercel's own header (and only on Vercel), AI agents are verified by source IP, cookies and `Authorization` headers are never forwarded to NORG, and oversized MCP bodies are refused rather than buffered.
+- **Every release is published from GitHub Actions with npm provenance**, so the tarball on npmjs.com is attested to its source commit.
+
 ## Privacy
 
 - **What it sends to NORG:**

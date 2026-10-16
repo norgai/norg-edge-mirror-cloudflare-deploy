@@ -244,3 +244,27 @@ test("static assets never reach NORG", async () => {
   assert.equal(result, undefined);
   assert.equal(calls.length, 0);
 });
+
+test("the probe key is compared in constant time and a wrong length is rejected", async () => {
+  const { __test_constantTimeEqual: eq } = await import("../src/router.js");
+  assert.equal(eq("nek_live_abc", "nek_live_abc"), true);
+  assert.equal(eq("nek_live_abc", "nek_live_abd"), false);
+  assert.equal(eq("nek_live_abc", "nek_live_ab"), false);
+  assert.equal(eq("", ""), true);
+});
+
+test("an oversized MCP POST is never buffered: the site answers", async () => {
+  const { __test_MCP_MAX_BODY_BYTES: cap } = await import("../src/router.js");
+  const { result, calls } = await run(
+    {
+      path: "/mcp",
+      method: "POST",
+      userAgent: CHROME_UA,
+      headers: { "content-length": String(cap + 1), "content-type": "application/json" },
+      body: "{}",
+    },
+    { control: () => json({ jsonrpc: "2.0", id: 1, result: {} }) },
+  );
+  assert.equal(result, undefined);
+  assert.equal(calls.filter((c) => c.url.includes("/public-mcp")).length, 0);
+});
