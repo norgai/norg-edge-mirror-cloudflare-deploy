@@ -573,6 +573,15 @@ const timedFetchOrigin = (env, cfRequest, request) =>
 
 let invocationsInContainer = 0;
 
+// 0.6.13 experiment E2: construct one Request at module load, so Node loads its
+// HTTP library during Lambda's init phase (reported, undocumented, to run with
+// full CPU) rather than inside the first agent request on a 192 MB container.
+try {
+  new Request("https://preload.invalid/");
+} catch (e) {
+  // Nothing to do: the first real request will load it instead.
+}
+
 /**
  * Stamp a checkpoint: milliseconds since the handler started, by name.
  *

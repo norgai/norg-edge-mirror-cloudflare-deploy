@@ -272,7 +272,7 @@ var STATIC_ASSET_SUFFIXES = /* @__PURE__ */ new Set([
 ]);
 
 // aws/lambda/lib/config.js
-var EDGE_SCRIPT_VERSION = "0.6.13-e1";
+var EDGE_SCRIPT_VERSION = "0.6.13-e2";
 var CONFIG_HEADERS = {
   "x-norg-site-id": "SITE_ID",
   "x-norg-secret-arn": "NORG_SECRET_ARN",
@@ -1592,6 +1592,10 @@ var timedFetchOrigin = (env, cfRequest, request) => timed(
   () => fetchOrigin(cfRequest, request, ORIGIN_READ_TIMEOUT_MS, env.SITE_HOST)
 );
 var invocationsInContainer = 0;
+try {
+  new Request("https://preload.invalid/");
+} catch (e) {
+}
 function mark(env, name) {
   const t = env.__timing;
   if (t) t.at[name] = Date.now() - t.started;
