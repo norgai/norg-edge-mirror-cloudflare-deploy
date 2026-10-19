@@ -57,6 +57,10 @@ import { HEALTH_CHECK_HEADER, PUBLIC_HOST_HEADER } from "../../../core/constants
  * to the customer origin on any thrown exception or oversized response, and the
  * health-probe header, which carried the site key in a plain viewer request.
  *
+ * 0.6.12 — the agent rules feed is read from the edge-content receptionist
+ * (NORG_CONTENT_BASE + /edge/bot-patterns, a nearby Cloudflare colo) instead
+ * of NORG_API_URL in Australia.
+ *
  * 0.6.11 — the timing line also carries checkpoints ("at": ms since the
  * handler started, after each stage), to find the ~0.9 s on a cold request
  * that no timed step accounts for.
@@ -119,7 +123,7 @@ import { HEALTH_CHECK_HEADER, PUBLIC_HOST_HEADER } from "../../../core/constants
  * is read from the replica in the region that ran the function. Behaviour
  * tracks edge-router-worker.js 0.11.7.
  */
-export const EDGE_SCRIPT_VERSION = "0.6.11";
+export const EDGE_SCRIPT_VERSION = "0.6.12";
 
 // Custom origin header -> binding name. Mirrors build_worker_bindings() in
 // content-craft's install_service.py; adding a binding there means adding it
@@ -227,6 +231,12 @@ export function readConfig(cfRequest) {
   for (const [header, name] of Object.entries(CONFIG_HEADERS)) {
     const value = customHeaders[header]?.[0]?.value;
     if (value !== undefined) env[name] = value;
+  }
+  // 0.6.12: the feed comes from the receptionist next to the mirror content,
+  // not from NORG's API in Australia (core/feed.js feedUrl). Derived from the
+  // content base the install already carries, so no new install header.
+  if (env.NORG_CONTENT_BASE) {
+    env.NORG_FEED_URL = `${env.NORG_CONTENT_BASE.replace(/\/+$/, "")}/edge/bot-patterns`;
   }
   scrubConfigHeaders(cfRequest);
   return env;

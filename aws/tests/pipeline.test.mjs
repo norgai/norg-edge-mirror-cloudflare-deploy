@@ -41,6 +41,19 @@ import {
 
 const realFetch = globalThis.fetch;
 
+/**
+ * Is this recorded fetch a mirror (receptionist content) read?
+ *
+ * Since 0.6.12 the feed is also read from the receptionist, so "any call to
+ * edge-content" no longer means "a mirror lookup happened".
+ *
+ * @param {{url: string}} call A recorded fetch.
+ * @returns {boolean} True for a receptionist read other than the feed.
+ */
+function isMirrorCall(call) {
+  return call.url.startsWith(CONTENT_BASE) && !call.url.includes("/edge/bot-patterns");
+}
+
 afterEach(() => {
   globalThis.fetch = realFetch;
   __test_setFeed(null);
@@ -53,7 +66,7 @@ afterEach(() => {
  * @returns {?Object} The decoded X-Norg-Visit document, or null.
  */
 function visitOn(calls) {
-  const call = calls.find((c) => c.url.startsWith(CONTENT_BASE));
+  const call = calls.find(isMirrorCall);
   const raw = call && new Headers(call.init.headers).get("x-norg-visit");
   return raw ? JSON.parse(Buffer.from(raw, "base64url").toString("utf8")) : null;
 }
@@ -65,7 +78,7 @@ function visitOn(calls) {
  * @returns {?Headers} The headers, or null when the receptionist was not called.
  */
 function receptionistHeaders(calls) {
-  const call = calls.find((c) => c.url.startsWith(CONTENT_BASE));
+  const call = calls.find(isMirrorCall);
   return call ? new Headers(call.init.headers) : null;
 }
 
@@ -109,7 +122,7 @@ test("the search-bot floor holds even when the mirror exists and the UA is a bot
     { mirror: () => mirrorHit() },
   );
   assert.equal(
-    calls.some((c) => c.url.includes("edge-content")),
+    calls.some((c) => isMirrorCall(c)),
     false,
     "a search bot must not even trigger a mirror lookup",
   );
@@ -125,7 +138,7 @@ test("an unentitled install passes everything through untouched", async () => {
 
   assert.ok(isPassthroughResult(result));
   assert.equal(
-    calls.some((c) => c.url.includes("edge-content")),
+    calls.some((c) => isMirrorCall(c)),
     false,
     "no mirror lookup may happen without entitlement",
   );
@@ -146,7 +159,7 @@ test("an unentitled install does not serve NORG-owned surfaces either", async ()
 
     assert.ok(isPassthroughResult(result), `${uri} was served without entitlement`);
     assert.equal(
-      calls.some((c) => c.url.includes("edge-content")),
+      calls.some((c) => isMirrorCall(c)),
       false,
       `${uri} hit the receptionist without entitlement`,
     );
@@ -205,7 +218,7 @@ test("a spoofed user-agent from an unverified IP is not diverted", async () => {
   );
 
   assert.ok(isPassthroughResult(result), "curl -A GPTBot must not harvest the mirror");
-  assert.equal(calls.some((c) => c.url.includes("edge-content")), false);
+  assert.equal(calls.some((c) => isMirrorCall(c)), false);
 });
 
 test("a crawler NORG has not authorised to divert is passed through", async () => {
@@ -229,7 +242,7 @@ test("serving_policy is obeyed even when the source IP WOULD verify", async () =
     isPassthroughResult(result),
     "an operator must be able to withdraw a crawler with one column",
   );
-  assert.equal(calls.some((c) => c.url.includes("edge-content")), false);
+  assert.equal(calls.some((c) => isMirrorCall(c)), false);
 });
 
 // --- Misses, strip and lazy render -----------------------------------------
@@ -620,7 +633,7 @@ test("a static subresource skips the whole pipeline", async () => {
   );
 
   assert.ok(isPassthroughResult(result));
-  assert.equal(calls.some((c) => c.url.includes("edge-content")), false);
+  assert.equal(calls.some((c) => isMirrorCall(c)), false);
 });
 
 test("an operator-skipped path is served from the origin even to a verified agent", async () => {
@@ -1086,7 +1099,7 @@ test("an IPv6 viewer outside the operator's IPv6 range is passed through", async
     { mirror: () => mirrorHit() },
   );
   assert.ok(isPassthroughResult(result), "a v6 address outside the published v6 set must not divert");
-  assert.equal(calls.some((c) => c.url.includes("edge-content")), false);
+  assert.equal(calls.some((c) => isMirrorCall(c)), false);
 });
 
 // --- MCP forward carries only what JSON-RPC needs ---------------------------
