@@ -272,7 +272,7 @@ var STATIC_ASSET_SUFFIXES = /* @__PURE__ */ new Set([
 ]);
 
 // aws/lambda/lib/config.js
-var EDGE_SCRIPT_VERSION = "0.6.12";
+var EDGE_SCRIPT_VERSION = "0.6.13-e1";
 var CONFIG_HEADERS = {
   "x-norg-site-id": "SITE_ID",
   "x-norg-secret-arn": "NORG_SECRET_ARN",
@@ -1567,8 +1567,9 @@ async function serveNorgOwnedSurface(cfRequest, request, env, url) {
   }
   return null;
 }
-function reportHumanPassthrough(env, request) {
+function reportHumanPassthrough(env, requestOrThunk) {
   if (env.EDGE_EVENTS_VERBOSE !== "true") return;
+  const request = typeof requestOrThunk === "function" ? requestOrThunk() : requestOrThunk;
   getSiteKey(env).then((key) => {
     if (key) reportPassthrough({ ...env, NORG_SITE_KEY: key }, request, anonymousClassification());
   }).catch(() => {
@@ -1612,7 +1613,30 @@ function logTiming(env, outcome) {
     })
   );
 }
+function rawHeader(cfRequest, name) {
+  return cfRequest.headers?.[name]?.[0]?.value || "";
+}
+function rawFastPathExit(cfRequest, env) {
+  if (binding(env, "EDGE_DISABLED") === "true") return "disabled";
+  if (cfRequest.method !== "GET") return null;
+  if (rawHeader(cfRequest, LOOP_GUARD_HEADER.toLowerCase()) || rawHeader(cfRequest, "upgrade")) return null;
+  const url = new URL(requestUrl(cfRequest));
+  if (isNorgSurface(url.pathname)) return null;
+  if (isStaticAssetPath(url.pathname)) return "static";
+  const userAgent = rawHeader(cfRequest, "user-agent");
+  if (isTraditionalSearchBot(userAgent)) return "search";
+  const signed = rawHeader(cfRequest, "signature-agent") || rawHeader(cfRequest, "signature-input");
+  return isOrdinaryBrowser(userAgent) && !hasAgentOverride(url) && !signed ? "human" : null;
+}
 async function handleRequest(cfRequest, env) {
+  if (!isHealthProbe(null, env)) {
+    const rawExit = rawFastPathExit(cfRequest, env);
+    if (rawExit) {
+      mark(env, "fastpath");
+      if (rawExit === "human") reportHumanPassthrough(env, () => toRequest(cfRequest));
+      return PASSTHROUGH;
+    }
+  }
   const request = toRequest(cfRequest);
   if (isHealthProbe(request, env)) {
     env.NORG_SITE_KEY = await timed(env, "site_key_ms", () => getSiteKey(env));

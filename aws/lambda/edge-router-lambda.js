@@ -97,9 +97,9 @@ import {
   mayDivert,
   verifiedSource,
 } from "../../core/agent.js";
-import { fastPathExit } from "../../core/fastpath.js";
+import { fastPathExit, isNorgSurface } from "../../core/fastpath.js";
 import { getBotFeed, isEntitled } from "../../core/feed.js";
-import { clientIp, passthrough as toPassthrough, toCloudFrontResponse, toRequest } from "./lib/event.js";
+import { clientIp, passthrough as toPassthrough, requestUrl, toCloudFrontResponse, toRequest } from "./lib/event.js";
 import {
   ORIGIN_READ_TIMEOUT_MS,
   PASSTHROUGH,
@@ -123,6 +123,7 @@ import {
   isDiscoveryPath,
   isMcpPath,
   isNorgOwnedArtifactPath,
+  isOrdinaryBrowser,
   isOpenAiFeedPath,
   isReservedNorgPath,
   isSiblingArtifactPath,
@@ -520,8 +521,11 @@ async function serveNorgOwnedSurface(cfRequest, request, env, url) {
  * @param {Request} request Incoming request.
  * @returns {void}
  */
-function reportHumanPassthrough(env, request) {
+function reportHumanPassthrough(env, requestOrThunk) {
   if (env.EDGE_EVENTS_VERBOSE !== "true") return;
+  // A thunk from the raw fast path: the web Request is built only when the
+  // install has opted into verbose events, never for the ordinary human.
+  const request = typeof requestOrThunk === "function" ? requestOrThunk() : requestOrThunk;
   getSiteKey(env)
     .then((key) => {
       if (key) reportPassthrough({ ...env, NORG_SITE_KEY: key }, request, anonymousClassification());
@@ -633,7 +637,59 @@ function logTiming(env, outcome) {
  * @param {Object} env Install config.
  * @returns {Promise<Response|Object>} Response, or PASSTHROUGH.
  */
+/**
+ * One header value from CloudFront's own request shape.
+ *
+ * @param {Object} cfRequest CloudFront request object.
+ * @param {string} name Lower-case header name.
+ * @returns {string} The first value, or "".
+ */
+function rawHeader(cfRequest, name) {
+  return cfRequest.headers?.[name]?.[0]?.value || "";
+}
+
+/**
+ * The human fast path, decided from CloudFront's request before any web
+ * Request exists.
+ *
+ * 0.6.13: constructing the first Request/Headers on a container makes Node
+ * load its HTTP library, which costs ~0.8 s at 192 MB. Measured on two
+ * installs (Bloom staging, 387 human cold starts, median 0.86 s; foxx, four
+ * samples, 0.82-0.86 s), that was the whole cost of a human's first visit to
+ * a cold copy. Only a request that may need NORG should pay it, so the same
+ * decisions fastPathExit makes are made here on the raw headers first; the
+ * ordinary pipeline below is unchanged for everything that falls through.
+ *
+ * @param {Object} cfRequest CloudFront request object.
+ * @param {Object} env Install config.
+ * @returns {?string} "disabled" | "static" | "search" | "human", or null to
+ *   continue into the ordinary pipeline.
+ */
+function rawFastPathExit(cfRequest, env) {
+  if (binding(env, "EDGE_DISABLED") === "true") return "disabled";
+  // Anything isPassthrough would judge on more than a GET is left to it.
+  if (cfRequest.method !== "GET") return null;
+  if (rawHeader(cfRequest, LOOP_GUARD_HEADER.toLowerCase()) || rawHeader(cfRequest, "upgrade")) return null;
+  const url = new URL(requestUrl(cfRequest));
+  if (isNorgSurface(url.pathname)) return null;
+  if (isStaticAssetPath(url.pathname)) return "static";
+  const userAgent = rawHeader(cfRequest, "user-agent");
+  if (isTraditionalSearchBot(userAgent)) return "search";
+  const signed = rawHeader(cfRequest, "signature-agent") || rawHeader(cfRequest, "signature-input");
+  return isOrdinaryBrowser(userAgent) && !hasAgentOverride(url) && !signed ? "human" : null;
+}
+
 export async function handleRequest(cfRequest, env) {
+  // The probe reads only env, so it is safe to check before the raw exit; a
+  // probe must reach the real sequence below whatever its user agent says.
+  if (!isHealthProbe(null, env)) {
+    const rawExit = rawFastPathExit(cfRequest, env);
+    if (rawExit) {
+      mark(env, "fastpath");
+      if (rawExit === "human") reportHumanPassthrough(env, () => toRequest(cfRequest));
+      return PASSTHROUGH;
+    }
+  }
   const request = toRequest(cfRequest);
   if (isHealthProbe(request, env)) {
     // Fetch before answering: the cached verdict starts unentitled, so a probe
