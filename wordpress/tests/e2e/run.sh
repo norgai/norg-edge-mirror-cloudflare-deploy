@@ -107,6 +107,11 @@ expect_body "thin page is the real page" "Just a few words"
 
 req "$CLAUDE" /
 expect_edge "ClaudeBot from outside Anthropic's range is not trusted" ""
+req "$CLAUDE" "/?norg_edge=1"
+expect_edge "a host-rewritten (?norg_edge) request from an untrusted agent still gets the real page" ""
+expect_hdr "a host-rewritten request is never cacheable, verified or not" Cache-Control "private, no-store"
+req "$BROWSER" /
+[[ "$(hdr Cache-Control)" != *no-store* ]] && ok "an unmarked page is not forced no-store" || bad "an unmarked page is not forced no-store" "Cache-Control='$(hdr Cache-Control)'"
 req "$CLAUDE" / -H "x-norg-edge-simulate: $MOCK_SITE_KEY"
 expect_edge "ClaudeBot with the self-check's verified assertion is diverted" mirror
 req "$CLAUDE" / -H "X-Forwarded-For: 203.0.113.9, 192.0.2.44"

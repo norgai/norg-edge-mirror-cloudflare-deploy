@@ -4,7 +4,7 @@ Tags: ai, llms.txt, ai search, crawlers, chatgpt
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.1.2
+Stable tag: 0.1.3
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -71,6 +71,9 @@ Tick **Disable** in the settings, define `NORG_EDGE_DISABLED` as true in wp-conf
 Yes. **Visitor IP comes from** defaults to *Detect automatically*, which uses Cloudflare's CF-Connecting-IP when the request comes from a Cloudflare address, and the last X-Forwarded-For (or X-Real-IP) hop when it comes from a private or shared-space proxy such as a load balancer or Azure Container Apps. Pick a fixed source only if detection reports the wrong one on the status page.
 
 == Changelog ==
+
+= 0.1.3 =
+* **WP Engine**: any request carrying `?norg_edge` is now always uncacheable, verified agent or not. Paired with a WP Engine Web Rule that internally rewrites AI user agents to `?norg_edge=1`, every AI-agent request gets past WP Engine's page cache and reaches the plugin, with no support ticket or cache exclusion. The WP Engine notice now names that rule instead of asking for support.
 
 = 0.1.2 =
 * **Visitor IP comes from** now defaults to *Detect automatically*. Behind a load balancer or managed proxy the plugin previously saw only the proxy's address, so no AI agent could be verified and none received the mirror. A setting saved explicitly is kept.
