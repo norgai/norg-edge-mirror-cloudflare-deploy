@@ -60,6 +60,7 @@ final class Router {
 			Health::respond( $request, $this->plugin );
 			return;
 		}
+		Cache\Rewrite_Marker::apply( $request );
 		if ( ! $config->is_configured() || $this->is_passthrough( $request ) ) {
 			return;
 		}

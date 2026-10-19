@@ -20,7 +20,7 @@ final class Host_Detector {
 	/** Host => what the customer should ask for. */
 	const ADVICE = array(
 		'kinsta'       => 'Ask Kinsta support to bypass the page cache for the AI user agents listed below.',
-		'wpengine'     => 'Ask WP Engine support to add a cache exclusion for the AI user agents listed below.',
+		'wpengine'     => 'In the WP Engine User Portal, add a Web Rule (Rewrite Rules > Internal rewrite) that adds ?norg_edge=1 for the AI user agents listed below. No support ticket is needed. Exact rule: https://app.norg.ai/help/wordpress-plugin-wpengine',
 		'pantheon'     => 'Pantheon honours Cache-Control: no-store on diverted pages; ask support to vary or bypass its edge cache for the AI user agents listed below.',
 		'flywheel'     => 'Ask Flywheel support to bypass the page cache for the AI user agents listed below.',
 		'siteground'   => 'In SiteGround Speed Optimizer, or with support, exclude the AI user agents listed below from the dynamic cache.',

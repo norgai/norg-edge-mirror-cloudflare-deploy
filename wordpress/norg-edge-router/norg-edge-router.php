@@ -3,7 +3,7 @@
  * Plugin Name:       NORG Edge Router
  * Plugin URI:        https://app.norg.ai/help/wordpress-plugin
  * Description:       Serves NORG's AI-optimised mirror of your pages to verified AI agents at your own URLs. People and search engines always get your site, unchanged.
- * Version:           0.1.2
+ * Version:           0.1.3
  * Requires at least: 6.0
  * Requires PHP:      7.4
  * Author:            NORG
@@ -19,7 +19,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'NORG_EDGE_ROUTER_VERSION', '0.1.2' );
+define( 'NORG_EDGE_ROUTER_VERSION', '0.1.3' );
 define( 'NORG_EDGE_ROUTER_FILE', __FILE__ );
 define( 'NORG_EDGE_ROUTER_DIR', __DIR__ );
 
