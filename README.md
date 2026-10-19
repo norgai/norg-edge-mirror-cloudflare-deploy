@@ -150,6 +150,12 @@ request.
   if ($http_user_agent ~* "(gptbot|claudebot|perplexitybot)") { set $skip_cache 1; }
   ```
 
+- **WP Engine** needs no support ticket. In the User Portal add a Web Rule
+  (Rewrite Rules → Internal rewrite) that rewrites the AI user agents to
+  `?norg_edge=1`; the plugin makes every `?norg_edge` response uncacheable, so
+  those requests always get past WP Engine's cache. Exact rule:
+  <https://app.norg.ai/help/wordpress-plugin-wpengine>.
+
 - **Apache / LiteSpeed with a cache that has no API:** set
   `NORG_EDGE_HTACCESS_BLOCK` to write a generic `.htaccess` bypass block.
 
