@@ -272,7 +272,7 @@ var STATIC_ASSET_SUFFIXES = /* @__PURE__ */ new Set([
 ]);
 
 // aws/lambda/lib/config.js
-var EDGE_SCRIPT_VERSION = "0.6.11";
+var EDGE_SCRIPT_VERSION = "0.6.12";
 var CONFIG_HEADERS = {
   "x-norg-site-id": "SITE_ID",
   "x-norg-secret-arn": "NORG_SECRET_ARN",
@@ -323,6 +323,9 @@ function readConfig(cfRequest) {
   for (const [header, name] of Object.entries(CONFIG_HEADERS)) {
     const value = customHeaders[header]?.[0]?.value;
     if (value !== void 0) env[name] = value;
+  }
+  if (env.NORG_CONTENT_BASE) {
+    env.NORG_FEED_URL = `${env.NORG_CONTENT_BASE.replace(/\/+$/, "")}/edge/bot-patterns`;
   }
   scrubConfigHeaders(cfRequest);
   return env;
@@ -737,13 +740,16 @@ function negativeVerdict() {
 function stampNegativeFeed() {
   feedCache = negativeVerdict();
 }
+function feedUrl(env) {
+  return env.NORG_FEED_URL || `${binding(env, "NORG_API_URL")}/api/v1/edge/bot-patterns`;
+}
 async function refreshFeed(env) {
   const previous = feedCache;
   let response;
   try {
     const headers = controlHeaders(env);
     if (previous.entitled && previous.etag) headers["If-None-Match"] = previous.etag;
-    response = await edgeFetch(env, `${binding(env, "NORG_API_URL")}/api/v1/edge/bot-patterns`, {
+    response = await edgeFetch(env, feedUrl(env), {
       method: "GET",
       headers,
       signal: timeoutSignal(PATTERN_FETCH_TIMEOUT_MS)

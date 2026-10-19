@@ -48,7 +48,7 @@ test("reads every binding from custom origin headers", () => {
   // The adapter stamps its own identity onto the config object; core reads the
   // version and platform from there rather than importing a constant, so one
   // core serves every provider.
-  assert.equal(env.EDGE_SCRIPT_VERSION, "0.6.11");
+  assert.equal(env.EDGE_SCRIPT_VERSION, "0.6.12");
   assert.equal(env.EDGE_PLATFORM, "cloudfront");
   delete env.EDGE_SCRIPT_VERSION;
   delete env.EDGE_PLATFORM;
@@ -59,6 +59,8 @@ test("reads every binding from custom origin headers", () => {
     PROBE_TOKEN: "nprobe_tok",
     NORG_API_URL: "https://api.test.norg.ai",
     NORG_CONTENT_BASE: "https://edge-content.test.norg.ai",
+    // 0.6.12: derived from the content base, not an install header of its own.
+    NORG_FEED_URL: "https://edge-content.test.norg.ai/edge/bot-patterns",
     STRIP_FALLBACK_ENABLED: "false",
     EDGE_DISABLED: "true",
     LAZY_RENDER_ENABLED: "false",
@@ -111,7 +113,7 @@ test("survives an origin with no custom headers at all", () => {
   // but it still knows which artifact it is.
   for (const request of [{ uri: "/", origin: { custom: { domainName: "e.com" } } }, { uri: "/" }]) {
     assert.deepEqual(readConfig(request), {
-      EDGE_SCRIPT_VERSION: "0.6.11",
+      EDGE_SCRIPT_VERSION: "0.6.12",
       EDGE_PLATFORM: "cloudfront",
     });
   }
@@ -182,4 +184,15 @@ test("an install missing either credential is not configured", () => {
   assert.equal(isConfigured({ SITE_ID: "s" }), false);
   assert.equal(isConfigured({ NORG_SITE_KEY: "k" }), false);
   assert.equal(isConfigured({}), false);
+});
+
+test("the feed URL follows the content base, trailing slash or not", () => {
+  // 0.6.12: the router reads its rules feed from the receptionist, not the API.
+  for (const base of ["https://edge-content.norg.ai", "https://edge-content.norg.ai/"]) {
+    const cfRequest = {
+      headers: {},
+      origin: { custom: { customHeaders: { "x-norg-content-base": [{ key: "x-norg-content-base", value: base }] } } },
+    };
+    assert.equal(readConfig(cfRequest).NORG_FEED_URL, "https://edge-content.norg.ai/edge/bot-patterns");
+  }
 });

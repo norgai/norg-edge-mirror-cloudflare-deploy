@@ -109,6 +109,23 @@ function stampNegativeFeed() {
 }
 
 /**
+ * Where this install reads its feed.
+ *
+ * NORG_FEED_URL, when the adapter sets one, wins: the CloudFront router points
+ * it at the edge-content receptionist (/edge/bot-patterns, served from a nearby
+ * Cloudflare colo) because a Lambda in Tokyo or Virginia spent 0.6-1.7 s
+ * fetching the feed from NORG's API in Australia on every cold container.
+ * Same request, same credentials, same 401/403 and ETag contract. Without it,
+ * the feed comes from NORG_API_URL as it always has.
+ *
+ * @param {Object} env Install config.
+ * @returns {string} Absolute feed URL.
+ */
+function feedUrl(env) {
+  return env.NORG_FEED_URL || `${binding(env, "NORG_API_URL")}/api/v1/edge/bot-patterns`;
+}
+
+/**
  * Refresh the authenticated feed from NORG.
  *
  * @param {Object} env Install config.
@@ -124,7 +141,7 @@ export async function refreshFeed(env) {
     // entry we no longer hold would leave us with nothing to serve.
     if (previous.entitled && previous.etag) headers["If-None-Match"] = previous.etag;
 
-    response = await edgeFetch(env, `${binding(env, "NORG_API_URL")}/api/v1/edge/bot-patterns`, {
+    response = await edgeFetch(env, feedUrl(env), {
       method: "GET",
       headers,
       signal: timeoutSignal(PATTERN_FETCH_TIMEOUT_MS),

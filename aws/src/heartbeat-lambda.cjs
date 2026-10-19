@@ -41,7 +41,7 @@ var UNENTITLED = Object.freeze({
 });
 
 // aws/lambda/lib/config.js
-var EDGE_SCRIPT_VERSION = "0.6.11";
+var EDGE_SCRIPT_VERSION = "0.6.12";
 
 // aws/lambda/lib/sigv4.js
 var import_node_crypto = require("node:crypto");

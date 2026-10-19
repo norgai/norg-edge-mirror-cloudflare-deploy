@@ -143,7 +143,9 @@ export function stubNetwork({ feed, mirror, origin, control } = {}) {
     const url = String(input);
     calls.push({ url, init, body: init.body });
 
-    if (url.includes("/api/v1/edge/bot-patterns")) {
+    // 0.6.12: the feed is read from the receptionist (CONTENT_BASE/edge/bot-patterns);
+    // "/edge/bot-patterns" also matches the old API path, so both shapes are served.
+    if (url.includes("/edge/bot-patterns")) {
       if (feed) return feed(url, init);
       return new Response(JSON.stringify(FEED), {
         status: 200,
