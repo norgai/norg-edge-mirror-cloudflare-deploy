@@ -67,15 +67,17 @@ for (const file of TEMPLATES) {
     );
   });
 
-  test(`${file}: the router runs at 192 MB, not the original 512`, () => {
-    // Measured peak was 116 MB across 91 live invocations. Lambda@Edge bills
-    // GB-seconds with no free tier, so provisioning is a direct cost multiplier.
+  test(`${file}: the router runs at 512 MB (0.6.13), not 192 or 1024`, () => {
+    // 0.6.13: CPU scales with memory, and at 192 MB the TLS, signing and JSON
+    // work in each NORG call dominated a cold agent request (site key 0.53 s ->
+    // 0.17 s at 512 MB, measured on NORG's own install); 1024 MB added only
+    // 0.1-0.2 s. Duration falls ~3x so GB-seconds rise ~1.3-1.7x, not 2.7x.
     // Extract the resource block rather than matching within a character
     // window — a window breaks the moment someone adds a comment.
     const block = /^  EdgeRouterFunction:\n((?:    .*\n|\n)*)/m.exec(template);
     assert.ok(block, "no EdgeRouterFunction resource");
-    assert.match(block[1], /MemorySize: 192/);
-    assert.equal(/MemorySize: 512/.test(block[1]), false);
+    assert.match(block[1], /MemorySize: 512/);
+    assert.equal(/MemorySize: (192|1024)/.test(block[1]), false);
   });
 
   test(`${file}: the Lambda@Edge role trusts both required principals`, () => {
