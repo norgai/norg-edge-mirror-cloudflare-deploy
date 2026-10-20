@@ -232,13 +232,16 @@ Resources:
       Runtime: nodejs24.x
       Role: !GetAtt EdgeFunctionRole.Arn
       Timeout: 30
-      # 192 MB, not the 512 MB this started at. Measured on a live install:
-      # peak 116 MB across 91 invocations, so this keeps ~65% headroom while
-      # cutting billed GB-seconds by 62% — Lambda@Edge charges per GB-second and
-      # has no free tier, so the over-provisioning was a straight multiplier on
-      # every request. Do not drop to 128 MB: the strip fallback buffers a whole
+      # 512 MB (0.6.13). Lambda gives CPU in proportion to memory, and at 192 MB
+      # (about a tenth of a CPU) the TLS handshakes, signing and JSON parsing in
+      # each NORG call dominated a cold agent request: measured on NORG's own
+      # install, the site-key read fell from 0.53 s to 0.17 s and a cold agent
+      # request near NORG's region from 1.3 s to 0.6 s at 512 MB; 1024 MB added
+      # only 0.1-0.2 s more. Duration falls about 3x, so GB-seconds rise ~1.3-1.7x,
+      # not the 2.7x the memory ratio suggests, and the per-request fee is
+      # unchanged. Do not drop to 128 MB: the strip fallback buffers a whole
       # origin response body.
-      MemorySize: 192
+      MemorySize: 512
       Code:
         S3Bucket: !Ref ArtifactBucket
         S3Key: !Ref ArtifactKey

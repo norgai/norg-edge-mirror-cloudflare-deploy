@@ -57,6 +57,12 @@ import { HEALTH_CHECK_HEADER, PUBLIC_HOST_HEADER } from "../../../core/constants
  * to the customer origin on any thrown exception or oversized response, and the
  * health-probe header, which carried the site key in a plain viewer request.
  *
+ * 0.6.13 — a cold copy no longer costs a human ~1 s or an agent ~0.8 s: the
+ * human / search-engine / static-file decision is made on CloudFront's raw
+ * headers before any web Request exists, and Node's HTTP library is loaded
+ * during Lambda start-up (where it costs ~80 ms) instead of inside the first
+ * request (~0.8 s at 192 MB). Router memory moves to 512 MB in the templates.
+ *
  * 0.6.12 — the agent rules feed is read from the edge-content receptionist
  * (NORG_CONTENT_BASE + /edge/bot-patterns, a nearby Cloudflare colo) instead
  * of NORG_API_URL in Australia.
@@ -123,7 +129,7 @@ import { HEALTH_CHECK_HEADER, PUBLIC_HOST_HEADER } from "../../../core/constants
  * is read from the replica in the region that ran the function. Behaviour
  * tracks edge-router-worker.js 0.11.7.
  */
-export const EDGE_SCRIPT_VERSION = "0.6.13-e2";
+export const EDGE_SCRIPT_VERSION = "0.6.13";
 
 // Custom origin header -> binding name. Mirrors build_worker_bindings() in
 // content-craft's install_service.py; adding a binding there means adding it
