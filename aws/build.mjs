@@ -8,9 +8,12 @@
  * exactly those files, and NORG's backend pins them by SHA-256. CI rebuilds and
  * fails on any diff, so a source edit can never ship without its bundle.
  *
- * Two outputs, deployed to two different places:
+ * Three outputs, deployed to three different places:
  *   edge-router-lambda.cjs Lambda@Edge, origin-request, on every page request.
  *   heartbeat-lambda.cjs   Regional Lambda on an EventBridge schedule.
+ *   edge-gate.js           CloudFront Function, viewer-request: the no-Lambda
+ *                          layout's switch. Built by aws/function/build.mjs and
+ *                          inlined into cloudformation/attach-gate.yaml here.
  *
  * Until 0.5.x there were four: a viewer-request CloudFront Function stamped a
  * cache bucket and an origin-response Lambda guarded it. Both existed only to
@@ -45,6 +48,7 @@ import {
   PROTECTED_PATH_PREFIXES,
   TEMPLATE_ASSET_SUFFIXES,
 } from "../core/exclusions.mjs";
+import { GATE_PLACEHOLDERS, GATE_VERSION, buildGate } from "./function/build.mjs";
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -283,13 +287,73 @@ if (behaviourCount + 1 > 75) {
   throw new Error(`refusing to publish: ${behaviourCount + 1} cache behaviours exceeds CloudFront's limit of 75`);
 }
 
+/**
+ * The CloudFormation parameter each gate placeholder is filled from.
+ *
+ * attach-gate.yaml inlines the function through Fn::Sub, so a placeholder
+ * becomes "${Parameter}" and CloudFormation fills it at create time. Every one
+ * of these parameters has an AllowedPattern excluding quotes and backslashes:
+ * the value lands inside a JavaScript string literal and must not escape it.
+ * SiteId is deliberately absent: the function no longer carries the site in
+ * the path (the receptionist reads it from its origin's X-Norg-Site-Id header).
+ */
+const GATE_PLACEHOLDER_PARAMETERS = {
+  __RECEPTIONIST_HOST__: "ReceptionistHost",
+  __RECEPTIONIST_ORIGIN_ID__: "ReceptionistOriginId",
+  __CUSTOMER_ORIGIN_ID__: "CustomerOriginId",
+  __GATE_VERSION__: "GateVersion",
+};
+
+/**
+ * Inline the built gate into attach-gate.yaml's FunctionCode block.
+ *
+ * The code is a YAML literal block scalar under `!Sub |`, so every line is
+ * indented eight spaces and the markers sit OUTSIDE the scalar (a marker
+ * inside it would ship as function code). The GateVersion parameter's default
+ * is rewritten in the same pass so the two cannot drift.
+ *
+ * @param {string} templatePath Absolute path to attach-gate.yaml.
+ * @param {string} gateCode The built artifact, placeholders intact.
+ * @returns {string} The function code as embedded, after substitution.
+ */
+function embedGateFunction(templatePath, gateCode) {
+  for (const placeholder of GATE_PLACEHOLDERS) {
+    if (!(placeholder in GATE_PLACEHOLDER_PARAMETERS)) {
+      throw new Error(`gate placeholder ${placeholder} has no template parameter to fill it`);
+    }
+  }
+  let code = gateCode;
+  for (const [placeholder, parameter] of Object.entries(GATE_PLACEHOLDER_PARAMETERS)) {
+    code = code.replaceAll(placeholder, `\${${parameter}}`);
+  }
+  const indented = code.trimEnd().split("\n").map((line) => `        ${line}`).join("\n");
+
+  const template = readFileSync(templatePath, "utf8");
+  let updated = template.replace(
+    /(      FunctionCode: !Sub \|\n)[\s\S]*?(\n      # END GENERATED FUNCTION CODE)/,
+    `$1${indented}$2`,
+  );
+  if (!updated.includes(indented)) throw new Error(`failed to embed the gate function into ${templatePath}`);
+  updated = updated.replace(
+    /(  GateVersion:\n(?:    .*\n)*?    Default: )\S+/,
+    `$1${GATE_VERSION}`,
+  );
+  if (!updated.includes(`    Default: ${GATE_VERSION}\n`)) throw new Error("failed to set the GateVersion default");
+  writeFileSync(templatePath, updated);
+  return code;
+}
+
+const gate = buildGate();
+assertNoForbiddenNames("edge-gate.js", gate.body);
+embedGateFunction(join(here, "cloudformation", "attach-gate.yaml"), gate.body);
+
 // CloudFormation refuses a template body over 51,200 bytes (validate-template,
 // create-stack and the console paste all hit it; only an S3 template URL is
 // bigger). The behaviours block is the swing factor, which is why the template
 // carries TEMPLATE_ASSET_SUFFIXES rather than the full list. Fail here, at
 // build time, rather than at a customer's first `aws cloudformation deploy`.
 const CFN_TEMPLATE_BODY_MAX_BYTES = 51_200;
-for (const template of ["new-distribution.yaml", "attach-existing.yaml"]) {
+for (const template of ["new-distribution.yaml", "attach-existing.yaml", "attach-gate.yaml"]) {
   const bytes = statSync(join(here, "cloudformation", template)).size;
   if (bytes > CFN_TEMPLATE_BODY_MAX_BYTES) {
     throw new Error(
@@ -305,9 +369,10 @@ const version = /EDGE_SCRIPT_VERSION\s*=\s*"([^"]+)"/.exec(router)?.[1];
 // operators to check what they are about to run against this file, and it is
 // what makes "each file is pinned by digest in the public repository" a claim
 // rather than a hope. Regenerated on every build; CI fails on any diff.
-const DIGEST_FILES = ["edge-router-lambda.cjs", "heartbeat-lambda.cjs"];
+const DIGEST_FILES = ["edge-router-lambda.cjs", "heartbeat-lambda.cjs", "edge-gate.js"];
 const digests = {
   version,
+  gate_version: GATE_VERSION,
   algorithm: "sha256",
   files: Object.fromEntries(
     DIGEST_FILES.map((name) => [
@@ -323,4 +388,5 @@ console.log(`  cache behaviours       ${behaviourCount} carve-outs (+1 default)`
 console.log(`  new-distribution.yaml  ${statSync(join(here, "cloudformation", "new-distribution.yaml")).size} bytes (limit ${CFN_TEMPLATE_BODY_MAX_BYTES})`);
 console.log(`  edge-router-lambda.cjs ${statSync(join(srcDir, "edge-router-lambda.cjs")).size} bytes`);
 console.log(`  heartbeat-lambda.cjs   ${statSync(join(srcDir, "heartbeat-lambda.cjs")).size} bytes`);
+console.log(`  edge-gate.js           ${gate.size} bytes (gate version ${GATE_VERSION}), inlined into attach-gate.yaml`);
 console.log(`  DIGESTS.json           ${DIGEST_FILES.length} artifacts, full sha256`);
