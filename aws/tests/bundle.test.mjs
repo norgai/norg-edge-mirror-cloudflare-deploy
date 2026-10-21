@@ -89,11 +89,12 @@ test("no NORG-internal secret name reaches a customer account", () => {
   }
 });
 
-test("exactly two artifacts are published, and both are digested", () => {
+test("exactly three artifacts are published, and all are digested", () => {
   // The viewer function and the cache guard left with the page cache in
-  // 0.6.0; a third file here would be one the templates do not deploy.
+  // 0.6.0. The gate (0.1.0) is the no-Lambda layout's switch, inlined into
+  // attach-gate.yaml; a fourth file here would be one no template deploys.
   const digests = JSON.parse(readFileSync(join(awsDir, "src", "DIGESTS.json"), "utf8"));
-  assert.deepEqual(Object.keys(digests.files).sort(), ["edge-router-lambda.cjs", "heartbeat-lambda.cjs"]);
+  assert.deepEqual(Object.keys(digests.files).sort(), ["edge-gate.js", "edge-router-lambda.cjs", "heartbeat-lambda.cjs"]);
   for (const [name, digest] of Object.entries(digests.files)) {
     assert.match(digest, /^[0-9a-f]{64}$/, name);
     assert.ok(statSync(join(awsDir, "src", name)).size > 0, name);

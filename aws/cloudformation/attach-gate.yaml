@@ -1,0 +1,226 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+# NORG Edge Gate — the no-Lambda layout, for a site ALREADY served through
+# CloudFront.
+#
+# MUST be launched in us-east-1: the alarms read AWS/CloudFront metrics, which
+# CloudWatch publishes only there.
+#
+# What this stack creates: ONE CloudFront Function (viewer-request, runtime
+# cloudfront-js-2.0) and two alarms on it. Nothing else. No Lambda, no IAM
+# role, no Secrets Manager secret, no heartbeat, no S3 artifact: the function's
+# code is inlined below, so what you deploy is what you can read in this file.
+#
+# How a request flows once the function is attached to your default behaviour:
+#
+#   browser, search engine, static file  -> your origin, untouched, exactly as
+#                                           before (the function returns the
+#                                           request without changing a byte)
+#   anything else (AI agents, unknown     -> an origin GROUP: NORG's receptionist
+#   clients, NORG-owned paths)              first; if it answers 404, CloudFront
+#                                           fails over to your origin
+#
+# The receptionist is an ordinary HTTPS origin on your distribution, added by
+# the attach step. It answers the NORG render for a verified AI agent and 404
+# for anyone else, so an unrecognised client ends at your origin. Humans never
+# reach NORG code, so your HTML caching is left exactly as you have it.
+#
+# Like attach-existing.yaml, this stack does not touch your distribution:
+# CloudFormation cannot modify a resource it does not own. Attaching is the
+# second, explicit step —
+#
+#   node aws/install/attach.mjs --layout gate --distribution-id EXXXXXXXXXXXX \
+#        --stack <this stack> --origin-headers "X-Norg-Site-Id=...,X-Norg-Mirror-Token=..."
+#
+# — which adds the receptionist origin, associates the function on the default
+# behaviour, and adds the dynamic carve-outs (/api/*, /wp-*, /cart*, /checkout*
+# go straight to your origin on every method).
+#
+# THE MIRROR TOKEN IS NOT A PARAMETER OF THIS STACK, ON PURPOSE. The receptionist
+# authenticates your distribution by two origin custom headers on the
+# receptionist origin, X-Norg-Site-Id and X-Norg-Mirror-Token. NORG's API writes
+# both when it edits the distribution (or you pass them to the attach CLI). A
+# token given to CloudFormation would sit in the stack's parameter list and in
+# every describe-stacks response; on the origin it is readable only to someone
+# who already holds cloudfront:GetDistributionConfig on your account.
+#
+# Fn::Sub and the function code. The code is inlined through Fn::Sub so the
+# four install values and the version land in it as JavaScript string
+# literals. Two things keep that safe, and the build (aws/build.mjs) and tests
+# enforce both: the built code contains no "${" of its own (it builds strings by
+# concatenation, never template literals), and every parameter substituted into
+# it has an AllowedPattern that excludes quote marks and backslashes, so no
+# value can break out of its literal.
+
+Description: >-
+  NORG edge gate for an existing CloudFront distribution (us-east-1): one
+  viewer-request CloudFront Function and its alarms. No Lambda, no secret, no
+  heartbeat. The mirror token is deliberately not a parameter; the NORG API
+  injects X-Norg-Site-Id and X-Norg-Mirror-Token as origin custom headers on
+  the receptionist origin when it edits the distribution.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: { default: NORG install }
+        Parameters: [SiteId, DistributionId, CustomerOriginId, NorgEnvironment]
+      - Label: { default: Advanced }
+        Parameters: [ReceptionistHost, ReceptionistOriginId, GateVersion, AlarmTopicArn]
+
+Parameters:
+  SiteId:
+    Type: String
+    Description: The SITE_ID NORG issued when you registered this site.
+    AllowedPattern: ^[0-9a-fA-F-]{36}$
+  DistributionId:
+    Type: String
+    Description: >-
+      The distribution the function will be attached to (EXXXXXXXXXXXX). Used
+      only to scope the alarms: CloudFront publishes function metrics per
+      distribution, so an alarm without it watches nothing.
+    AllowedPattern: ^E[A-Z0-9]{5,}$
+  CustomerOriginId:
+    Type: String
+    Description: >-
+      The Id of the origin your default cache behaviour points at — the second
+      member of the origin group the function builds, i.e. where a request
+      goes when the receptionist answers 404. Must name an origin that exists
+      on the distribution, or the function fails for every agent request.
+    AllowedPattern: ^[A-Za-z0-9._-]{1,128}$
+    ConstraintDescription: letters, digits, dot, underscore and hyphen only (it is inlined into the function as a string literal)
+  ReceptionistHost:
+    Type: String
+    Default: edge-content.norg.ai
+    Description: >-
+      NORG's receptionist. Becomes the DomainName of the receptionist origin and
+      the Host and SNI the function sets when it hands a request over.
+    AllowedPattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$
+    ConstraintDescription: a lowercase DNS hostname
+  ReceptionistOriginId:
+    Type: String
+    Default: norg-receptionist
+    Description: Id of the receptionist origin the attach step adds. Change it only if your distribution already uses that Id.
+    AllowedPattern: ^[A-Za-z0-9._-]{1,128}$
+    ConstraintDescription: letters, digits, dot, underscore and hyphen only (it is inlined into the function as a string literal)
+  NorgEnvironment:
+    Type: String
+    Default: production
+    AllowedValues: [production, test]
+  GateVersion:
+    Type: String
+    # Kept in step with aws/function/build.mjs by aws/build.mjs.
+    Default: 0.1.0
+    Description: >-
+      Sent to the receptionist as x-norg-gate-version on every request the
+      function hands over, so NORG can tell which build a distribution runs
+      without access to your account. Leave the default.
+    AllowedPattern: ^[0-9A-Za-z.+-]{1,32}$
+  AlarmTopicArn:
+    Type: String
+    Default: ""
+    Description: >-
+      Optional SNS topic ARN. The stack creates the two function alarms either
+      way; give them somewhere to go.
+
+Conditions:
+  HasAlarmTopic: !Not [!Equals [!Ref AlarmTopicArn, ""]]
+
+Resources:
+  # One function per site: the name is unique per AWS account, so a second
+  # stack for the same SiteId fails at create instead of racing the first.
+  EdgeGateFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub "norg-edge-gate-${SiteId}"
+      # Published to LIVE on every create and update: a distribution can only
+      # associate a published function, and an unpublished edit would leave
+      # the edge running the previous code with no error anywhere.
+      AutoPublish: true
+      FunctionConfig:
+        Comment: !Sub "NORG edge gate ${GateVersion} for site ${SiteId} (${NorgEnvironment})"
+        Runtime: cloudfront-js-2.0
+      # The block below is aws/src/edge-gate.js with its five __PLACEHOLDERS__
+      # replaced by the matching ${Parameter}. Regenerated by aws/build.mjs;
+      # CI fails on any diff. Do not edit it here.
+      # BEGIN GENERATED FUNCTION CODE
+      FunctionCode: !Sub |
+        import cf from 'cloudfront';
+        var SITE_ID="${SiteId}",RECEPTIONIST_HOST="${ReceptionistHost}",RECEPTIONIST_ORIGIN_ID="${ReceptionistOriginId}",CUSTOMER_ORIGIN_ID="${CustomerOriginId}",GATE_VERSION="${GateVersion}",STATIC=/\.(css|js|mjs|map|png|jpe?g|gif|webp|svg|ico|avif|bmp|tiff|heic|woff2?|ttf|eot|otf|mp4|webm|mov|avi|mkv|m4v|ogv|mp3|wav|ogg|m4a|aac|flac|weba|vtt|srt|pdf|docx?|xlsx?|pptx?|zip|gz|rar|tar|7z|webmanifest)$/i,SEARCH=["googlebot","bingbot","applebot","duckduckbot","baiduspider","yandex","slurp"],BROWSER=["chrome/","safari/","firefox/","edg/","opr/","trident/"],BOTISH=["bot","crawl","spider","slurp","scrape","fetch","agent","compatible;","http://","https://","headless","preview","python","curl","wget","java/","okhttp","axios","node-fetch","go-http","ruby","perl","libwww","httpx","aiohttp"],SIBLINGS=["index.md","index.json","index.jsonld","index.pdf","index.openai.json","webmcp.js"],EXACT_NORG=["/llms.txt","/llms-full.txt","/tree.json","/graph.jsonld","/agents.md","/.well-known/mcp.json","/.well-known/ai-plugin.json","/openapi.json","/openapi.yaml"];function has(r,e){for(var t=0;t<r.length;t++)if(e.indexOf(r[t])!==-1)return!0;return!1}function isNorgSurface(r){if(EXACT_NORG.indexOf(r)!==-1||r.indexOf("/.norg/")===0||/\/(mcp|sse)$/.test(r))return!0;var e=r.slice(r.lastIndexOf("/")+1);return SIBLINGS.indexOf(e)!==-1}function isBrowser(r){return r.indexOf("mozilla/5.0")===0&&!has(BOTISH,r)&&has(BROWSER,r)}function handler(r){try{var e=r.request,t=e.uri,n=isNorgSurface(t);if(!n&&STATIC.test(t))return e;var a=e.headers["user-agent"],i=a&&a.value?a.value:"",o=i.toLowerCase();if(!n){if(has(SEARCH,o))return e;var s=e.querystring||{},p=s.agent&&s.agent.value==="true",d=e.headers["signature-agent"]||e.headers["signature-input"];if(isBrowser(o)&&!p&&!d||e.method!=="GET"&&e.method!=="HEAD")return e}return e.headers["x-norg-gate"]={value:"cloudfront"},e.headers["x-norg-gate-version"]={value:GATE_VERSION},e.headers["x-norg-ua"]={value:i},e.headers["x-norg-viewer-ip"]={value:r.viewer&&r.viewer.ip||""},e.uri="/"+SITE_ID+t,cf.createRequestOriginGroup({originIds:[{originId:RECEPTIONIST_ORIGIN_ID,originOverrides:{hostHeader:RECEPTIONIST_HOST,sni:RECEPTIONIST_HOST}},{originId:CUSTOMER_ORIGIN_ID}],failoverCriteria:{statusCodes:[404]}}),e}catch(f){return r.request}}
+      # END GENERATED FUNCTION CODE
+
+  # A CloudFront Function that throws, or returns an object CloudFront cannot
+  # turn back into a request, answers the viewer with a 503 — for EVERY request
+  # on the behaviour, humans included. The function's whole body is guarded so
+  # this should never fire; when it does, it is the one signal that NORG code
+  # is in a visitor's path. Function metrics carry the distribution as a
+  # dimension and are published in us-east-1 under Region=Global.
+  GateExecutionErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-norg-gate-execution-errors"
+      AlarmDescription: NORG edge gate threw at run time (503 to visitors)
+      Namespace: AWS/CloudFront
+      MetricName: FunctionExecutionErrors
+      Dimensions:
+        - Name: DistributionId
+          Value: !Ref DistributionId
+        - Name: FunctionName
+          Value: !Sub "norg-edge-gate-${SiteId}"
+        - Name: Region
+          Value: Global
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref "AWS::NoValue"]
+
+  GateValidationErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-norg-gate-validation-errors"
+      AlarmDescription: NORG edge gate returned an invalid request (503 to visitors)
+      Namespace: AWS/CloudFront
+      MetricName: FunctionValidationErrors
+      Dimensions:
+        - Name: DistributionId
+          Value: !Ref DistributionId
+        - Name: FunctionName
+          Value: !Sub "norg-edge-gate-${SiteId}"
+        - Name: Region
+          Value: Global
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref "AWS::NoValue"]
+
+Outputs:
+  FunctionArn:
+    Description: Associate on viewer-request of the default cache behaviour.
+    Value: !GetAtt EdgeGateFunction.FunctionARN
+    Export: { Name: !Sub "${AWS::StackName}-FunctionArn" }
+  FunctionName:
+    Value: !Sub "norg-edge-gate-${SiteId}"
+    Export: { Name: !Sub "${AWS::StackName}-FunctionName" }
+  ReceptionistHost:
+    Description: DomainName for the receptionist origin the attach step adds.
+    Value: !Ref ReceptionistHost
+  ReceptionistOriginId:
+    Description: Id of the receptionist origin; the function names it as the primary of its origin group.
+    Value: !Ref ReceptionistOriginId
+  CustomerOriginId:
+    Description: The origin the function fails over to. The attach step refuses a distribution whose default behaviour points elsewhere.
+    Value: !Ref CustomerOriginId
+  GateVersion:
+    Value: !Ref GateVersion
+  OriginCustomHeaders:
+    Description: >-
+      Add these to the RECEPTIONIST origin. Deliberately incomplete: the
+      X-Norg-Mirror-Token the receptionist authenticates with is not a stack
+      parameter. NORG's API injects it (with X-Norg-Site-Id) when it edits the
+      distribution; by hand, pass both to the attach CLI's --origin-headers.
+    Value: !Sub "x-norg-site-id=${SiteId}, x-norg-env=${NorgEnvironment}"
