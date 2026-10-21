@@ -13,7 +13,7 @@ import { GATE_PLACEHOLDERS, GATE_SIZE_LIMIT, GATE_VERSION } from "./build.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(join(here, "edge-gate.core.js"), "utf8")
-  .replace("__SITE_ID__", "site-1").replace("__RECEPTIONIST_HOST__", "edge-content.test")
+  .replace("__RECEPTIONIST_HOST__", "edge-content.test")
   .replace("__RECEPTIONIST_ORIGIN_ID__", "norg-receptionist").replace("__CUSTOMER_ORIGIN_ID__", "customer")
   .replace("__GATE_VERSION__", "9.9.9-test");
 
@@ -65,7 +65,7 @@ test("an AI agent is switched to the receptionist origin group with the viewer's
   assert.deepEqual(group.originIds.map((o) => o.originId), ["norg-receptionist", "customer"]);
   assert.deepEqual(group.originIds[0].originOverrides, { hostHeader: "edge-content.test", sni: "edge-content.test" });
   assert.deepEqual(group.failoverCriteria, { statusCodes: [404] });
-  assert.equal(res.uri, "/site-1/about/");
+  assert.equal(res.uri, "/about/", "the URI is not rewritten: a failover must deliver the path the visitor asked for");
   assert.equal(res.headers["x-norg-gate"].value, "cloudfront");
   assert.equal(res.headers["x-norg-gate-version"].value, "9.9.9-test", "the receptionist learns which build sent the request");
   assert.equal(res.headers["x-norg-ua"].value, GPTBOT);
@@ -93,10 +93,14 @@ test("NORG-owned surfaces go to the receptionist for everyone, search engines in
   assert.equal(calls.length, 6);
 });
 
-test("the query string survives the URI rewrite and the host header is untouched", () => {
+test("the URI, query string and host header are untouched on a hand-off: the site travels as an origin header, not in the path", () => {
+  // The receptionist resolves the site from X-Norg-Site-Id on its origin. A
+  // site segment in the path would reach the customer's origin on failover
+  // and turn every unverified GET into their 404.
   const { handler } = load();
   const res = handler(event("/p/", GPTBOT, { querystring: { q: { value: "1" } } }));
-  assert.equal(res.uri, "/site-1/p/");
+  assert.equal(res.uri, "/p/");
+  assert.equal(source.includes("SITE_ID"), false, "no site id in the function at all");
   assert.deepEqual(res.querystring, { q: { value: "1" } });
   assert.equal(res.headers.host.value, "www.customer.test");
 });
@@ -122,7 +126,7 @@ test("a POST to an MCP surface still reaches the receptionist: that transport is
   const { handler, calls } = load();
   const res = handler(event("/products/x/mcp", "mcp-client/1.0", { method: "POST" }));
   assert.equal(calls.length, 1);
-  assert.equal(res.uri, "/site-1/products/x/mcp");
+  assert.equal(res.uri, "/products/x/mcp");
 });
 
 test("the built artifact imports the runtime module first, keeps every placeholder and stays under the gate", () => {

@@ -321,7 +321,6 @@ const GATE_OUTPUTS = [
 ];
 // Placeholder -> the parameter Fn::Sub fills it from. Mirrors aws/build.mjs.
 const GATE_SUBSTITUTIONS = {
-  __SITE_ID__: "SiteId",
   __RECEPTIONIST_HOST__: "ReceptionistHost",
   __RECEPTIONIST_ORIGIN_ID__: "ReceptionistOriginId",
   __CUSTOMER_ORIGIN_ID__: "CustomerOriginId",
@@ -412,7 +411,6 @@ test(`${GATE_TEMPLATE}: the substituted function stays under CloudFront's 10 KB 
   const template = readFileSync(join(cfnDir, GATE_TEMPLATE), "utf8");
   const { code } = embeddedFunctionCode(template);
   const longest = {
-    SiteId: "f".repeat(36),
     ReceptionistHost: `${"a".repeat(63)}.`.repeat(3) + "a".repeat(61), // 253, the DNS maximum
     ReceptionistOriginId: "o".repeat(128),
     CustomerOriginId: "c".repeat(128),

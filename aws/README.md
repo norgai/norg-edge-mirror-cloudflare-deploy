@@ -171,11 +171,13 @@ default behaviour. For every request it makes one decision:
    never be sent to the receptionist in the first place.
 6. **Everything else** — AI agents, unknown clients, a browser asking for the
    agent view — is *handed to NORG*: the function stamps `x-norg-gate`,
-   `x-norg-gate-version`, `x-norg-ua` and `x-norg-viewer-ip` onto the request,
-   prefixes the path with your site id, and switches the request onto an
-   **origin group**: NORG's receptionist first, your own origin second. The
-   receptionist answers the NORG render for a verified AI agent and **404 for
-   anyone else**, and on a 404 CloudFront fails over to your origin.
+   `x-norg-gate-version`, `x-norg-ua` and `x-norg-viewer-ip` onto the request
+   and switches it onto an **origin group**: NORG's receptionist first, your
+   own origin second. The receptionist answers the NORG render for a verified
+   AI agent and **404 for anyone else**, and on a 404 CloudFront fails over to
+   your origin. The path is never rewritten — the failover delivers exactly
+   the URL the visitor asked for — and the receptionist knows which site it is
+   from the `X-Norg-Site-Id` header on its origin, not from the path.
 
 Every branch returns the request. The whole body is guarded: a bug in the
 function can only let a request through to your origin, never break the site.
@@ -195,7 +197,7 @@ method — because those are the paths that take POSTs.
 
 | Artifact | What it is | Where it goes |
 |---|---|---|
-| [`aws/src/edge-gate.js`](src/edge-gate.js) | The built function (`aws/function/edge-gate.core.js`, minified, es2015, ≈2.3 KB against CloudFront's 10 KB limit), with five `__PLACEHOLDERS__` the installer fills: site id, receptionist host, the two origin ids, the version | Inlined into the template below; digested in [`aws/src/DIGESTS.json`](src/DIGESTS.json) as `edge-gate.js` |
+| [`aws/src/edge-gate.js`](src/edge-gate.js) | The built function (`aws/function/edge-gate.core.js`, minified, es2015, ≈2.2 KB against CloudFront's 10 KB limit), with four `__PLACEHOLDERS__` the installer fills: receptionist host, the two origin ids, the version | Inlined into the template below; digested in [`aws/src/DIGESTS.json`](src/DIGESTS.json) as `edge-gate.js` |
 | [`aws/cloudformation/attach-gate.yaml`](cloudformation/attach-gate.yaml) | The stack: the function (`AWS::CloudFront::Function`, `AutoPublish: true`, runtime `cloudfront-js-2.0`) with the code inlined through `Fn::Sub`, and two alarms on `FunctionExecutionErrors` / `FunctionValidationErrors` | `aws cloudformation deploy`, us-east-1 |
 
 There is no S3 artifact and no IAM role: the function's code is in the template

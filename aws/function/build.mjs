@@ -33,7 +33,6 @@ export const GATE_SIZE_LIMIT = 6 * 1024;
  * (Fn::Sub, one parameter each) or by whoever deploys the function by hand.
  */
 export const GATE_PLACEHOLDERS = [
-  "__SITE_ID__",
   "__RECEPTIONIST_HOST__",
   "__RECEPTIONIST_ORIGIN_ID__",
   "__CUSTOMER_ORIGIN_ID__",
