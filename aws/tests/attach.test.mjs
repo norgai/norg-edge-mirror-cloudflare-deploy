@@ -15,9 +15,12 @@ import { test } from "node:test";
 
 import {
   attach,
+  attachGate,
   detach,
+  detachGate,
   isOurs,
   parseArgs,
+  parseHeaderPairs,
   quotaLines,
   setOriginHeaders,
 } from "../install/attach.mjs";
@@ -281,6 +284,7 @@ test("argument parsing accepts both --flag value and --flag=value", () => {
   assert.deepEqual(parseArgs(["--distribution-id", "E1", "--stack=s1", "--apply"]), {
     apply: true,
     detach: false,
+    layout: "lambda",
     distributionId: "E1",
     stack: "s1",
   });
@@ -429,4 +433,199 @@ test("a carve-out that would shadow a NORG path is refused", async () => {
   const { carveOutBehaviours } = await import("../install/attach.mjs");
   // Sanity: the real set is clean.
   assert.ok(carveOutBehaviours(OUTPUTS, "origin").length > 0);
+});
+
+// ---------------------------------------------------------------------------
+// The gate layout (--layout gate): one CloudFront Function, no Lambda.
+// ---------------------------------------------------------------------------
+
+const GATE_OUTPUTS = {
+  FunctionArn: "arn:aws:cloudfront::111:function/norg-edge-gate-site-1",
+  FunctionName: "norg-edge-gate-site-1",
+  ReceptionistHost: "edge-content.norg.ai",
+  ReceptionistOriginId: "norg-receptionist",
+  CustomerOriginId: "customer-origin",
+  GateVersion: "0.1.0",
+  OriginCustomHeaders: "x-norg-site-id=site-1, x-norg-env=production",
+};
+const GATE_OPTIONS = {
+  layout: "gate",
+  originHeaders: "X-Norg-Site-Id=site-1,X-Norg-Mirror-Token=nmt_secret_token",
+};
+
+test("gate: the function goes on viewer-request, no Lambda is added, and the cache policy is left alone", () => {
+  const config = distributionConfig();
+  const changes = attachGate(config, GATE_OUTPUTS, GATE_OPTIONS);
+  const behaviour = config.DefaultCacheBehavior;
+
+  assert.deepEqual(behaviour.FunctionAssociations, {
+    Quantity: 1,
+    Items: [{ EventType: "viewer-request", FunctionARN: GATE_OUTPUTS.FunctionArn }],
+  });
+  assert.deepEqual(behaviour.LambdaFunctionAssociations, { Quantity: 0, Items: [] });
+  assert.equal(behaviour.OriginRequestPolicyId, MANAGED_ALL_VIEWER_EXCEPT_HOST_ORIGIN_REQUEST_ID, "gate headers and the query string must reach the receptionist");
+  assert.equal(behaviour.CachePolicyId, "managed-caching-optimized", "humans never reach NORG code: HTML caching is not the gate's business");
+  assert.ok(changes.some((c) => /cache policy\s+managed-caching-optimized left as it is/.test(c)), "the dry run says the cache policy is untouched");
+  assert.ok(changes.some((c) => /origin request\s+managed-caching-optimized|origin request\s+\(none\) -> AllViewerExceptHostHeader/.test(c)));
+});
+
+test("gate: the receptionist origin is added, https-only, with the stack headers and the caller's token; the customer origin is untouched", () => {
+  const config = distributionConfig();
+  attachGate(config, GATE_OUTPUTS, GATE_OPTIONS);
+
+  assert.equal(config.Origins.Quantity, 2);
+  const receptionist = config.Origins.Items.find((o) => o.Id === "norg-receptionist");
+  assert.ok(receptionist, "receptionist origin missing");
+  assert.equal(receptionist.DomainName, "edge-content.norg.ai");
+  assert.equal(receptionist.CustomOriginConfig.OriginProtocolPolicy, "https-only");
+  assert.deepEqual(receptionist.CustomOriginConfig.OriginSslProtocols, { Quantity: 1, Items: ["TLSv1.2"] });
+  const headers = Object.fromEntries(receptionist.CustomHeaders.Items.map((h) => [h.HeaderName.toLowerCase(), h.HeaderValue]));
+  assert.equal(headers["x-norg-mirror-token"], "nmt_secret_token");
+  assert.equal(headers["x-norg-site-id"], "site-1");
+  assert.equal(headers["x-norg-env"], "production");
+  assert.equal(receptionist.CustomHeaders.Quantity, receptionist.CustomHeaders.Items.length);
+  assert.equal(receptionist.CustomHeaders.Items.filter((h) => h.HeaderName.toLowerCase() === "x-norg-site-id").length, 1, "the caller's X-Norg-Site-Id and the stack's x-norg-site-id are one header");
+
+  const customer = config.Origins.Items.find((o) => o.Id === "customer-origin");
+  assert.deepEqual(customer.CustomHeaders, { Quantity: 1, Items: [{ HeaderName: "x-api-key", HeaderValue: "theirs" }] }, "nothing is written on the customer's own origin");
+});
+
+test("gate: attaching REFUSES without the mirror token — a tokenless receptionist 404s everything, silently", () => {
+  const config = distributionConfig();
+  assert.throws(() => attachGate(config, GATE_OUTPUTS, { layout: "gate" }), /x-norg-mirror-token/);
+  assert.throws(() => attachGate(config, GATE_OUTPUTS, { layout: "gate", originHeaders: "X-Norg-Site-Id=site-1" }), /x-norg-mirror-token/);
+});
+
+test("gate: attaching REFUSES when the stack's CustomerOriginId is not the default behaviour's origin", () => {
+  // The function names the customer origin by Id in its origin group; a wrong
+  // Id fails every agent request at the edge while humans see nothing wrong.
+  const config = distributionConfig();
+  assert.throws(
+    () => attachGate(config, { ...GATE_OUTPUTS, CustomerOriginId: "web" }, GATE_OPTIONS),
+    /CustomerOriginId is "web" but the default behaviour points at "customer-origin"/,
+  );
+});
+
+test("gate: the old viewer-classifier is replaced, a foreign viewer-request function is refused, viewer-response is kept", () => {
+  const classifier = { EventType: "viewer-request", FunctionARN: "arn:aws:cloudfront::111:function/norg-edge-cloudfront-norg-viewer-classifier" };
+  const theirs = { EventType: "viewer-response", FunctionARN: "arn:aws:cloudfront::111:function/their-headers" };
+  const config = distributionConfig({ FunctionAssociations: { Quantity: 2, Items: [classifier, theirs] } });
+  const changes = attachGate(config, GATE_OUTPUTS, GATE_OPTIONS);
+  assert.deepEqual(config.DefaultCacheBehavior.FunctionAssociations.Items, [
+    theirs,
+    { EventType: "viewer-request", FunctionARN: GATE_OUTPUTS.FunctionArn },
+  ]);
+  assert.ok(changes.some((c) => c.includes("replaces") && c.includes("viewer-classifier")));
+
+  const foreign = distributionConfig({
+    FunctionAssociations: { Quantity: 1, Items: [{ EventType: "viewer-request", FunctionARN: "arn:aws:cloudfront::222:function/their-router" }] },
+  });
+  assert.throws(() => attachGate(foreign, GATE_OUTPUTS, GATE_OPTIONS), /already has a viewer-request CloudFront Function/);
+});
+
+test("gate: attaching over a Lambda-layout install removes our router and its MCP/static carve-outs; a foreign Lambda is refused", () => {
+  const config = distributionConfig();
+  attach(config, OUTPUTS, OPTIONS); // the old layout, in full
+  assert.ok(config.CacheBehaviors.Items.some((b) => MCP_PATH_PATTERNS.includes(b.PathPattern)));
+
+  const changes = attachGate(config, GATE_OUTPUTS, GATE_OPTIONS);
+  const behaviour = config.DefaultCacheBehavior;
+  assert.deepEqual(behaviour.LambdaFunctionAssociations, { Quantity: 0, Items: [] });
+  assert.ok(changes.some((c) => /removed 1 NORG Lambda@Edge association/.test(c)));
+  const patterns = config.CacheBehaviors.Items.map((b) => b.PathPattern);
+  assert.deepEqual(patterns, DYNAMIC_ROUTE_EXCLUSIONS, "only the dynamic carve-outs remain: no MCP, no static");
+  assert.ok(config.CacheBehaviors.Items.every((b) => !b.LambdaFunctionAssociations?.Quantity && !b.FunctionAssociations?.Quantity));
+
+  const foreign = distributionConfig({
+    LambdaFunctionAssociations: { Quantity: 1, Items: [{ EventType: "origin-request", LambdaFunctionARN: "arn:aws:lambda:us-east-1:222:function:theirs:3" }] },
+  });
+  assert.throws(() => attachGate(foreign, GATE_OUTPUTS, GATE_OPTIONS), /already has an origin-request Lambda@Edge function/);
+});
+
+test("gate: the carve-outs are the dynamic group only, listed ahead of the customer's own", () => {
+  const config = distributionConfig();
+  config.CacheBehaviors = { Quantity: 1, Items: [{ PathPattern: "/their-thing/*", TargetOriginId: "customer-origin" }] };
+  const changes = attachGate(config, GATE_OUTPUTS, GATE_OPTIONS);
+  const patterns = config.CacheBehaviors.Items.map((b) => b.PathPattern);
+  assert.deepEqual(patterns, [...DYNAMIC_ROUTE_EXCLUSIONS, "/their-thing/*"]);
+  for (const b of config.CacheBehaviors.Items.slice(0, -1)) {
+    assert.equal(b.CachePolicyId, MANAGED_CACHING_DISABLED_ID, b.PathPattern);
+    assert.equal(b.OriginRequestPolicyId, MANAGED_ALL_VIEWER_EXCEPT_HOST_ORIGIN_REQUEST_ID, b.PathPattern);
+    assert.ok(b.AllowedMethods.Items.includes("POST"), `${b.PathPattern} must accept POST`);
+  }
+  assert.ok(changes.some((c) => /no MCP or static carve-outs/.test(c)), "the dry run says what is NOT carved out");
+  assert.equal(config.CacheBehaviors.Quantity, config.CacheBehaviors.Items.length);
+});
+
+test("gate: re-attaching is idempotent — one receptionist origin, one association, no duplicate carve-outs", () => {
+  const config = distributionConfig();
+  attachGate(config, GATE_OUTPUTS, GATE_OPTIONS);
+  const once = structuredClone(config);
+  const changes = attachGate(config, GATE_OUTPUTS, { ...GATE_OPTIONS, originHeaders: "X-Norg-Site-Id=site-1,X-Norg-Mirror-Token=nmt_rotated" });
+  assert.equal(config.Origins.Quantity, 2);
+  assert.equal(config.DefaultCacheBehavior.FunctionAssociations.Quantity, 1);
+  assert.equal(config.CacheBehaviors.Items.length, once.CacheBehaviors.Items.length);
+  const receptionist = config.Origins.Items.find((o) => o.Id === "norg-receptionist");
+  assert.equal(receptionist.CustomHeaders.Items.find((h) => h.HeaderName === "X-Norg-Mirror-Token").HeaderValue, "nmt_rotated", "re-attaching is how a token rotation lands");
+  assert.ok(changes.some((c) => /origin\s+~norg-receptionist/.test(c)), "the dry run says the origin is replaced, not added");
+});
+
+test("gate: a receptionist Id that is the customer's default origin is refused", () => {
+  const config = distributionConfig();
+  assert.throws(
+    () => attachGate(config, { ...GATE_OUTPUTS, ReceptionistOriginId: "customer-origin" }, GATE_OPTIONS),
+    /is your default origin's Id/,
+  );
+});
+
+test("gate: detaching removes the function, the receptionist origin, every x-norg header and our carve-outs — and nothing else", () => {
+  const theirs = { EventType: "viewer-response", FunctionARN: "arn:aws:cloudfront::111:function/their-headers" };
+  const config = distributionConfig({ FunctionAssociations: { Quantity: 1, Items: [theirs] } });
+  config.CacheBehaviors = { Quantity: 1, Items: [{ PathPattern: "/their-thing/*", TargetOriginId: "customer-origin" }] };
+  // The API writes its headers capitalised; detach must still find them.
+  config.Origins.Items[0].CustomHeaders.Items.push({ HeaderName: "X-Norg-Stale", HeaderValue: "left over" });
+  attachGate(config, GATE_OUTPUTS, GATE_OPTIONS);
+
+  detachGate(config, { layout: "gate" });
+  const behaviour = config.DefaultCacheBehavior;
+  assert.deepEqual(behaviour.FunctionAssociations, { Quantity: 1, Items: [theirs] });
+  assert.deepEqual(config.Origins.Items.map((o) => o.Id), ["customer-origin"]);
+  assert.deepEqual(config.Origins.Items[0].CustomHeaders, { Quantity: 1, Items: [{ HeaderName: "x-api-key", HeaderValue: "theirs" }] });
+  assert.deepEqual(config.CacheBehaviors.Items.map((b) => b.PathPattern), ["/their-thing/*"]);
+  assert.equal(JSON.stringify(config).includes("nmt_secret_token"), false, "detaching must take the token with it");
+  assert.equal(behaviour.CachePolicyId, "managed-caching-optimized");
+  assert.equal(behaviour.OriginRequestPolicyId, MANAGED_ALL_VIEWER_EXCEPT_HOST_ORIGIN_REQUEST_ID, "restore nothing else: the dry run says the policy is left in place");
+});
+
+test("gate: detaching honours --receptionist-origin-id and refuses to remove the default origin", () => {
+  const config = distributionConfig();
+  attachGate(config, { ...GATE_OUTPUTS, ReceptionistOriginId: "norg-rx" }, GATE_OPTIONS);
+  detachGate(config, { layout: "gate", receptionistOriginId: "norg-rx" });
+  assert.deepEqual(config.Origins.Items.map((o) => o.Id), ["customer-origin"]);
+  assert.throws(() => detachGate(config, { layout: "gate", receptionistOriginId: "customer-origin" }), /is your default origin/);
+});
+
+test("gate: argument parsing takes --layout and --origin-headers, keeps '=' inside a value, and rejects an unknown layout", () => {
+  const parsed = parseArgs([
+    "--layout", "gate", "--distribution-id=E1", "--stack", "s1",
+    "--origin-headers=X-Norg-Site-Id=site-1,X-Norg-Mirror-Token=abc=def",
+    "--receptionist-origin-id", "norg-rx",
+  ]);
+  assert.equal(parsed.layout, "gate");
+  assert.equal(parsed.originHeaders, "X-Norg-Site-Id=site-1,X-Norg-Mirror-Token=abc=def");
+  assert.equal(parsed.receptionistOriginId, "norg-rx");
+  assert.deepEqual(parseHeaderPairs(parsed.originHeaders), [
+    { HeaderName: "X-Norg-Site-Id", HeaderValue: "site-1" },
+    { HeaderName: "X-Norg-Mirror-Token", HeaderValue: "abc=def" },
+  ]);
+  assert.throws(() => parseArgs(["--layout", "worker"]), /--layout must be one of lambda, gate/);
+  assert.throws(() => parseHeaderPairs("X-Norg-Site-Id"), /expected name=value/);
+});
+
+test("gate: the Lambda-layout attach is unchanged by the gate code paths", () => {
+  // The default layout is still lambda, and its carve-outs still include MCP.
+  const config = distributionConfig();
+  attach(config, OUTPUTS, OPTIONS);
+  assert.ok(config.CacheBehaviors.Items.some((b) => b.PathPattern === "*/mcp"));
+  assert.equal(config.Origins.Quantity, 1, "the Lambda layout adds no receptionist origin");
 });

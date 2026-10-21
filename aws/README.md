@@ -140,6 +140,112 @@ New accounts often start at 10. Request an increase for quota `L-B99A9384`
 
 ---
 
+## Gate layout (no Lambda)
+
+The install above runs a Lambda@Edge function on every page request. There is a
+second, lighter layout for an existing distribution that runs **no Lambda at
+all**: one CloudFront Function — a few hundred microseconds at the edge, no
+cold start, no regional concurrency quota, no Secrets Manager secret, no
+heartbeat — plus NORG's receptionist added to your distribution as an ordinary
+HTTPS origin. Measured on NORG's own test distribution, an AI agent is answered
+in 0.06–0.21 s warm and 0.5–1.6 s on a cold edge location; a person in a
+browser never touches NORG code at all.
+
+### How a request flows
+
+The function runs at **viewer request**, before CloudFront's cache, on your
+default behaviour. For every request it makes one decision:
+
+1. **NORG-owned path** (`/llms.txt`, `/.well-known/mcp.json`, `*/mcp`,
+   `*/sse`, `/.norg/*`, a page's `index.md` sibling, …) → hand to NORG, for
+   everyone.
+2. **Static file** (`.css`, `.js`, images, fonts, documents) → your origin,
+   untouched.
+3. **Googlebot, Bingbot and the other web-index crawlers** → your origin,
+   untouched. Rule 2 holds: search engines see what humans see.
+4. **An ordinary browser** (no `?agent=true`, no `Signature-Agent` header) →
+   your origin, untouched. Not a byte of the request changes, and your cache
+   policy applies exactly as before.
+5. **Anything but GET or HEAD** → your origin. CloudFront only fails an
+   origin group over on GET, HEAD and OPTIONS, so a webhook or app POST must
+   never be sent to the receptionist in the first place.
+6. **Everything else** — AI agents, unknown clients, a browser asking for the
+   agent view — is *handed to NORG*: the function stamps `x-norg-gate`,
+   `x-norg-gate-version`, `x-norg-ua` and `x-norg-viewer-ip` onto the request,
+   prefixes the path with your site id, and switches the request onto an
+   **origin group**: NORG's receptionist first, your own origin second. The
+   receptionist answers the NORG render for a verified AI agent and **404 for
+   anyone else**, and on a 404 CloudFront fails over to your origin.
+
+Every branch returns the request. The whole body is guarded: a bug in the
+function can only let a request through to your origin, never break the site.
+(A CloudFront Function that throws answers 503, which is why the stack's two
+alarms watch exactly that.)
+
+What is **not** in the gate layout, on purpose: no caching change (humans never
+reach NORG code, so your HTML stays cached however you have it), no MCP
+carve-outs (the function treats MCP descriptors as NORG surfaces itself; the
+old carve-outs broke on origins that reject a forwarded `Host`), no static
+carve-outs (returning a static path untouched costs the function nothing). The
+dynamic carve-outs stay — `/api/*`, `/wp-json/*`, `/wp-admin/*`,
+`/wp-login.php`, `/cart*`, `/checkout*` go straight to your origin on every
+method — because those are the paths that take POSTs.
+
+### The two artifacts
+
+| Artifact | What it is | Where it goes |
+|---|---|---|
+| [`aws/src/edge-gate.js`](src/edge-gate.js) | The built function (`aws/function/edge-gate.core.js`, minified, es2015, ≈2.3 KB against CloudFront's 10 KB limit), with five `__PLACEHOLDERS__` the installer fills: site id, receptionist host, the two origin ids, the version | Inlined into the template below; digested in [`aws/src/DIGESTS.json`](src/DIGESTS.json) as `edge-gate.js` |
+| [`aws/cloudformation/attach-gate.yaml`](cloudformation/attach-gate.yaml) | The stack: the function (`AWS::CloudFront::Function`, `AutoPublish: true`, runtime `cloudfront-js-2.0`) with the code inlined through `Fn::Sub`, and two alarms on `FunctionExecutionErrors` / `FunctionValidationErrors` | `aws cloudformation deploy`, us-east-1 |
+
+There is no S3 artifact and no IAM role: the function's code is in the template
+you deploy, so what you read is what runs. The template's parameters are
+`SiteId`, `DistributionId` (alarms are scoped per distribution), `CustomerOriginId`
+(the origin your default behaviour points at — the function fails over to it by
+Id, and the attach CLI refuses a mismatch), `ReceptionistHost`
+(`edge-content.norg.ai`), `ReceptionistOriginId` (`norg-receptionist`),
+`NorgEnvironment`, `GateVersion` and an optional `AlarmTopicArn`.
+
+**The mirror token is not a stack parameter.** The receptionist authenticates
+your distribution by two origin custom headers on the receptionist origin,
+`X-Norg-Site-Id` and `X-Norg-Mirror-Token`. NORG's API writes both when it edits
+the distribution; by hand, you pass them to the attach CLI. A secret handed to
+CloudFormation would sit in the stack's parameter list for anyone with
+`describe-stacks`; on the origin it is visible only to someone who already has
+`cloudfront:GetDistributionConfig` on your account.
+
+### Install
+
+```bash
+# 1. The function and its alarms (no distribution is touched yet).
+aws cloudformation deploy \
+  --region us-east-1 \
+  --stack-name norg-gate \
+  --template-file aws/cloudformation/attach-gate.yaml \
+  --parameter-overrides SiteId=<your-site-id> DistributionId=EXXXXXXXXXXXX \
+                        CustomerOriginId=<the Id of your default behaviour's origin>
+
+# 2. Dry run: adds the receptionist origin, associates the function, adds the
+#    dynamic carve-outs. Prints every change and exits.
+node aws/install/attach.mjs --layout gate \
+  --distribution-id EXXXXXXXXXXXX --stack norg-gate \
+  --origin-headers "X-Norg-Site-Id=<your-site-id>,X-Norg-Mirror-Token=<your-token>"
+
+# 3. Apply it.
+node aws/install/attach.mjs --layout gate ... --apply
+```
+
+To remove it: `node aws/install/attach.mjs --layout gate --distribution-id EXXXXXXXXXXXX --detach --apply`
+takes off the function association, the receptionist origin, every `x-norg-*`
+header and our carve-outs, and restores nothing else — your cache policy was
+never changed; the origin request policy stays `AllViewerExceptHostHeader`
+(the one change attach makes to it, so the gate's headers and the full query
+string reach the receptionist). The CLI refuses, rather than replaces, a
+viewer-request CloudFront Function or an origin-request Lambda that is not
+ours; our own are replaced, which is how an upgrade or a token rotation lands.
+
+---
+
 ## Install: new distribution
 
 Deploy [`new-distribution.yaml`](cloudformation/new-distribution.yaml) in
@@ -477,7 +583,7 @@ be a visit nobody recorded.
   what this repository publishes:
 
   ```bash
-  sha256sum aws/src/edge-router-lambda.cjs aws/src/heartbeat-lambda.cjs
+  sha256sum aws/src/edge-router-lambda.cjs aws/src/heartbeat-lambda.cjs aws/src/edge-gate.js
   cat aws/src/DIGESTS.json
   ```
 
@@ -518,7 +624,9 @@ npm run build:aws    # rebuild aws/src/ and re-embed the function in the templat
 
 `aws/src/` holds committed build artifacts: the templates and the attach CLI
 deploy exactly those files and NORG pins them by SHA-256, so CI rebuilds them
-and fails on any diff.
+and fails on any diff. `aws/build.mjs` also builds the gate function
+(`aws/function/build.mjs`) and inlines it into `cloudformation/attach-gate.yaml`,
+so an edit to `edge-gate.core.js` without a rebuild fails CI the same way.
 
 Source layout:
 
@@ -534,8 +642,9 @@ CloudFront-specific.
 | `lambda/edge-router-lambda.js` | The router pipeline, same order as `workers/edge-router-worker.js` |
 | `lambda/lib/` | **CloudFront adapters only** — `event.js`, `origin.js`, `config.js`, `secret.js` |
 | `lambda/heartbeat-lambda.js` | Scheduled liveness beat |
-| `cloudformation/` | The two install templates |
-| `install/attach.mjs` | Attach/detach against an existing distribution |
+| `function/edge-gate.core.js` | The gate layout's CloudFront Function (viewer-request, no Lambda) and its build |
+| `cloudformation/` | The three install templates (`new-distribution`, `attach-existing`, `attach-gate`) |
+| `install/attach.mjs` | Attach/detach against an existing distribution, `--layout lambda` (default) or `gate` |
 
 `lambda/lib/constants.mjs` is a deliberate **copy** of the Cloudflare worker's
 constant tables, not an import: that worker's bundle is SHA-256-pinned by NORG's

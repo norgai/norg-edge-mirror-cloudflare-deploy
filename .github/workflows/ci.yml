@@ -28,7 +28,7 @@ jobs:
         run: node --test workers/*.test.mjs
 
       - name: Run AWS CloudFront tests
-        run: node --test aws/tests/*.test.mjs
+        run: node --test aws/tests/*.test.mjs aws/function/*.test.mjs
 
       - name: Rebuild the bundles
         run: |
