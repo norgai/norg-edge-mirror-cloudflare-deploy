@@ -294,9 +294,10 @@ if (behaviourCount + 1 > 75) {
  * becomes "${Parameter}" and CloudFormation fills it at create time. Every one
  * of these parameters has an AllowedPattern excluding quotes and backslashes:
  * the value lands inside a JavaScript string literal and must not escape it.
+ * SiteId is deliberately absent: the function no longer carries the site in
+ * the path (the receptionist reads it from its origin's X-Norg-Site-Id header).
  */
 const GATE_PLACEHOLDER_PARAMETERS = {
-  __SITE_ID__: "SiteId",
   __RECEPTIONIST_HOST__: "ReceptionistHost",
   __RECEPTIONIST_ORIGIN_ID__: "ReceptionistOriginId",
   __CUSTOMER_ORIGIN_ID__: "CustomerOriginId",

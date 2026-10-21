@@ -14,13 +14,15 @@
 //      receptionist would end at its 404 with no second chance.
 //   6. everything else       -> receptionist origin group, which answers the
 //      mirror for a verified AI agent and 404 for anyone else, and CloudFront
-//      then fails over to the customer's origin.
+//      then fails over to the customer's origin. The URI is NOT rewritten:
+//      the failover must deliver the path the visitor asked for, and the
+//      receptionist learns the site from the X-Norg-Site-Id origin header the
+//      installer puts on its origin.
 // Every branch returns the request; a thrown error would make CloudFront
 // answer 503, so the whole body is guarded and falls back to the untouched
 // request: a bug here can only let a request through, never break the site.
 //
 // __PLACEHOLDERS__ are filled by the installer per distribution.
-var SITE_ID = "__SITE_ID__";
 var RECEPTIONIST_HOST = "__RECEPTIONIST_HOST__";
 var RECEPTIONIST_ORIGIN_ID = "__RECEPTIONIST_ORIGIN_ID__";
 var CUSTOMER_ORIGIN_ID = "__CUSTOMER_ORIGIN_ID__";
@@ -75,7 +77,6 @@ function handler(event) {
     req.headers["x-norg-gate-version"] = { value: GATE_VERSION };
     req.headers["x-norg-ua"] = { value: ua };
     req.headers["x-norg-viewer-ip"] = { value: (event.viewer && event.viewer.ip) || "" };
-    req.uri = "/" + SITE_ID + uri;
     cf.createRequestOriginGroup({
       originIds: [
         { originId: RECEPTIONIST_ORIGIN_ID, originOverrides: { hostHeader: RECEPTIONIST_HOST, sni: RECEPTIONIST_HOST } },

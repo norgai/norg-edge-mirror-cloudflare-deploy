@@ -5,6 +5,6 @@
   "files": {
     "edge-router-lambda.cjs": "789bbe25cdcc699fba9d285f8a525331a71e817c9fc3ac9dbac4af9ce1b9f545",
     "heartbeat-lambda.cjs": "932d35402f063aa14d6efac0ae5fe9de63dc02a8106f79a97ddf4801874793b0",
-    "edge-gate.js": "480252d5953a857f3856f36ff4efdc6138feb52566189220c3c98a68eb7d23df"
+    "edge-gate.js": "bf54b2a9eabf0306cfb25483a2f1674c80e3ac8ef285c379e1796af8d9354462"
   }
 }
