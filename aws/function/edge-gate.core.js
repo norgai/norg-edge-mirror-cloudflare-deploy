@@ -14,7 +14,12 @@
 //      receptionist would end at its 404 with no second chance.
 //   6. everything else       -> receptionist origin group, which answers the
 //      mirror for a verified AI agent and 404 for anyone else, and CloudFront
-//      then fails over to the customer's origin. The URI is NOT rewritten:
+//      then fails over to the customer's origin. The failover list is every
+//      status CloudFront allows (403, 404, 500, 502, 503, 504): the
+//      receptionist answers 404 for its own refusals and faults, and the list
+//      covers whatever its platform in front of it might answer instead, so a
+//      NORG-side problem can only ever show the visitor the customer's page.
+//      The URI is NOT rewritten:
 //      the failover must deliver the path the visitor asked for, and the
 //      receptionist learns the site from the X-Norg-Site-Id origin header the
 //      installer puts on its origin.
@@ -82,7 +87,7 @@ function handler(event) {
         { originId: RECEPTIONIST_ORIGIN_ID, originOverrides: { hostHeader: RECEPTIONIST_HOST, sni: RECEPTIONIST_HOST } },
         { originId: CUSTOMER_ORIGIN_ID }
       ],
-      failoverCriteria: { statusCodes: [404] }
+      failoverCriteria: { statusCodes: [403, 404, 500, 502, 503, 504] }
     });
     return req;
   } catch (e) {
