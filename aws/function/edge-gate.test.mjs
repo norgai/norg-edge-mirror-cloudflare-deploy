@@ -64,7 +64,9 @@ test("an AI agent is switched to the receptionist origin group with the viewer's
   const group = calls[0];
   assert.deepEqual(group.originIds.map((o) => o.originId), ["norg-receptionist", "customer"]);
   assert.deepEqual(group.originIds[0].originOverrides, { hostHeader: "edge-content.test", sni: "edge-content.test" });
-  assert.deepEqual(group.failoverCriteria, { statusCodes: [404] });
+  // Every status CloudFront allows: the receptionist answers 404 itself, the
+  // rest cover its platform, so a NORG-side fault always falls through.
+  assert.deepEqual(group.failoverCriteria, { statusCodes: [403, 404, 500, 502, 503, 504] });
   assert.equal(res.uri, "/about/", "the URI is not rewritten: a failover must deliver the path the visitor asked for");
   assert.equal(res.headers["x-norg-gate"].value, "cloudfront");
   assert.equal(res.headers["x-norg-gate-version"].value, "9.9.9-test", "the receptionist learns which build sent the request");

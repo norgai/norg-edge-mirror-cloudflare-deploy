@@ -18,7 +18,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 
 /** The gate's own version line, sent as x-norg-gate-version on every hand-off. */
-export const GATE_VERSION = "0.1.0";
+export const GATE_VERSION = "0.1.1";
 
 /** Where the built artifact lives, relative to the repository. */
 export const GATE_ARTIFACT = "aws/src/edge-gate.js";
