@@ -353,7 +353,7 @@ async function buildPageViewPayload(request, url, requestHost, detection, served
 }
 
 // workers/edge-router-worker.js
-var EDGE_SCRIPT_VERSION = "0.14.2";
+var EDGE_SCRIPT_VERSION = "0.15.0";
 var BINDING_DEFAULTS = {
   NORG_API_URL: "https://content-craft-api.norg.ai",
   NORG_CONTENT_BASE: "https://edge-content.norg.ai",
@@ -365,6 +365,10 @@ var BINDING_DEFAULTS = {
 function binding(env, name) {
   const value = env[name];
   return value === void 0 ? BINDING_DEFAULTS[name] : value;
+}
+function passthrough(request, env) {
+  const origin = env && env.ORIGIN;
+  return origin && typeof origin.fetch === "function" ? origin.fetch(request) : fetch(request);
 }
 var RESERVED_NORG_PREFIX = "/.norg/";
 var RESERVED_ASSET_CACHE_CONTROL = "public, max-age=60, s-maxage=30, stale-while-revalidate=300";
@@ -677,7 +681,7 @@ async function countDropped(sending) {
   if (!response || !response.ok) eventsDropped += 1;
 }
 async function handleCapture(request, env, ctx) {
-  const response = await fetch(request);
+  const response = await passthrough(request, env);
   ctx.waitUntil(recordCapture(request, env, ctx, response.status));
   return response;
 }
@@ -815,7 +819,7 @@ async function serveOriginFirstArtifact(request, env, url, { alternateFormatHead
   probeHeaders.set(LOOP_GUARD_HEADER, "1");
   let origin = null;
   try {
-    origin = await fetch(new Request(request, { headers: probeHeaders }));
+    origin = await passthrough(new Request(request, { headers: probeHeaders }), env);
   } catch (e) {
     console.error("norg edge artifact origin probe failed", e);
   }
@@ -828,14 +832,14 @@ async function serveOriginFirstArtifact(request, env, url, { alternateFormatHead
     const served = mirrorResponse(response, env);
     return alternateFormatHeaders ? withAlternateFormatHeaders(served, url, url.pathname) : served;
   }
-  return origin || fetch(request);
+  return origin || passthrough(request, env);
 }
 function isReservedNorgPath(pathname) {
   return pathname.startsWith(RESERVED_NORG_PREFIX);
 }
 async function serveReservedNorgAsset(request, env, url) {
   const { response } = await fetchFromNorg(env, pathToKeySuffix(url.pathname));
-  if (!response) return fetch(request);
+  if (!response) return passthrough(request, env);
   const headers = new Headers();
   headers.set(
     "Content-Type",
@@ -928,7 +932,7 @@ function siblingPageOf(pathname) {
 }
 async function serveOpenAiFeed(request, env, url) {
   const { response } = await fetchFromNorg(env, pathToKeySuffix(url.pathname));
-  if (!response) return fetch(request);
+  if (!response) return passthrough(request, env);
   const headers = new Headers();
   headers.set(
     "Content-Type",
@@ -994,6 +998,9 @@ function healthResponse(env) {
       // worker passes everything through and is otherwise indistinguishable
       // from not being installed at all.
       entitled: feedCache.entitled,
+      // Whether an ORIGIN Service Binding is attached: non-agent traffic is
+      // handed to that Worker instead of the DNS origin (see passthrough).
+      origin_binding: Boolean(env && env.ORIGIN),
       ts: Date.now()
     }),
     { status: 200, headers: { "Content-Type": "application/json" } }
@@ -1058,7 +1065,7 @@ function countVisibleWords(html) {
   return text ? text.split(" ").length : 0;
 }
 async function serveStrippedOrigin(request, env, ctx, classification) {
-  const originResponse = await fetch(request);
+  const originResponse = await passthrough(request, env);
   if (!canStrip(env, originResponse)) {
     ctx.waitUntil(logEdgeEvent(env, request, classification, "origin", null, originResponse.status));
     return originResponse;
@@ -1164,9 +1171,9 @@ async function serveAgenticPath(request, env, ctx, url, prefix) {
     purpose: null
   };
   if (!response) {
-    const passthrough = await fetch(request);
-    ctx.waitUntil(logEdgeEvent(env, request, classification, "agentic_path_miss", null, passthrough.status));
-    return passthrough;
+    const originResponse = await passthrough(request, env);
+    ctx.waitUntil(logEdgeEvent(env, request, classification, "agentic_path_miss", null, originResponse.status));
+    return originResponse;
   }
   ctx.waitUntil(logEdgeEvent(env, request, classification, "agentic_path", null, response.status));
   return withAlternateFormatHeaders(mirrorResponse(response, env), url, url.pathname);
@@ -1191,22 +1198,22 @@ async function serveMirrorOrOrigin(request, env, ctx, url, classification, label
     ctx.waitUntil(logEdgeEvent(env, request, classification, label, null, response.status));
     return withAlternateFormatHeaders(mirrorResponse(response, env), url, url.pathname);
   }
-  const passthrough = await fetch(request);
-  ctx.waitUntil(logEdgeEvent(env, request, classification, `${label}_miss`, null, passthrough.status));
-  return passthrough;
+  const originResponse = await passthrough(request, env);
+  ctx.waitUntil(logEdgeEvent(env, request, classification, `${label}_miss`, null, originResponse.status));
+  return originResponse;
 }
 async function handleRequest(request, env, ctx) {
   if (isHealthProbe(request, env)) return healthResponse(env);
-  if (isPassthrough(request, env)) return fetch(request);
+  if (isPassthrough(request, env)) return passthrough(request, env);
   if (binding(env, "CAPTURE_ONLY") === "true") return handleCapture(request, env, ctx);
   const url = new URL(request.url);
   const userAgent = request.headers.get("user-agent") || "";
   const feed = await getBotFeed(env, ctx);
-  if (!feed.entitled) return fetch(request);
+  if (!feed.entitled) return passthrough(request, env);
   if (feed.captureOnly) return handleCapture(request, env, ctx);
   if (isMcpPath(url.pathname)) {
     const mcp = await handleMcp(request, env, url);
-    return mcp || fetch(request);
+    return mcp || passthrough(request, env);
   }
   if (isDiscoveryPath(url.pathname)) {
     return serveOriginFirstArtifact(request, env, url);
@@ -1222,28 +1229,28 @@ async function handleRequest(request, env, ctx) {
     return serveAgenticPath(request, env, ctx, url, feed.agenticPathPrefix);
   }
   if (isSiblingArtifactPath(url.pathname)) {
-    if (isSkippedPath(feed, siblingPageOf(url.pathname))) return fetch(request);
+    if (isSkippedPath(feed, siblingPageOf(url.pathname))) return passthrough(request, env);
     return serveOriginFirstArtifact(request, env, url, {
       alternateFormatHeaders: true
     });
   }
-  if (isStaticAssetPath(url.pathname)) return fetch(request);
+  if (isStaticAssetPath(url.pathname)) return passthrough(request, env);
   if (isSkippedPath(feed, url.pathname)) {
-    return fetch(request);
+    return passthrough(request, env);
   }
-  if (isTraditionalSearchBot(userAgent)) return fetch(request);
+  if (isTraditionalSearchBot(userAgent)) return passthrough(request, env);
   if (hasAgentOverride(url)) {
     ctx.waitUntil(maybeHeartbeat(env, "traffic"));
     return serveAgentOverride(request, env, ctx, url);
   }
   const classification = classifyAgent(userAgent, feed.patterns);
-  if (!classification.is_ai_bot) return fetch(request);
+  if (!classification.is_ai_bot) return passthrough(request, env);
   if (mayDivertUnverified(classification)) {
     ctx.waitUntil(maybeHeartbeat(env, "traffic"));
     return serveMirrorOrOrigin(request, env, ctx, url, classification, "mirror_unverified");
   }
-  if (!mayDivert(classification)) return fetch(request);
-  if (!verifiedSource(request, feed.cidrRanges, classification)) return fetch(request);
+  if (!mayDivert(classification)) return passthrough(request, env);
+  if (!verifiedSource(request, feed.cidrRanges, classification)) return passthrough(request, env);
   ctx.waitUntil(maybeHeartbeat(env, "traffic"));
   return serveAgent(request, env, ctx, url, classification, feed);
 }
@@ -1254,6 +1261,14 @@ function stripBodyForHead(request, response) {
     statusText: response.statusText,
     headers: response.headers
   });
+}
+async function degradedPassthrough(request, env) {
+  try {
+    return await passthrough(request, env);
+  } catch (err) {
+    console.error("norg edge ORIGIN passthrough failed", err);
+    return fetch(request);
+  }
 }
 var edge_router_worker_default = {
   /**
@@ -1267,7 +1282,7 @@ var edge_router_worker_default = {
       return stripBodyForHead(request, response);
     } catch (e) {
       console.error("norg edge worker error", e);
-      return stripBodyForHead(request, await fetch(request));
+      return stripBodyForHead(request, await degradedPassthrough(request, env));
     }
   },
   /** Scheduled heartbeat, so a zero-traffic install still reports liveness. */

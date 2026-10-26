@@ -37,6 +37,10 @@
     "crons": ["*/30 * * * *"]
   }
 
+  // Optional. If another Worker already serves this hostname, bind it as ORIGIN and the
+  // router hands every non-agent request to it (no second public hop):
+  // "services": [ { "binding": "ORIGIN", "service": "your-existing-worker" } ]
+
   // The route is a MANUAL step after deployment — the button does not attach
   // the script to any traffic. Add {domain}/* under
   // Settings -> Domains & Routes, or uncomment and set both fields here:

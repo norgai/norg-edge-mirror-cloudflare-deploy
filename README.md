@@ -60,8 +60,12 @@ Two rules are built into the worker and have no off switch:
 - [ ] **You have a `SITE_ID` and a `NORG_SITE_KEY`.** NORG issues both when you
       register the site for edge routing. The key is shown to you **once** —
       NORG stores only a hash of it, so if you lose it, ask NORG to rotate it.
-- [ ] **No other Worker is already routed on `{your-domain}/*`.** Nothing here
-      detects a conflict; see [Limitations](#limitations).
+- [ ] **Know whether another Worker already serves this hostname.** Nothing
+      here detects a conflict, but it is supported: bind your existing Worker
+      as a Service Binding named `ORIGIN` and the router hands every non-agent
+      request to it — see
+      [Already have a Worker on this hostname?](#already-have-a-worker-on-this-hostname)
+      and [Limitations](#limitations).
 
 ---
 
@@ -179,7 +183,7 @@ DuckDuckBot, Baiduspider, and YandexBot are always passed straight through.
 
 ```bash
 curl -s -H "x-norg-edge-check: <your-site-key>" https://your-domain.com/ | head -c 200
-# {"site_id":"…","version":"0.10.0","disabled":false,"ts":…}
+# {"site_id":"…","version":"0.15.0","disabled":false,…,"origin_binding":false,"ts":…}
 ```
 
 A JSON response confirms the script is deployed, routed, and holding the
@@ -315,6 +319,37 @@ set `EDGE_DISABLED` to `true` in its variables.
 
 ---
 
+## Already have a Worker on this hostname?
+
+Two set-ups put another Worker in front of the same hostname: a Worker on a
+**Workers Custom Domain**, or a Worker on a **route** that this router's route
+now takes over. In both cases a plain `fetch(request)` from this router goes to
+the DNS origin and your Worker is never invoked — every visitor the router
+passes through (which is nearly all of them) would silently lose whatever that
+Worker does.
+
+Bind that Worker as a **Service Binding named `ORIGIN`** and the router hands
+every non-agent request to it directly — no second public hop, your Worker runs
+exactly as before, and AI agents still get the NORG treatment. In
+`wrangler.jsonc`:
+
+```jsonc
+"services": [
+  { "binding": "ORIGIN", "service": "your-existing-worker" }
+]
+```
+
+Or in the dashboard: **Settings → Bindings → Add → Service binding**, variable
+name `ORIGIN`, pick your existing Worker. Nothing else changes; without the
+binding the router keeps fetching the origin as it always has.
+
+The health probe tells you which mode you are in: the JSON it returns carries
+`"origin_binding": true` when the binding is attached. Step-by-step guide,
+including moving a route from your Worker to this one:
+<https://app.norg.ai/help/cloudflare-existing-worker-install>.
+
+---
+
 ## Limitations
 
 Installing this way trades NORG's ability to maintain the install for you
@@ -333,7 +368,10 @@ never having to hand over an API token. That trade is real:
   keeps running and the route stays attached until you remove it.
 - **There's no route-conflict detection.** If your zone already has a Worker
   on `{your-domain}/*`, Cloudflare's route precedence silently decides which
-  one runs, and the other is never invoked.
+  one runs, and the other is never invoked. The fix is the `ORIGIN` Service
+  Binding (see [Already have a Worker on this hostname?](#already-have-a-worker-on-this-hostname)),
+  but **the Deploy button does not configure it** — you add the binding by
+  hand after deploying. NORG's API-token install configures it for you.
 - **Config drift is invisible from NORG's side.** Editing `NORG_CONTENT_BASE`
   or clearing `NORG_SITE_KEY` in your dashboard produces an install that looks
   deployed but serves nothing but your origin.
