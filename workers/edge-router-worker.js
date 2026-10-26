@@ -77,7 +77,7 @@ import { mcpForwardHeaders } from "./lib/mcp-forward.mjs";
 import { detectCitationReferral } from "./lib/referral.mjs";
 import { buildPageViewPayload } from "./lib/page-view.mjs";
 
-export const EDGE_SCRIPT_VERSION = "0.14.2";
+export const EDGE_SCRIPT_VERSION = "0.15.0";
 
 // Baked binding defaults (EDGEPAR 04). Five bindings never vary across manual
 // and deploy-button installs, so they default here and a hand install only
@@ -107,6 +107,22 @@ const BINDING_DEFAULTS = {
 function binding(env, name) {
   const value = env[name];
   return value === undefined ? BINDING_DEFAULTS[name] : value;
+}
+
+/**
+ * Hand a request to the customer's origin. When a Service Binding named ORIGIN is
+ * bound (another Worker already serves this hostname: a Workers Custom Domain Worker,
+ * or a route Worker whose route NORG now owns) the request goes to that Worker
+ * directly. A plain fetch(request) from a route Worker reaches the DNS origin and
+ * bypasses it. Without the binding this is the ordinary same-zone fetch.
+ *
+ * @param {Request} request Incoming request, forwarded as-is.
+ * @param {Object} env Worker bindings (optional ORIGIN service binding).
+ * @returns {Promise<Response>} The origin's own response.
+ */
+function passthrough(request, env) {
+  const origin = env && env.ORIGIN;
+  return origin && typeof origin.fetch === "function" ? origin.fetch(request) : fetch(request);
 }
 
 // Reserved NORG asset prefix on the customer domain. The whole prefix is
@@ -728,7 +744,7 @@ async function countDropped(sending) {
  * @returns {Promise<Response>} The origin's own response.
  */
 async function handleCapture(request, env, ctx) {
-  const response = await fetch(request);
+  const response = await passthrough(request, env);
   ctx.waitUntil(recordCapture(request, env, ctx, response.status));
   return response;
 }
@@ -1061,7 +1077,7 @@ async function serveOriginFirstArtifact(
   probeHeaders.set(LOOP_GUARD_HEADER, "1");
   let origin = null;
   try {
-    origin = await fetch(new Request(request, { headers: probeHeaders }));
+    origin = await passthrough(new Request(request, { headers: probeHeaders }), env);
   } catch (e) {
     console.error("norg edge artifact origin probe failed", e);
   }
@@ -1077,7 +1093,7 @@ async function serveOriginFirstArtifact(
       ? withAlternateFormatHeaders(served, url, url.pathname)
       : served;
   }
-  return origin || fetch(request);
+  return origin || passthrough(request, env);
 }
 
 /**
@@ -1112,7 +1128,7 @@ function isReservedNorgPath(pathname) {
  */
 async function serveReservedNorgAsset(request, env, url) {
   const { response } = await fetchFromNorg(env, pathToKeySuffix(url.pathname));
-  if (!response) return fetch(request);
+  if (!response) return passthrough(request, env);
   const headers = new Headers();
   headers.set(
     "Content-Type",
@@ -1257,7 +1273,7 @@ function siblingPageOf(pathname) {
  */
 async function serveOpenAiFeed(request, env, url) {
   const { response } = await fetchFromNorg(env, pathToKeySuffix(url.pathname));
-  if (!response) return fetch(request);
+  if (!response) return passthrough(request, env);
   const headers = new Headers();
   headers.set(
     "Content-Type",
@@ -1417,6 +1433,9 @@ function healthResponse(env) {
       // worker passes everything through and is otherwise indistinguishable
       // from not being installed at all.
       entitled: feedCache.entitled,
+      // Whether an ORIGIN Service Binding is attached: non-agent traffic is
+      // handed to that Worker instead of the DNS origin (see passthrough).
+      origin_binding: Boolean(env && env.ORIGIN),
       ts: Date.now(),
     }),
     { status: 200, headers: { "Content-Type": "application/json" } },
@@ -1646,7 +1665,7 @@ function countVisibleWords(html) {
  * @returns {Promise<Response>} Response for the agent.
  */
 async function serveStrippedOrigin(request, env, ctx, classification) {
-  const originResponse = await fetch(request);
+  const originResponse = await passthrough(request, env);
   if (!canStrip(env, originResponse)) {
     ctx.waitUntil(logEdgeEvent(env, request, classification, "origin", null, originResponse.status));
     return originResponse;
@@ -1862,9 +1881,9 @@ async function serveAgenticPath(request, env, ctx, url, prefix) {
   };
 
   if (!response) {
-    const passthrough = await fetch(request);
-    ctx.waitUntil(logEdgeEvent(env, request, classification, "agentic_path_miss", null, passthrough.status));
-    return passthrough;
+    const originResponse = await passthrough(request, env);
+    ctx.waitUntil(logEdgeEvent(env, request, classification, "agentic_path_miss", null, originResponse.status));
+    return originResponse;
   }
   ctx.waitUntil(logEdgeEvent(env, request, classification, "agentic_path", null, response.status));
   return withAlternateFormatHeaders(mirrorResponse(response, env), url, url.pathname);
@@ -1951,9 +1970,9 @@ async function serveMirrorOrOrigin(request, env, ctx, url, classification, label
     ctx.waitUntil(logEdgeEvent(env, request, classification, label, null, response.status));
     return withAlternateFormatHeaders(mirrorResponse(response, env), url, url.pathname);
   }
-  const passthrough = await fetch(request);
-  ctx.waitUntil(logEdgeEvent(env, request, classification, `${label}_miss`, null, passthrough.status));
-  return passthrough;
+  const originResponse = await passthrough(request, env);
+  ctx.waitUntil(logEdgeEvent(env, request, classification, `${label}_miss`, null, originResponse.status));
+  return originResponse;
 }
 
 /**
@@ -1965,7 +1984,7 @@ async function serveMirrorOrOrigin(request, env, ctx, url, classification, label
  */
 async function handleRequest(request, env, ctx) {
   if (isHealthProbe(request, env)) return healthResponse(env);
-  if (isPassthrough(request, env)) return fetch(request);
+  if (isPassthrough(request, env)) return passthrough(request, env);
 
   // Record-only install: decided from the binding alone, before any NORG call,
   // so the visitor's response never waits on NORG.
@@ -1981,7 +2000,7 @@ async function handleRequest(request, env, ctx) {
   // mirror, no strip, no render request, no event. The visitor gets the
   // customer's ordinary page and cannot tell the worker is installed.
   const feed = await getBotFeed(env, ctx);
-  if (!feed.entitled) return fetch(request);
+  if (!feed.entitled) return passthrough(request, env);
 
   // NORG switched this site to record-only without the binding being set
   // (e.g. a Deploy-button install): from here on it behaves exactly as above.
@@ -1991,7 +2010,7 @@ async function handleRequest(request, env, ctx) {
   // and before any classification.
   if (isMcpPath(url.pathname)) {
     const mcp = await handleMcp(request, env, url);
-    return mcp || fetch(request);
+    return mcp || passthrough(request, env);
   }
 
   // Discovery artifacts (llms.txt, llms-full.txt, tree.json, graph.jsonld,
@@ -2040,7 +2059,7 @@ async function handleRequest(request, env, ctx) {
   // owning page is what gets tested — the skip check below never would, since
   // "/about/index.md" is not the stored route path.
   if (isSiblingArtifactPath(url.pathname)) {
-    if (isSkippedPath(feed, siblingPageOf(url.pathname))) return fetch(request);
+    if (isSkippedPath(feed, siblingPageOf(url.pathname))) return passthrough(request, env);
     return serveOriginFirstArtifact(request, env, url, {
       alternateFormatHeaders: true,
     });
@@ -2052,7 +2071,7 @@ async function handleRequest(request, env, ctx) {
   // Deliberately placed AFTER every NORG-owned surface above: the agentic
   // subtree and the reserved/discovery/MCP/feed paths must win, because some of
   // them legitimately end in an extension this set matches.
-  if (isStaticAssetPath(url.pathname)) return fetch(request);
+  if (isStaticAssetPath(url.pathname)) return passthrough(request, env);
 
   // Per-route mirror skip (NOR-2849172819): an operator marked this exact path
   // to pass through untouched — the customer's ORIGINAL page is served to every
@@ -2061,7 +2080,7 @@ async function handleRequest(request, env, ctx) {
   // path gets the origin. The path is normalised to match the stored
   // EdgeRoute.path form (leading '/', no trailing slash except root).
   if (isSkippedPath(feed, url.pathname)) {
-    return fetch(request);
+    return passthrough(request, env);
   }
 
   // Search engines see exactly what humans see. Checked before classification
@@ -2070,7 +2089,7 @@ async function handleRequest(request, env, ctx) {
   // URL that gets linked or discovered would otherwise be crawlable, and
   // answering a crawler with the NORG render is the cloaking that rule 2 at the
   // top of this file forbids. The floor is the one thing nothing overrides.
-  if (isTraditionalSearchBot(userAgent)) return fetch(request);
+  if (isTraditionalSearchBot(userAgent)) return passthrough(request, env);
 
   // ?agent=true forces the R2 Agentic version regardless of UA/IP for every
   // caller that cleared the floor above. An OPEN, deliberately ungated bypass
@@ -2081,7 +2100,7 @@ async function handleRequest(request, env, ctx) {
   }
 
   const classification = classifyAgent(userAgent, feed.patterns);
-  if (!classification.is_ai_bot) return fetch(request);
+  if (!classification.is_ai_bot) return passthrough(request, env);
 
   // Operators with no verifiable source (no published ranges, not
   // Cloudflare-verified) can be opted in per pattern. Mirror-or-origin only:
@@ -2092,11 +2111,11 @@ async function handleRequest(request, env, ctx) {
   }
 
   // NORG decides which crawlers may be served differently, not this file.
-  if (!mayDivert(classification)) return fetch(request);
+  if (!mayDivert(classification)) return passthrough(request, env);
 
   // A spoofable UA is not enough to divert: the source IP must be verified,
   // or a spoofed UA from any IP would harvest the NORG mirror.
-  if (!verifiedSource(request, feed.cidrRanges, classification)) return fetch(request);
+  if (!verifiedSource(request, feed.cidrRanges, classification)) return passthrough(request, env);
 
   ctx.waitUntil(maybeHeartbeat(env, "traffic"));
   return serveAgent(request, env, ctx, url, classification, feed);
@@ -2123,6 +2142,24 @@ function stripBodyForHead(request, response) {
   });
 }
 
+/**
+ * The catch path's passthrough: try the ORIGIN binding, and if the binding
+ * itself throws fall back to the plain same-zone fetch, so a broken binding
+ * degrades to the DNS origin rather than a 1101 on the customer's site.
+ *
+ * @param {Request} request Incoming request.
+ * @param {Object} env Worker bindings.
+ * @returns {Promise<Response>} The origin's own response.
+ */
+async function degradedPassthrough(request, env) {
+  try {
+    return await passthrough(request, env);
+  } catch (err) {
+    console.error("norg edge ORIGIN passthrough failed", err);
+    return fetch(request);
+  }
+}
+
 export default {
   /**
    * Entry point. The catch is the whole safety story: any bug in this worker
@@ -2135,7 +2172,7 @@ export default {
       return stripBodyForHead(request, response);
     } catch (e) {
       console.error("norg edge worker error", e);
-      return stripBodyForHead(request, await fetch(request));
+      return stripBodyForHead(request, await degradedPassthrough(request, env));
     }
   },
 
