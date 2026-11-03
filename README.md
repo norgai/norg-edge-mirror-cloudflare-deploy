@@ -183,7 +183,7 @@ DuckDuckBot, Baiduspider, and YandexBot are always passed straight through.
 
 ```bash
 curl -s -H "x-norg-edge-check: <your-site-key>" https://your-domain.com/ | head -c 200
-# {"site_id":"…","version":"0.15.0","disabled":false,…,"origin_binding":false,"ts":…}
+# {"site_id":"…","version":"0.15.1","disabled":false,…,"origin_binding":false,"ts":…}
 ```
 
 A JSON response confirms the script is deployed, routed, and holding the
