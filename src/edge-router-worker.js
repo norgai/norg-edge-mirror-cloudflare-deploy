@@ -246,8 +246,24 @@ function _referrerHost(request) {
     return null;
   }
 }
-function _registrableDomain(host) {
-  return host.split(".").slice(-2).join(".");
+var MULTIPART_PUBLIC_SUFFIXES = [
+  "com.au",
+  "net.au",
+  "org.au",
+  "id.au",
+  "edu.au",
+  "gov.au",
+  "asn.au",
+  "co.uk",
+  "org.uk",
+  "co.nz",
+  "org.nz",
+  "net.nz"
+];
+function registrableDomain(host) {
+  const labels = host.split(".");
+  const take = MULTIPART_PUBLIC_SUFFIXES.includes(labels.slice(-2).join(".")) ? 3 : 2;
+  return labels.slice(-take).join(".");
 }
 function _lookupSource(host) {
   if (Object.prototype.hasOwnProperty.call(SOURCE_REGISTRY, host)) {
@@ -295,7 +311,7 @@ function _classifyNoHost(referrerHost, utmEntry) {
 function detectCitationReferral(request, url, requestHost) {
   const referrerHost = _referrerHost(request);
   const utmEntry = _utmEntry(url);
-  if (referrerHost && _registrableDomain(referrerHost) === _registrableDomain(requestHost.toLowerCase())) {
+  if (referrerHost && registrableDomain(referrerHost) === registrableDomain(requestHost.toLowerCase())) {
     return null;
   }
   const hostEntry = referrerHost ? _lookupSource(referrerHost) : null;
