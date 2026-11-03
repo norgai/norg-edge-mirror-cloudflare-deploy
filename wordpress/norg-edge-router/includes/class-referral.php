@@ -82,13 +82,22 @@ final class Referral {
 	}
 
 	/**
-	 * Last-two-labels registrable domain (no public suffix list, as in the worker).
+	 * Two-label public suffixes, the same list as workers/lib/referral.mjs.
+	 * Without them selleys.com.au and fosroc.com.au both reduce to "com.au".
+	 */
+	const MULTIPART_PUBLIC_SUFFIXES = array( 'com.au', 'net.au', 'org.au', 'id.au', 'edu.au', 'gov.au', 'asn.au', 'co.uk', 'org.uk', 'co.nz', 'org.nz', 'net.nz' );
+
+	/**
+	 * Registrable domain: the last two labels, or three under a known two-label
+	 * public suffix (www.example.com.au -> example.com.au), as in the worker.
 	 *
 	 * @param string $host Host.
-	 * @return string Last two labels.
+	 * @return string Registrable domain.
 	 */
 	private static function registrable( $host ) {
-		return implode( '.', array_slice( explode( '.', $host ), -2 ) );
+		$labels = explode( '.', $host );
+		$take   = in_array( implode( '.', array_slice( $labels, -2 ) ), self::MULTIPART_PUBLIC_SUFFIXES, true ) ? -3 : -2;
+		return implode( '.', array_slice( $labels, $take ) );
 	}
 
 	/**
