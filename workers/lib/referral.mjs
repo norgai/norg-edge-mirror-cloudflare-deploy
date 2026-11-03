@@ -67,15 +67,36 @@ function _referrerHost(request) {
   }
 }
 
+// Two-label public suffixes (AU/UK/NZ, where the customer base is). Without
+// this, selleys.com.au and fosroc.com.au both collapse to "com.au" and look like
+// the same site. Curated, not a full PSL (none in-worker); NORG's backend and
+// browser beacon use the same list.
+export const MULTIPART_PUBLIC_SUFFIXES = [
+  "com.au",
+  "net.au",
+  "org.au",
+  "id.au",
+  "edu.au",
+  "gov.au",
+  "asn.au",
+  "co.uk",
+  "org.uk",
+  "co.nz",
+  "org.nz",
+  "net.nz",
+];
+
 /**
- * Registrable domain via a last-two-labels heuristic (no PSL in-worker).
- * NOTE: multi-label public suffixes (e.g. example.co.uk) collapse to co.uk;
- * accepted as a rare, low-impact false self-referral.
+ * Registrable domain: the last two labels, or three when they form a known
+ * two-label public suffix (www.example.com.au -> example.com.au). An unlisted
+ * multi-label suffix still collapses to its last two labels.
  * @param {string} host A lowercased hostname.
- * @returns {string} The last two labels of the host.
+ * @returns {string} The registrable domain.
  */
-function _registrableDomain(host) {
-  return host.split(".").slice(-2).join(".");
+export function registrableDomain(host) {
+  const labels = host.split(".");
+  const take = MULTIPART_PUBLIC_SUFFIXES.includes(labels.slice(-2).join(".")) ? 3 : 2;
+  return labels.slice(-take).join(".");
 }
 
 /**
@@ -180,7 +201,7 @@ export function detectCitationReferral(request, url, requestHost) {
   const utmEntry = _utmEntry(url);
   if (
     referrerHost &&
-    _registrableDomain(referrerHost) === _registrableDomain(requestHost.toLowerCase())
+    registrableDomain(referrerHost) === registrableDomain(requestHost.toLowerCase())
   ) {
     return null; // self-referral
   }
