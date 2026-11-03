@@ -401,6 +401,8 @@ npm run dev                       # wrangler dev
 or any committed file — it belongs in `.dev.vars` locally, and as an
 **encrypted** variable once deployed.
 
+Version history: see [CHANGELOG.md](CHANGELOG.md).
+
 ---
 
 ## Keeping this repo in sync with NORG's backend
