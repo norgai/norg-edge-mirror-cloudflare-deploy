@@ -1983,7 +1983,7 @@
     },
     {
       "target": "/x^y",
-      "pathname": "/x%5Ey"
+      "pathname": "/x^y"
     },
     {
       "target": "/a|b",
