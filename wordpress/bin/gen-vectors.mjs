@@ -151,6 +151,9 @@ const REFERRALS = [
   ["https://example.com/page", null], ["https://www.example.com/", "chatgpt.com"], ["https://unknown.test/", "copilot"],
   [null, "Perplexity"], [null, "newsletter"], [null, null], ["not a url", null], ["https://www.bing.com/", null],
   ["https://copilot.microsoft.com/", "copilot.com"], ["https://sub.chatgpt.com/", null],
+  // Two-label public suffixes: the page host is the third element.
+  ["https://selleys.com.au/", "chatgpt.com", "www.selleys.com.au"], ["https://fosroc.com.au/", "chatgpt.com", "www.selleys.com.au"],
+  ["https://chatgpt.com/", null, "www.selleys.com.au"], ["https://www.bbc.co.uk/", "openai", "news.example.co.uk"],
 ];
 
 const URL_TARGETS = [
@@ -199,10 +202,10 @@ const vectors = {
   strip: STRIP_DOCS.map((html) => ({ html, stripped: stripHtml(html), words: countVisibleWords(stripHtml(html)) })),
   words: WORDS.map((text) => ({ text, words: worker.__test_countVisibleWords(text), core_words: countVisibleWords(text) })),
   canonical: CANONICAL.map((path) => ({ path, url: deriveCanonicalUrl(new URL(`https://shop.test${path}`), path) })),
-  referrals: REFERRALS.map(([referer, utm]) => {
-    const url = new URL(`https://shop.example.com/p${utm === null ? "" : `?utm_source=${encodeURIComponent(utm)}`}`);
+  referrals: REFERRALS.map(([referer, utm, host = "shop.example.com"]) => {
+    const url = new URL(`https://${host}/p${utm === null ? "" : `?utm_source=${encodeURIComponent(utm)}`}`);
     const request = { headers: new Headers(referer ? { referer } : {}) };
-    return { referer, utm, detection: detectCitationReferral(request, url, "shop.example.com") };
+    return { referer, utm, host, detection: detectCitationReferral(request, url, host) };
   }),
   device_types: ["", "Mozilla/5.0 (iPad)", "Mozilla/5.0 (Linux; Android 13) Mobile", "Mozilla/5.0 (Linux; Android 13)", "Mozilla/5.0 (iPhone)", "Mozilla/5.0 (Windows NT 10.0)", "Tablet PC"].map((ua) => ({ ua, device: detectDeviceType(ua) })),
   pathnames: URL_TARGETS.map((target) => ({

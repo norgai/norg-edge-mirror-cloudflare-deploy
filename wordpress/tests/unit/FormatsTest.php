@@ -30,7 +30,7 @@ final class FormatsTest extends TestCase {
 	 */
 	public function test_referrals_match_worker() {
 		foreach ( norg_edge_vectors()['referrals'] as $c ) {
-			$this->assertSame( $c['detection'], Referral::detect( $c['referer'], $c['utm'], 'shop.example.com' ), json_encode( $c ) );
+			$this->assertSame( $c['detection'], Referral::detect( $c['referer'], $c['utm'], $c['host'] ), json_encode( $c ) );
 		}
 	}
 

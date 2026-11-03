@@ -1662,6 +1662,7 @@
     {
       "referer": "https://chatgpt.com/",
       "utm": null,
+      "host": "shop.example.com",
       "detection": {
         "citation_source": "chatgpt",
         "citation_category": "ai_assistant",
@@ -1672,6 +1673,7 @@
     {
       "referer": "https://chat.openai.com/c/1",
       "utm": "chatgpt.com",
+      "host": "shop.example.com",
       "detection": {
         "citation_source": "chatgpt",
         "citation_category": "ai_assistant",
@@ -1682,6 +1684,7 @@
     {
       "referer": "https://www.perplexity.ai/search",
       "utm": null,
+      "host": "shop.example.com",
       "detection": {
         "citation_source": "perplexity",
         "citation_category": "ai_search",
@@ -1692,6 +1695,7 @@
     {
       "referer": "https://claude.ai/chat/x",
       "utm": "claude",
+      "host": "shop.example.com",
       "detection": {
         "citation_source": "claude",
         "citation_category": "ai_assistant",
@@ -1702,6 +1706,7 @@
     {
       "referer": "https://gemini.google.com/app",
       "utm": null,
+      "host": "shop.example.com",
       "detection": {
         "citation_source": "gemini",
         "citation_category": "ai_assistant",
@@ -1712,6 +1717,7 @@
     {
       "referer": "https://www.google.com/",
       "utm": null,
+      "host": "shop.example.com",
       "detection": {
         "citation_source": "google",
         "citation_category": "search",
@@ -1722,6 +1728,7 @@
     {
       "referer": "https://google.com/search?q=x",
       "utm": "openai",
+      "host": "shop.example.com",
       "detection": {
         "citation_source": "google",
         "citation_category": "ai_search",
@@ -1732,11 +1739,13 @@
     {
       "referer": "https://mail.google.com/",
       "utm": null,
+      "host": "shop.example.com",
       "detection": null
     },
     {
       "referer": "https://docs.google.com/",
       "utm": "perplexity",
+      "host": "shop.example.com",
       "detection": {
         "citation_source": "other_ai",
         "citation_category": "ai_assistant",
@@ -1747,16 +1756,19 @@
     {
       "referer": "https://example.com/page",
       "utm": null,
+      "host": "shop.example.com",
       "detection": null
     },
     {
       "referer": "https://www.example.com/",
       "utm": "chatgpt.com",
+      "host": "shop.example.com",
       "detection": null
     },
     {
       "referer": "https://unknown.test/",
       "utm": "copilot",
+      "host": "shop.example.com",
       "detection": {
         "citation_source": "other_ai",
         "citation_category": "ai_assistant",
@@ -1767,6 +1779,7 @@
     {
       "referer": null,
       "utm": "Perplexity",
+      "host": "shop.example.com",
       "detection": {
         "citation_source": "perplexity",
         "citation_category": "ai_search",
@@ -1777,21 +1790,25 @@
     {
       "referer": null,
       "utm": "newsletter",
+      "host": "shop.example.com",
       "detection": null
     },
     {
       "referer": null,
       "utm": null,
+      "host": "shop.example.com",
       "detection": null
     },
     {
       "referer": "not a url",
       "utm": null,
+      "host": "shop.example.com",
       "detection": null
     },
     {
       "referer": "https://www.bing.com/",
       "utm": null,
+      "host": "shop.example.com",
       "detection": {
         "citation_source": "bing",
         "citation_category": "search",
@@ -1802,6 +1819,7 @@
     {
       "referer": "https://copilot.microsoft.com/",
       "utm": "copilot.com",
+      "host": "shop.example.com",
       "detection": {
         "citation_source": "copilot",
         "citation_category": "ai_assistant",
@@ -1812,11 +1830,51 @@
     {
       "referer": "https://sub.chatgpt.com/",
       "utm": null,
+      "host": "shop.example.com",
       "detection": {
         "citation_source": "chatgpt",
         "citation_category": "ai_assistant",
         "citation_source_host": "sub.chatgpt.com",
         "citation_detection": "referer"
+      }
+    },
+    {
+      "referer": "https://selleys.com.au/",
+      "utm": "chatgpt.com",
+      "host": "www.selleys.com.au",
+      "detection": null
+    },
+    {
+      "referer": "https://fosroc.com.au/",
+      "utm": "chatgpt.com",
+      "host": "www.selleys.com.au",
+      "detection": {
+        "citation_source": "other_ai",
+        "citation_category": "ai_assistant",
+        "citation_source_host": "fosroc.com.au",
+        "citation_detection": "utm"
+      }
+    },
+    {
+      "referer": "https://chatgpt.com/",
+      "utm": null,
+      "host": "www.selleys.com.au",
+      "detection": {
+        "citation_source": "chatgpt",
+        "citation_category": "ai_assistant",
+        "citation_source_host": "chatgpt.com",
+        "citation_detection": "referer"
+      }
+    },
+    {
+      "referer": "https://www.bbc.co.uk/",
+      "utm": "openai",
+      "host": "news.example.co.uk",
+      "detection": {
+        "citation_source": "other_ai",
+        "citation_category": "ai_assistant",
+        "citation_source_host": "www.bbc.co.uk",
+        "citation_detection": "utm"
       }
     }
   ],
