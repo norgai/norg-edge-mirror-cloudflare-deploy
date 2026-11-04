@@ -77,7 +77,7 @@ import { mcpForwardHeaders } from "./lib/mcp-forward.mjs";
 import { detectCitationReferral } from "./lib/referral.mjs";
 import { buildPageViewPayload } from "./lib/page-view.mjs";
 
-export const EDGE_SCRIPT_VERSION = "0.15.0";
+export const EDGE_SCRIPT_VERSION = "0.15.1";
 
 // Baked binding defaults (EDGEPAR 04). Five bindings never vary across manual
 // and deploy-button installs, so they default here and a hand install only
