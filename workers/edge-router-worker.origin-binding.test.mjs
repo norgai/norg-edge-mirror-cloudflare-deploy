@@ -197,7 +197,7 @@ test("the health probe reports origin_binding: true when ORIGIN is bound", async
   );
   const body = await response.json();
   assert.equal(body.origin_binding, true);
-  assert.equal(body.version, "0.15.1");
+  assert.equal(body.version, "0.15.2");
   assert.equal(bindingCalls.length, 0, "a health probe never reaches the origin");
 });
 

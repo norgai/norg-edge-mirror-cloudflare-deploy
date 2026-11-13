@@ -28,6 +28,7 @@ export const SOURCE_REGISTRY = {
   "claude.ai": { source: "claude", category: "ai_assistant" },
   "gemini.google.com": { source: "gemini", category: "ai_assistant" },
   "copilot.microsoft.com": { source: "copilot", category: "ai_assistant" },
+  "copilot.com": { source: "copilot", category: "ai_assistant" },
   "google.com": { source: "google", category: "search" },
   "bing.com": { source: "bing", category: "search" },
 };
