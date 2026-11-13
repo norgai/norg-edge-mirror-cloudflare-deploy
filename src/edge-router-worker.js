@@ -220,6 +220,7 @@ var SOURCE_REGISTRY = {
   "claude.ai": { source: "claude", category: "ai_assistant" },
   "gemini.google.com": { source: "gemini", category: "ai_assistant" },
   "copilot.microsoft.com": { source: "copilot", category: "ai_assistant" },
+  "copilot.com": { source: "copilot", category: "ai_assistant" },
   "google.com": { source: "google", category: "search" },
   "bing.com": { source: "bing", category: "search" }
 };
@@ -369,7 +370,7 @@ async function buildPageViewPayload(request, url, requestHost, detection, served
 }
 
 // workers/edge-router-worker.js
-var EDGE_SCRIPT_VERSION = "0.15.1";
+var EDGE_SCRIPT_VERSION = "0.15.2";
 var BINDING_DEFAULTS = {
   NORG_API_URL: "https://content-craft-api.norg.ai",
   NORG_CONTENT_BASE: "https://edge-content.norg.ai",
