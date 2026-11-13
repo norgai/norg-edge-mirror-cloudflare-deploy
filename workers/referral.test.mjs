@@ -55,3 +55,10 @@ test("an AI citation landing on a .com.au site is still detected", () => {
   const hit = detectCitationReferral(request("https://chatgpt.com/"), url, url.hostname);
   assert.equal(hit.citation_source, "chatgpt");
 });
+
+test("a Referer from copilot.com is a Copilot citation without any utm_source", () => {
+  const url = new URL("https://www.selleys.com.au/products/");
+  const hit = detectCitationReferral(request("https://copilot.com/chats/abc"), url, url.hostname);
+  assert.equal(hit.citation_source, "copilot");
+  assert.equal(hit.citation_category, "ai_assistant");
+});
