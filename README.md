@@ -435,19 +435,20 @@ automatically — see [Limitations](#limitations) above.
 
 ## Other CDNs
 
-This repo is the Cloudflare Worker. The other providers share its
-provider-neutral core (`core/` + `workers/lib/`), so classification, the
-entitlement gate, the strip and the telemetry contract stay identical
-everywhere.
+This repo is the Cloudflare Worker only. Each other provider now lives in its
+own repo, listed below. They share the same provider-neutral core, so
+classification, the entitlement gate, the strip and the telemetry contract stay
+identical everywhere.
 
 | CDN | Source | Install guide | Status |
 |---|---|---|---|
 | **Cloudflare** | This repo | this README | Production |
-| **AWS CloudFront** (Lambda@Edge + CloudFront Functions) | [`feature/cloudfront-0.6.13`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/tree/feature/cloudfront-0.6.13) | [`aws/README.md`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/blob/feature/cloudfront-0.6.13/aws/README.md) | Available — attaches to an existing distribution, no DNS change |
-| **Fastly Compute** | [`feature/fastly-0.2.1`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/tree/feature/fastly-0.2.1) | [`fastly/README.md`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/blob/feature/fastly-0.2.1/fastly/README.md) | Available — requires pointing DNS at Fastly |
-| **Bunny Edge Scripting** | [`feature/bunny-0.2.1`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/tree/feature/bunny-0.2.1) | [`bunny/README.md`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/blob/feature/bunny-0.2.1/bunny/README.md) | Available — requires pointing DNS at Bunny |
-| Akamai EdgeWorkers | [`feature/akamai-edgeworkers`](https://github.com/norgai/norg-edge-mirror-cloudflare-deploy/tree/feature/akamai-edgeworkers) | — | Branch reserved; no adapter yet |
+| **AWS CloudFront** (CloudFront Functions gate) | [`norg-edge-mirror-cloudfront-deploy`](https://github.com/norgai/norg-edge-mirror-cloudfront-deploy) | [`aws/README.md`](https://github.com/norgai/norg-edge-mirror-cloudfront-deploy/blob/main/aws/README.md) | Available — attaches to an existing distribution, no DNS change |
+| **Fastly Compute** | [`norg-edge-mirror-fastly-deploy`](https://github.com/norgai/norg-edge-mirror-fastly-deploy) | [`fastly/README.md`](https://github.com/norgai/norg-edge-mirror-fastly-deploy/blob/main/fastly/README.md) | Available — requires pointing DNS at Fastly |
+| **Bunny Edge Scripting** | [`norg-edge-mirror-bunny-deploy`](https://github.com/norgai/norg-edge-mirror-bunny-deploy) | [`bunny/README.md`](https://github.com/norgai/norg-edge-mirror-bunny-deploy/blob/main/bunny/README.md) | Available — requires pointing DNS at Bunny |
 | **Next.js and Vercel** | [`norg-edge-mirror-nextjs-deploy`](https://github.com/norgai/norg-edge-mirror-nextjs-deploy) | [`vercel/README.md`](https://github.com/norgai/norg-edge-mirror-nextjs-deploy/blob/main/vercel/README.md) | Available on npm as `@norg-ai/edge-router-vercel` |
+| **WordPress plugin** | [`norg-edge-mirror-wordpress-deploy`](https://github.com/norgai/norg-edge-mirror-wordpress-deploy) | [`wordpress/README.md`](https://github.com/norgai/norg-edge-mirror-wordpress-deploy/blob/main/wordpress/README.md) | Available — runs inside WordPress, no CDN needed |
+| Akamai EdgeWorkers | — | — | Not started; no adapter or repo yet |
 
 The three rules in [What this worker does](#what-this-worker-does) hold on
 every provider. What differs is what each platform can offer — bot
