@@ -3,8 +3,8 @@
  * (Epic CITE 01).
  *
  * Builds the canonical citation page-view event — the same field set defined
- * once in apps/api/app/schemas/citation_page_view.py and mirrored by
- * apps/api/tests/fixtures/citation_page_view.json. generateVisitorId
+ * once in NORG's API citation page-view schema and mirrored by its test
+ * fixture. generateVisitorId
  * additionally mixes in a daily UTC salt.
  */
 

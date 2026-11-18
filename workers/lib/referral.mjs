@@ -9,8 +9,8 @@
  *
  * SOURCE_REGISTRY is the ONE place a host maps to a normalised source name; it
  * is read exclusively through _lookupSource so swapping it for a fetched feed
- * later is a single-function change. Vocabulary mirrors the Python
- * apps/api/app/services/watch/referrer_classifier.py assistant set, but this
+ * later is a single-function change. Vocabulary mirrors NORG's server-side
+ * referrer classifier assistant set, but this
  * module is deliberately self-contained (no cross-language parity test).
  *
  * This module never emits citation_detection "js_referrer" — that value belongs

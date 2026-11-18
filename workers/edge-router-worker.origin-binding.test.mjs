@@ -197,8 +197,17 @@ test("the health probe reports origin_binding: true when ORIGIN is bound", async
   );
   const body = await response.json();
   assert.equal(body.origin_binding, true);
-  assert.equal(body.version, "0.15.2");
+  assert.equal(body.version, "0.15.3");
   assert.equal(bindingCalls.length, 0, "a health probe never reaches the origin");
+});
+
+test("a wrong or near-miss probe key is NOT answered as a health probe", async () => {
+  const env = { ...baseEnv, ORIGIN: boundOrigin() };
+  const wrong = [`${baseEnv.NORG_SITE_KEY}x`, baseEnv.NORG_SITE_KEY.slice(0, -1), "nope"];
+  for (const key of wrong) {
+    const response = await worker.fetch(req("/", { headers: { [HEALTH_HEADER]: key } }), env, ctx);
+    assert.equal(response.headers.get("x-test-origin"), "binding", `key ${key} must fall through`);
+  }
 });
 
 test("the health probe reports origin_binding: false without ORIGIN", async () => {

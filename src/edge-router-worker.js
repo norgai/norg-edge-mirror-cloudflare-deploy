@@ -369,8 +369,22 @@ async function buildPageViewPayload(request, url, requestHost, detection, served
   };
 }
 
+// workers/lib/constant-time.mjs
+async function constantTimeEqual(a, b) {
+  const enc = new TextEncoder();
+  const [da, db] = await Promise.all([
+    crypto.subtle.digest("SHA-256", enc.encode(String(a))),
+    crypto.subtle.digest("SHA-256", enc.encode(String(b)))
+  ]);
+  const x = new Uint8Array(da);
+  const y = new Uint8Array(db);
+  let diff = 0;
+  for (let i = 0; i < x.length; i++) diff |= x[i] ^ y[i];
+  return diff === 0;
+}
+
 // workers/edge-router-worker.js
-var EDGE_SCRIPT_VERSION = "0.15.2";
+var EDGE_SCRIPT_VERSION = "0.15.3";
 var BINDING_DEFAULTS = {
   NORG_API_URL: "https://content-craft-api.norg.ai",
   NORG_CONTENT_BASE: "https://edge-content.norg.ai",
@@ -526,7 +540,7 @@ async function readFeedBody(response) {
       patterns: data.patterns || [],
       cidrRanges: data.cidr_ranges || {},
       agenticPathPrefix: data.agentic_path_prefix || DEFAULT_AGENTIC_PATH_PREFIX,
-      // Per-route mirror skip (NOR-2849172819): paths an operator marked to
+      // Per-route mirror skip: paths an operator marked to
       // pass through to origin. An array of normalised EdgeRoute paths.
       skipPaths: Array.isArray(data.skip_paths) ? data.skip_paths : [],
       // Record-only switch and the AI-referral (citation) toggle, both per site
@@ -1037,9 +1051,10 @@ function isPassthrough(request, env) {
   if (method === "POST" && isMcpPath(new URL(request.url).pathname)) return false;
   return true;
 }
-function isHealthProbe(request, env) {
+async function isHealthProbe(request, env) {
   const probeKey = request.headers.get(HEALTH_CHECK_HEADER);
-  return Boolean(probeKey && env.NORG_SITE_KEY && probeKey === env.NORG_SITE_KEY);
+  if (!probeKey || !env.NORG_SITE_KEY) return false;
+  return constantTimeEqual(probeKey, env.NORG_SITE_KEY);
 }
 function servingPolicyFor(botName, patterns) {
   const match = patterns.find((p) => p.pattern === botName);
@@ -1220,7 +1235,7 @@ async function serveMirrorOrOrigin(request, env, ctx, url, classification, label
   return originResponse;
 }
 async function handleRequest(request, env, ctx) {
-  if (isHealthProbe(request, env)) return healthResponse(env);
+  if (await isHealthProbe(request, env)) return healthResponse(env);
   if (isPassthrough(request, env)) return passthrough(request, env);
   if (binding(env, "CAPTURE_ONLY") === "true") return handleCapture(request, env, ctx);
   const url = new URL(request.url);
