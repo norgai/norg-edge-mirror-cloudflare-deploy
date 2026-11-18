@@ -76,8 +76,9 @@ import { cidrContains, cidrVerdictFor } from "./lib/cidr.mjs";
 import { mcpForwardHeaders } from "./lib/mcp-forward.mjs";
 import { detectCitationReferral } from "./lib/referral.mjs";
 import { buildPageViewPayload } from "./lib/page-view.mjs";
+import { constantTimeEqual } from "./lib/constant-time.mjs";
 
-export const EDGE_SCRIPT_VERSION = "0.15.2";
+export const EDGE_SCRIPT_VERSION = "0.15.3";
 
 // Baked binding defaults (EDGEPAR 04). Five bindings never vary across manual
 // and deploy-button installs, so they default here and a hand install only
@@ -257,7 +258,7 @@ const UNENTITLED = Object.freeze({
 const DEFAULT_AGENTIC_PATH_PREFIX = "/ai";
 
 // NORG answering with one of these is a decision, not an outage: the key is
-// wrong, or the site is paused/uninstalled (site_auth.py returns 401 and 403
+// wrong, or the site is paused/uninstalled (NORG's API answers 401 and 403
 // respectively). Cached entitlement is dropped immediately on either.
 const REFUSAL_STATUSES = new Set([401, 403]);
 
@@ -287,8 +288,8 @@ const STRIP_REMOVE_SELECTORS = [
 
 // Wrapper-only elements: the tag itself carries no informational value, but
 // (unlike STRIP_REMOVE_SELECTORS) its text content often does — accordion/
-// nav toggles routinely wrap a real label in a <button> (live example:
-// gymshark.com's mobile menu — <h5><button><span>Trending</span></button></h5>).
+// nav toggles routinely wrap a real label in a <button> (for example a
+// mobile menu: <h5><button><span>Trending</span></button></h5>).
 // Remove the wrapper, keep its content.
 const STRIP_UNWRAP_SELECTORS = ["button"];
 
@@ -432,7 +433,7 @@ async function readFeedBody(response) {
       patterns: data.patterns || [],
       cidrRanges: data.cidr_ranges || {},
       agenticPathPrefix: data.agentic_path_prefix || DEFAULT_AGENTIC_PATH_PREFIX,
-      // Per-route mirror skip (NOR-2849172819): paths an operator marked to
+      // Per-route mirror skip: paths an operator marked to
       // pass through to origin. An array of normalised EdgeRoute paths.
       skipPaths: Array.isArray(data.skip_paths) ? data.skip_paths : [],
       // Record-only switch and the AI-referral (citation) toggle, both per site
@@ -634,7 +635,7 @@ async function getBotFeed(env, ctx) {
  *   reused from the strip-floor check; null when no count was computed.
  * @param {number|null} responseStatus HTTP status of the response actually
  *   returned to the agent, so analytics can tell a served page from a 404 or
- *   error by status rather than by path (NOR-2849342414). null only where no
+ *   error by status rather than by path. null only where no
  *   response was resolved before logging.
  * @returns {Promise<void>}
  */
@@ -1170,8 +1171,8 @@ function isOpenAiFeedPath(pathname) {
 // which is the source of truth, MINUS .xml/.txt/.json — those are excluded on
 // purpose: /llms.txt, /tree.json, /graph.jsonld, /.well-known/mcp.json and
 // /openapi.json are NORG's own surfaces and a blanket rule here would proxy
-// them to the customer's origin. Do NOT "complete" this list from the Python
-// one; tests/test_edge_worker_asset_suffixes.py fails if the subset breaks.
+// them to the customer's origin. Do NOT "complete" this list from any other
+// copy: NORG's own test suite fails if the subset breaks.
 //
 // Extension-less asset URLs (/img?id=123) are not covered. Sec-Fetch-Dest
 // would catch them, but it is a browser fetch-metadata convention that
@@ -1492,18 +1493,18 @@ function isPassthrough(request, env) {
 /**
  * Is this an authenticated health probe rather than a real visit?
  *
- * Note the key comparison is not constant-time. A successful probe reveals
- * only the site id and script version, both of which the operator running the
- * probe already knows, and network timing over the public internet makes the
- * attack impractical — so the simple comparison is deliberate.
+ * The probe key is compared in constant time (see lib/constant-time.mjs) so the
+ * site key cannot be recovered by timing repeated guesses. A successful probe
+ * reveals only the site id and script version.
  *
  * @param {Request} request Incoming request.
  * @param {Object} env Worker bindings.
- * @returns {boolean} True when the probe key matches.
+ * @returns {Promise<boolean>} True when the probe key matches.
  */
-function isHealthProbe(request, env) {
+async function isHealthProbe(request, env) {
   const probeKey = request.headers.get(HEALTH_CHECK_HEADER);
-  return Boolean(probeKey && env.NORG_SITE_KEY && probeKey === env.NORG_SITE_KEY);
+  if (!probeKey || !env.NORG_SITE_KEY) return false;
+  return constantTimeEqual(probeKey, env.NORG_SITE_KEY);
 }
 
 /**
@@ -1983,7 +1984,7 @@ async function serveMirrorOrOrigin(request, env, ctx, url, classification, label
  * @returns {Promise<Response>} Response for the visitor.
  */
 async function handleRequest(request, env, ctx) {
-  if (isHealthProbe(request, env)) return healthResponse(env);
+  if (await isHealthProbe(request, env)) return healthResponse(env);
   if (isPassthrough(request, env)) return passthrough(request, env);
 
   // Record-only install: decided from the binding alone, before any NORG call,
@@ -2073,7 +2074,7 @@ async function handleRequest(request, env, ctx) {
   // them legitimately end in an extension this set matches.
   if (isStaticAssetPath(url.pathname)) return passthrough(request, env);
 
-  // Per-route mirror skip (NOR-2849172819): an operator marked this exact path
+  // Per-route mirror skip: an operator marked this exact path
   // to pass through untouched — the customer's ORIGINAL page is served to every
   // caller (no mirror, no strip). Placed with the static-asset floor, before
   // the search-bot floor and serveAgent, so even a diverting AI bot on this
